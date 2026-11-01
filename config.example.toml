@@ -1,0 +1,14 @@
+# Copy this file to config.toml and change the paths to where you installed each model (README.md, "Install the
+# models"). A key you leave out takes the value shown here. "~" means your home folder.
+
+[paths]
+# the mflux checkout's environment (MOSS-Image, FLUX.3 Klein)
+mflux_bin = "~/mlx-media/mflux/.venv/bin"
+# the LTX environment's bin folder (it holds ltx-2-mlx and python) and the LTX-2.5 weights
+ltx_bin = "~/mlx-media/venv-ltx/bin"
+ltx_model = "~/mlx-media/models/ltx-2.5-mlx-q8"
+# the Fish Drama 3 environment's python and the weights
+drama_python = "~/mlx-media/venv-drama/bin/python"
+drama_model = "~/mlx-media/models/fish-audio-drama-3-4bit"
+# the ACE-Step 1.5 checkout (with its .venv and checkpoints folders)
+ace_dir = "~/mlx-media/ace-step"

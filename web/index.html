@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workstation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">Workstation</div>
+      <nav id="tool-nav" class="tool-nav" aria-label="Tools">
+        <p class="muted small">Loading tools...</p>
+      </nav>
+      <div id="system" class="system" aria-live="polite">
+        <div class="system-line muted small">Connecting...</div>
+      </div>
+    </aside>
+
+    <main class="main" id="main">
+      <div id="offline" class="offline" hidden>Server offline. Retrying...</div>
+
+      <section class="panel tool-panel" id="tool-panel">
+        <div id="tool-head" class="tool-head"></div>
+        <form id="tool-form" class="tool-form" novalidate autocomplete="off">
+          <div id="fields" class="fields"></div>
+          <details id="advanced" class="advanced" hidden>
+            <summary>Advanced</summary>
+            <div id="advanced-fields" class="fields"></div>
+          </details>
+          <div class="form-actions">
+            <button type="submit" id="generate" class="btn primary" disabled>Generate</button>
+            <span class="hint muted small">Cmd/Ctrl + Enter</span>
+            <button type="button" id="reset-form" class="btn ghost small-btn" disabled>Reset to defaults</button>
+            <span id="form-status" class="form-status small" role="status"></span>
+          </div>
+          <div id="form-error" class="form-error" role="alert" hidden></div>
+        </form>
+      </section>
+
+      <section class="jobs-section">
+        <div class="jobs-head">
+          <h2>Jobs</h2>
+          <span id="jobs-count" class="muted small"></span>
+        </div>
+        <div id="jobs" class="jobs"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="lightbox" class="lightbox" hidden>
+    <button type="button" class="lb-close" aria-label="Close">&times;</button>
+    <button type="button" class="lb-prev" aria-label="Previous">&lsaquo;</button>
+    <figure class="lb-figure">
+      <img id="lb-img" alt="">
+      <figcaption id="lb-caption" class="small"></figcaption>
+    </figure>
+    <button type="button" class="lb-next" aria-label="Next">&rsaquo;</button>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+[project]
+name = "mlx-media-workstation"
+version = "0.1.0"
+description = "A local app for open image, voice, music and video models on Apple Silicon (MLX)."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
