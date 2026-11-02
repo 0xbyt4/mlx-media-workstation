@@ -406,3 +406,12 @@ def test_model_input_keeps_the_newest_turns_that_fit(monkeypatch):
     assert messages[-1]["content"][-1]["text"] == "last"
     assert len(messages) < len(msgs)
     assert images == [str(chat.CHATS / "c" / "img_0.png")]
+
+
+def test_system_prompt_names_every_tool_with_prompt_help():
+    for tool in tools.TOOLS:
+        names = [f["name"] for f in tool["fields"] if f.get("assist")]
+        if names:
+            assert f"- {tool['id']}: {tool['label']}" in chat.SYSTEM
+            assert ", ".join(names) in chat.SYSTEM
+    assert "edit.mix" not in chat.SYSTEM  # nothing to write for it

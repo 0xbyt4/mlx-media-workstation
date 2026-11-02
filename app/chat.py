@@ -19,7 +19,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
-from app import llm
+from app import llm, tools
 from app.config import ROOT
 
 CHATS = ROOT / "outputs" / "chats"
@@ -32,10 +32,30 @@ MAX_TEXT = 20000  # characters per message
 # the 16 full-attention layers take 64 KiB of KV cache per token: 32K tokens is 2 GiB on top of the weights
 CONTEXT_TOKENS = 32768
 IMAGE_TOKENS = 1100  # an image at the worker's 1024x1024 pixel cap
-SYSTEM = (
-    "You are a helpful assistant in Workstation, a media app that runs open models locally on the user's Mac. "
-    "Answer in the user's language. Be clear and concise; use Markdown when it helps."
-)
+PROMPT_FENCE = "prompt"  # a fenced block "```prompt <tool id> [field]" gets a "Use in <tool>" button in the app
+
+
+def system_prompt() -> str:
+    lines = []
+    for tool in tools.TOOLS:
+        names = [f["name"] for f in tool["fields"] if f.get("assist")]
+        if names:
+            lines.append(
+                f"- {tool['id']}: {tool['label']} ({tool['group']}); fields: {', '.join(names)}"
+            )
+    return f"""You are a helpful assistant in Workstation, a media app that runs open models locally on the user's Mac. \
+Answer in the user's language. Be clear and concise; use Markdown when it helps.
+
+When you write a ready-to-use text for one of the app's tools (a prompt, a voice script, lyrics), put it in its own \
+fenced block whose info string is "{PROMPT_FENCE}" and the tool id, for example ```{PROMPT_FENCE} video.t2v. A tool with \
+several fields gets one block per field, each naming its field: ```{PROMPT_FENCE} music.ace caption and \
+```{PROMPT_FENCE} music.ace lyrics. Only the text goes inside a block. The app turns each block into a button that \
+copies the text into the tool, so do not explain the blocks. Write prompts in English, except spoken or sung words, \
+which stay in the user's language. The tools:
+{chr(10).join(lines)}"""
+
+
+SYSTEM = system_prompt()
 
 router = APIRouter(prefix="/api")
 lock = threading.Lock()  # guards chat files and live

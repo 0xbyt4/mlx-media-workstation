@@ -189,6 +189,10 @@ Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images sent in th
 - `POST /api/chats/{id}/stop` stops the answer between tokens, also while it waits. It returns
   `{"status": "stopping"}`, or `{"status": "idle"}` when nothing runs. The reply is saved with `finish: "cancelled"`.
 
+A text the model writes for a tool comes in a fenced block whose info string is `prompt`, the tool id and, for a tool
+with several prompt-help fields, the field name (`prompt video.t2v`, `prompt music.ace lyrics`). The UI shows a
+"Use in <tool>" button on such a block; without a field name it fills the tool's first `assist` field.
+
 The answer runs on the server whether or not a page listens, and it is saved when it ends. The model sees the newest
 turns that fit in 32K tokens.
 
