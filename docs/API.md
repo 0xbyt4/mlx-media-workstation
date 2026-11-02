@@ -149,9 +149,48 @@ with `assist: true`. Image fields go along as images; a video field goes along a
  "cost_usd": null, "seconds": 9.4}
 ```
 
-Errors (model not installed, an empty draft, a media job using the memory, an answer in the wrong form) return HTTP
+Errors (model not installed, too little memory on this Mac, an empty draft, an answer in the wrong form) return HTTP
 400 with `{"detail": "message"}`. The first request loads the model (16 GB from disk); later ones reuse it until it
-is unloaded.
+is unloaded. While a media job that does not fit next to the model runs, the request waits and answers when the job
+ends; `GET /api/llm` shows `waiting` > 0 meanwhile.
+
+## Local LLM and chat
+
+`GET /api/llm` returns the local model's state:
+
+```json
+{"installed": true, "state": "ready", "busy": false, "waiting": 0, "media_peak_gb": 0.0,
+ "model": "Qwen3.8 27B (4-bit)", "peak_gb": 18.0, "idle_stop_s": 600.0}
+```
+
+- `state` is `off`, `loading` or `ready`. The model loads on the first request and unloads after `idle_stop_s`
+  without use, or before a media job that does not fit next to it.
+- `waiting` counts requests that wait for such a job to end. They run before the next job starts.
+- `media_peak_gb` is the peak memory of the job that holds the memory now (0 when none).
+
+`POST /api/llm/unload` stops the model and returns `{"status": "off"}`.
+
+Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images sent in the chat).
+
+- `GET /api/chats` lists the chats, newest first: `id`, `title`, `created`, `updated`, `messages` (count), `running`.
+- `POST /api/chats` creates an empty chat and returns its summary.
+- `GET /api/chats/{id}` returns the chat with all messages and `running`.
+- `DELETE /api/chats/{id}` deletes it (HTTP 409 while it answers).
+- `GET /api/chats/{id}/files/{name}` serves an image of the chat (`img_N.png`, `.jpg` or `.webp`).
+- `POST /api/chats/{id}/messages` takes `multipart/form-data`: `text`, `thinking` (`true`/`false`), up to 4
+  `images` (PNG, JPEG or WebP, 20 MB each), or `regenerate=true` to answer the last user message again. It returns
+  server-sent events (`data: {...}` lines):
+  - `{"event": "waiting", "message": "..."}` while a media job holds the memory;
+  - `{"event": "reasoning", "text": "..."}` and `{"event": "content", "text": "..."}` deltas;
+  - `{"event": "done", "finish": "stop" | "length" | "cancelled", "content": "...", "reasoning": "...", "stats": {...}}`
+    or `{"event": "error", "message": "..."}` at the end.
+- `GET /api/chats/{id}/stream` replays the running answer's events from the start (for a page that came back); HTTP
+  404 when nothing runs.
+- `POST /api/chats/{id}/stop` stops the answer between tokens, also while it waits. It returns
+  `{"status": "stopping"}`, or `{"status": "idle"}` when nothing runs. The reply is saved with `finish: "cancelled"`.
+
+The answer runs on the server whether or not a page listens, and it is saved when it ends. The model sees the newest
+turns that fit in 32K tokens.
 
 
 ## UI behaviour

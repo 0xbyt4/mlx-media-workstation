@@ -1,9 +1,10 @@
 """The local LLM (Qwen3.8 27B, 4-bit) behind prompt help and chat: one worker process, started on demand.
 
 The worker (app/llm_worker.py) runs with the LLM environment's python and keeps the model loaded between requests.
-It stops after IDLE_STOP of no use, and before a media job whose peak memory would not fit next to it (the server
-calls make_room). A request that does not fit next to the running job is refused with a message, not queued, so a
-chat never pushes a video job into swap. Stopping kills the process: only an exit returns all of its memory.
+It stops after IDLE_STOP of no use, and before a media job whose peak memory would not fit next to it: the server
+calls claim before each job and release after it. A request sent while such a job holds the memory waits (a "waiting"
+event) and runs when the job ends, before the next job starts, so a chat never pushes a video job into swap. Stopping
+kills the process: only an exit returns all of its memory.
 """
 
 import itertools
@@ -14,7 +15,7 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 from app import models
@@ -25,7 +26,11 @@ LOG = ROOT / "outputs" / "llm.log"
 LOAD_TIMEOUT = 300.0  # seconds to load the weights (about 16 GB from disk)
 IDLE_STOP = 600.0  # seconds without a request before the model is unloaded
 STOP_WAIT = 5.0  # seconds for a clean exit before SIGKILL
+JOB_WAIT = (
+    600.0  # seconds a media job waits for the answers before it, then stops the model
+)
 CRASHED = "The model stopped unexpectedly. See outputs/llm.log."
+WAITING = "Waiting for memory: a media job is running. This continues when it finishes."
 WORKER = ["-m", "app.llm_worker"]  # run with the LLM environment's python
 
 
@@ -114,13 +119,22 @@ class Worker:
         self.proc.wait()
 
 
-lock = threading.Lock()  # guards worker, last_used and each worker's pending
+lock = (
+    threading.Lock()
+)  # guards worker, last_used, each worker's pending and the memory state below
+room = threading.Condition(lock)  # notified when the memory state changes
 start_lock = threading.Lock()  # one start at a time
 worker: Worker | None = None
 last_used = 0.0
 ids = itertools.count(1)
-# the peak memory in GB of the running media job (0 when none); the server sets this
-media_peak: Callable[[], float] = lambda: 0.0
+job_peak = (
+    0.0  # the peak memory in GB of the media job that holds the memory (0 when none)
+)
+active = 0  # requests past the memory check, until they end
+cancels: dict[
+    str, threading.Event
+] = {}  # request id -> its cancel flag, from "started" to the end
+waiting: set[str] = set()  # the requests waiting for memory
 
 
 def installed() -> bool:
@@ -135,6 +149,8 @@ def status() -> dict[str, Any]:
     with lock:
         w = worker
         busy = bool(w and w.pending)
+        held = job_peak
+        n_waiting = len(waiting)
     if w is None or not w.alive():
         state = "off"
     else:
@@ -143,10 +159,24 @@ def status() -> dict[str, Any]:
         "installed": installed(),
         "state": state,
         "busy": busy,
+        "waiting": n_waiting,  # requests waiting for a media job to finish
+        "media_peak_gb": held,
         "model": MODEL.label,
         "peak_gb": MODEL.peak_gb,
         "idle_stop_s": IDLE_STOP,
     }
+
+
+def check_installed() -> None:
+    if not installed():
+        raise LLMError(
+            f"{MODEL.label} is not installed. Install it on the Models screen."
+        )
+    if not fits_with(0.0):
+        raise LLMError(
+            f"{MODEL.label} needs about {MODEL.peak_gb:.0f} GB of memory plus {models.RESERVE_GB} GB for the "
+            "system; this Mac has less."
+        )
 
 
 def start() -> Worker:
@@ -156,14 +186,7 @@ def start() -> Worker:
         with lock:
             w = worker
         if w is None or not w.alive():
-            if not installed():
-                raise LLMError(
-                    f"{MODEL.label} is not installed. Install it on the Models screen."
-                )
-            if not fits_with(media_peak()):
-                raise LLMError(
-                    "A media job is using the memory. Prompt help and chat work again when it finishes."
-                )
+            check_installed()
             w = Worker()
             with lock:
                 worker = w
@@ -185,14 +208,70 @@ def generate(
     max_tokens: int = 4096,
     chat: str | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Run one request and yield its events: "started" (with the request id), reasoning and content deltas, then done
-    or error.
+    """Run one request and yield its events: "started" (with the request id), "waiting" when a media job holds the
+    memory, reasoning and content deltas, then done or error.
 
     Closing the iterator early (a client that went away) cancels the request in the worker.
     """
+    global active
+    check_installed()
+    rid = f"r{next(ids)}"
+    cancelled = threading.Event()
+    with room:
+        cancels[rid] = cancelled
+        must_wait = not fits_with(job_peak)
+        if must_wait:
+            waiting.add(rid)
+        else:
+            active += 1
+    try:
+        yield {"event": "started", "id": rid}
+        if must_wait:
+            try:
+                yield {"event": "waiting", "message": WAITING}
+                with room:
+                    room.wait_for(lambda: fits_with(job_peak) or cancelled.is_set())
+                    if not cancelled.is_set():
+                        active += 1
+            finally:
+                with room:
+                    waiting.discard(rid)
+                    room.notify_all()
+            if cancelled.is_set():
+                yield {
+                    "event": "done",
+                    "finish": "cancelled",
+                    "reasoning": "",
+                    "content": "",
+                    "stats": {},
+                }
+                return
+        try:
+            yield from run(
+                rid, cancelled, messages, images, thinking, schema, max_tokens, chat
+            )
+        finally:
+            with room:
+                active -= 1
+                room.notify_all()
+    finally:
+        with room:
+            cancels.pop(rid, None)
+
+
+def run(
+    rid: str,
+    cancelled: threading.Event,
+    messages: list[dict[str, Any]],
+    images: Sequence[str],
+    thinking: bool,
+    schema: dict[str, Any] | None,
+    max_tokens: int,
+    chat: str | None,
+) -> Iterator[dict[str, Any]]:
+    """The worker part of generate: send the request and yield its events."""
     global last_used
     w = start()
-    rid = f"r{next(ids)}"
     q: queue.Queue = queue.Queue()
     with lock:
         w.pending[rid] = q
@@ -211,7 +290,8 @@ def generate(
                 "chat": chat,
             }
         )
-        yield {"event": "started", "id": rid}
+        if cancelled.is_set():  # the cancel came before the worker knew the request
+            w.send({"op": "cancel", "id": rid})
         while True:
             ev = q.get()
             finished = ev["event"] in ("done", "error")
@@ -242,13 +322,21 @@ def complete(
 
 
 def cancel(rid: str) -> bool:
-    """Stop request rid between tokens; False when it is not running."""
-    with lock:
+    """Stop request rid between tokens (or while it waits); False when it is not running."""
+    with room:
+        flag = cancels.get(rid)
+        if flag is None:
+            return False
+        flag.set()
+        room.notify_all()
         w = worker
-        known = w is not None and rid in w.pending
-    if known:
-        w.send({"op": "cancel", "id": rid})
-    return known
+        sent = w is not None and rid in w.pending
+    if sent:
+        try:
+            w.send({"op": "cancel", "id": rid})
+        except LLMError:
+            pass  # the worker is gone: the request fails on its own
+    return True
 
 
 def stop(reason: str = "The model was unloaded.") -> None:
@@ -260,12 +348,29 @@ def stop(reason: str = "The model was unloaded.") -> None:
         w.stop(reason)
 
 
-def make_room(job_peak: float) -> None:
-    """Unload the model before a media job that would not fit next to it."""
-    with lock:
-        w = worker
-    if w is not None and w.alive() and not fits_with(job_peak):
-        stop("Unloaded to free the memory for a media job. Try again when it finishes.")
+def claim(peak: float) -> None:
+    """Hold the memory for a media job (before it starts): the requests waiting since the last job run first, then
+    the model unloads if the job does not fit next to it. New requests wait until release."""
+    global job_peak
+    with room:
+        room.wait_for(lambda: not waiting, JOB_WAIT)
+        job_peak = peak
+        if fits_with(peak):
+            return
+        drained = room.wait_for(lambda: active == 0, JOB_WAIT)
+    stop(
+        "Unloaded to free the memory for a media job."
+        if drained
+        else "Stopped: a media job could not wait longer for this answer."
+    )
+
+
+def release() -> None:
+    """The media job ended: the waiting requests can run."""
+    global job_peak
+    with room:
+        job_peak = 0.0
+        room.notify_all()
 
 
 def watch_idle() -> None:

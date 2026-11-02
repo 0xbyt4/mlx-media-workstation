@@ -33,10 +33,10 @@ def fake_llm(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "WORKER", [str(FAKE)])
     monkeypatch.setattr(llm, "installed", lambda: True)
     monkeypatch.setattr(llm, "LOG", tmp_path / "llm.log")
-    monkeypatch.setattr(llm, "media_peak", lambda: 0.0)
     monkeypatch.setattr(models, "mem_total_gb", lambda: 48.0)
     monkeypatch.setattr(chat, "CHATS", tmp_path / "chats")
     yield use
+    llm.release()
     llm.stop("test over")
 
 
@@ -107,6 +107,13 @@ def test_cancel_stops_between_tokens():
     assert not llm.cancel(rid)  # finished: nothing to cancel
 
 
+def test_cancel_right_after_started_is_not_lost():
+    gen = llm.generate(user("SLOW"))
+    rid = next(gen)["id"]  # the worker has not seen the request yet
+    assert llm.cancel(rid)
+    assert list(gen)[-1]["finish"] == "cancelled"
+
+
 def test_closing_the_iterator_cancels_and_the_worker_goes_on():
     gen = llm.generate(user("SLOW"))
     next(gen)
@@ -124,31 +131,84 @@ def test_stop_fails_waiting_requests_with_the_reason():
     assert llm.status()["state"] == "off"
 
 
-def test_make_room_unloads_only_for_a_job_that_does_not_fit():
+def test_claim_unloads_only_for_a_job_that_does_not_fit():
     llm.complete(user("hi"))
-    llm.make_room(14.0)  # 18 + 14 + 8 reserve <= 48
+    llm.claim(14.0)  # 18 + 14 + 8 reserve <= 48
     assert llm.status()["state"] == "ready"
-    llm.make_room(35.0)
+    assert llm.complete(user("hi"))["content"] == "Hello world"  # runs next to it
+    llm.release()
+    llm.claim(35.0)
     assert llm.status()["state"] == "off"
 
 
-def test_refused_next_to_a_big_job(monkeypatch):
-    monkeypatch.setattr(llm, "media_peak", lambda: 35.0)
-    with pytest.raises(llm.LLMError, match="media job is using the memory"):
-        llm.complete(user("hi"))
-
-
-def test_server_reports_the_running_jobs_peak(monkeypatch):
-    monkeypatch.setattr(
-        server,
-        "jobs",
-        {
-            "a": {"tool": "video.t2v", "status": "running"},
-            "b": {"tool": "image.klein", "status": "queued"},
-        },
-    )
-    assert server.running_peak() == models.tool_peak("video.t2v") == 35.0
+def test_tool_peak():
+    assert models.tool_peak("video.t2v") == 35.0
     assert models.tool_peak("video.mix") == 0.0
+
+
+def test_a_request_waits_while_a_big_job_runs():
+    llm.claim(35.0)
+    gen = llm.generate(user("hi"))
+    assert next(gen)["event"] == "started"
+    assert next(gen) == {"event": "waiting", "message": llm.WAITING}
+    assert llm.status()["waiting"] == 1
+    threading.Timer(0.2, llm.release).start()
+    assert list(gen)[-1]["content"] == "Hello world"
+    assert llm.status()["waiting"] == 0
+
+
+def test_cancel_while_waiting():
+    llm.claim(35.0)
+    gen = llm.generate(user("hi"))
+    rid = next(gen)["id"]
+    next(gen)
+    assert llm.cancel(rid)
+    assert list(gen) == [
+        {
+            "event": "done",
+            "finish": "cancelled",
+            "reasoning": "",
+            "content": "",
+            "stats": {},
+        }
+    ]
+    assert llm.status()["waiting"] == 0 and llm.status()["state"] == "off"
+
+
+def test_claim_waits_for_the_running_answer():
+    gen = llm.generate(user("SLOW"))
+    rid = next(gen)["id"]
+    next(gen)
+    claimed = threading.Event()
+    threading.Thread(
+        target=lambda: (llm.claim(35.0), claimed.set()), daemon=True
+    ).start()
+    assert not claimed.wait(0.3)  # the answer is still running
+    llm.cancel(rid)
+    assert list(gen)[-1]["finish"] == "cancelled"
+    assert claimed.wait(5)
+    assert llm.status()["state"] == "off"
+
+
+def test_waiting_requests_run_before_the_next_job():
+    llm.claim(35.0)
+    result = {}
+    t = threading.Thread(
+        target=lambda: result.update(llm.complete(user("hi"))), daemon=True
+    )
+    t.start()
+    assert wait_for(lambda: llm.status()["waiting"] == 1)
+    llm.release()
+    llm.claim(35.0)  # the next job: the waiting request goes first
+    t.join(5)
+    assert result["content"] == "Hello world"
+    assert llm.status()["state"] == "off"
+
+
+def test_too_little_memory_is_an_error_not_a_wait(monkeypatch):
+    monkeypatch.setattr(models, "mem_total_gb", lambda: 16.0)
+    with pytest.raises(llm.LLMError, match="this Mac has less"):
+        llm.complete(user("hi"))
 
 
 def test_not_installed_message(monkeypatch):
@@ -281,12 +341,16 @@ def test_stop_and_delete(client):
         target=client.post,
         args=(f"/api/chats/{cid}/messages",),
         kwargs={"data": {"text": "SLOW"}},
+        daemon=True,  # a failing test must not keep pytest from exiting
     )
     t.start()
     assert wait_for(lambda: client.get(f"/api/chats/{cid}").json()["running"])
     assert client.delete(f"/api/chats/{cid}").status_code == 409
-    assert wait_for(
-        lambda: chat.live.get(cid) is not None and chat.live[cid].rid is not None
+    assert wait_for(  # the first words are there, so the saved reply keeps them
+        lambda: (
+            chat.live.get(cid) is not None
+            and any(e["event"] == "content" for e in chat.live[cid].events)
+        )
     )
     assert client.post(f"/api/chats/{cid}/stop").json() == {"status": "stopping"}
     t.join(5)
@@ -295,6 +359,28 @@ def test_stop_and_delete(client):
     assert client.post(f"/api/chats/{cid}/stop").json() == {"status": "idle"}
     assert client.delete(f"/api/chats/{cid}").status_code == 200
     assert client.get(f"/api/chats/{cid}").status_code == 404
+
+
+def test_chat_shows_waiting_and_can_stop_it(client):
+    llm.claim(35.0)
+    cid = new_chat(client)
+    t = threading.Thread(
+        target=client.post,
+        args=(f"/api/chats/{cid}/messages",),
+        kwargs={"data": {"text": "hi"}},
+        daemon=True,
+    )
+    t.start()
+    assert wait_for(
+        lambda: (
+            chat.live.get(cid) is not None
+            and any(e["event"] == "waiting" for e in chat.live[cid].events)
+        )
+    )
+    assert client.post(f"/api/chats/{cid}/stop").json() == {"status": "stopping"}
+    t.join(5)
+    reply = client.get(f"/api/chats/{cid}").json()["messages"][-1]
+    assert reply["finish"] == "cancelled" and reply["content"] == ""
 
 
 def test_error_is_saved_in_the_chat(client, monkeypatch):

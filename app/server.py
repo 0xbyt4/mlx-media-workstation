@@ -230,13 +230,21 @@ def worker() -> None:
                 key=lambda j: j["created"],
             )
             job = queued[0] if queued else None
-            if job:
+        if not job:
+            continue
+        # before the job counts as running: prompt help and chat answers sent before it finish first
+        llm.claim(models.tool_peak(job["tool"]))
+        with lock:
+            go = job["status"] == "queued" and not stopping.is_set()
+            if go:
                 job["status"], job["started"] = "running", now()
                 save(job)
-        if job:
-            llm.make_room(models.tool_peak(job["tool"]))
-            run_job(job)
-            wake.set()
+        try:
+            if go:
+                run_job(job)
+        finally:
+            llm.release()
+        wake.set()
 
 
 def shutdown() -> None:
@@ -569,18 +577,10 @@ def system() -> dict[str, Any]:
     }
 
 
-def running_peak() -> float:
-    """The peak memory in GB of the running job; the local LLM starts only when it fits next to it."""
-    with lock:
-        running = [j["tool"] for j in jobs.values() if j["status"] == "running"]
-    return max((models.tool_peak(t) for t in running), default=0.0)
-
-
 def start() -> None:
     """Load the history and start the worker. Called once by start.py after it knows the port is free."""
     OUT.mkdir(exist_ok=True)
     load_jobs()
-    llm.media_peak = running_peak
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=llm.watch_idle, daemon=True).start()
 
