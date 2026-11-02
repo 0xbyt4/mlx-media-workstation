@@ -1,0 +1,350 @@
+/* App frame: sidebar (brand, sections, job dock, memory meter), toolbar and the scrolling view area.
+   Each view renders into <main id="view" class="views"> > .view; a view that fills the height (Chat) adds
+   .view-full to its root element. */
+
+.skip {
+  position: absolute;
+  left: 8px;
+  top: -40px;
+  z-index: 50;
+  background: var(--accent);
+  color: var(--on-accent);
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+}
+.skip:focus {
+  top: 8px;
+}
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  height: 100%;
+}
+
+/* ---------- sidebar ---------- */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 16px 12px;
+}
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 4px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+  flex: none;
+}
+.brand-mark i {
+  border-radius: 2px;
+}
+.brand-mark i:nth-child(1) {
+  background: var(--c-image);
+}
+.brand-mark i:nth-child(2) {
+  background: var(--c-voice);
+}
+.brand-mark i:nth-child(3) {
+  background: var(--c-music);
+}
+.brand-mark i:nth-child(4) {
+  background: var(--c-video);
+}
+.brand-text {
+  display: grid;
+}
+.brand-name {
+  font: 600 var(--fs-md) / 1.2 var(--font-display);
+}
+.brand-sub {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.nav {
+  display: grid;
+  gap: 2px;
+  padding: 4px 8px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-2);
+  text-align: left;
+  font-weight: 500;
+}
+.nav-item:hover {
+  background: var(--sunken);
+  color: var(--text);
+}
+.nav-item[aria-current="page"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+.nav-item[aria-current="page"] .ic {
+  color: var(--accent);
+}
+.nav-label {
+  flex: 1;
+}
+.nav-kbd {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.nav-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.side-foot {
+  margin-top: auto;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+/* ---------- job dock ---------- */
+.dock {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  text-align: left;
+  width: 100%;
+}
+.dock:hover {
+  border-color: var(--border-strong);
+}
+.dock-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+.dock-top .dock-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dock-sub {
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.dock-sub span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dock-empty {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  padding: 2px;
+}
+
+/* ---------- memory meter ---------- */
+.mem {
+  display: grid;
+  gap: 6px;
+  padding: 2px 2px 0;
+}
+.mem-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+.mem-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.mem-legend i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+.seg-job {
+  background: var(--c-video);
+}
+.seg-qwen {
+  background: var(--accent);
+}
+.seg-other {
+  background: var(--text-3);
+}
+.mem-swap {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.mem-swap.warn {
+  color: var(--warn);
+}
+
+/* ---------- main column ---------- */
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.toolbar-titles {
+  min-width: 0;
+}
+.toolbar h1 {
+  font: 600 var(--fs-lg) / 1.2 var(--font-display);
+}
+.toolbar .sub {
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.toolbar .spacer {
+  flex: 1;
+}
+.run-pill {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+.offline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 24px;
+  background: var(--warn-soft);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  border-bottom: 1px solid var(--border);
+}
+.offline .ic {
+  color: var(--warn);
+}
+.views {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.views:focus {
+  outline: none;
+}
+.view {
+  padding: 24px;
+}
+.view-full {
+  padding: 0;
+  height: 100%;
+}
+
+/* ---------- responsive ---------- */
+@media (max-width: 720px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .sidebar {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    scrollbar-width: none;
+    padding-left: max(8px, env(safe-area-inset-left, 0px));
+    padding-right: max(8px, env(safe-area-inset-right, 0px));
+  }
+  .brand {
+    padding: 8px;
+  }
+  .brand-text,
+  .side-foot,
+  .nav-kbd {
+    display: none;
+  }
+  .nav {
+    display: flex;
+    padding: 6px 0;
+  }
+  .nav-item {
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 10px;
+    font-size: var(--fs-xs);
+    position: relative;
+  }
+  .nav-item .badge,
+  .nav-item .nav-dot {
+    position: absolute;
+    top: 0;
+    right: 2px;
+  }
+  .view {
+    padding-block: 16px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .view-full {
+    padding: 0;
+  }
+  .toolbar,
+  .offline {
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .toolbar .sub {
+    display: none;
+  }
+  .run-pill:not([hidden]) {
+    display: inline-flex;
+  }
+}
