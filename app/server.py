@@ -28,7 +28,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import tools
+from app import models, models_api, tools
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs"
@@ -245,6 +245,7 @@ def shutdown() -> None:
         pgids = [p.pid for p in procs.values()]
     for pgid in pgids:
         stop_group(pgid)
+    models.stop()
     wake.set()
 
 
@@ -495,4 +496,5 @@ def start() -> None:
     threading.Thread(target=worker, daemon=True).start()
 
 
+app.include_router(models_api.router)
 app.mount("/", StaticFiles(directory=WEB, html=True), name="web")

@@ -78,6 +78,57 @@ list and deletes its folder.
 
 `GET /api/system` returns `{"mem_total_gb": 48.0, "mem_free_gb": 37.5, "swap_used_gb": 2.8, "running": "job id or null", "queued": 1}`.
 
+## Models
+
+`GET /api/models` returns every installable component, its install status and this Mac's memory:
+
+```json
+{
+  "machine": {"mem_total_gb": 48.0, "mem_reserve_gb": 8.0},
+  "models": [
+    {
+      "id": "ltx-2.5-mlx-q8",
+      "label": "LTX-2.5 (q8)",
+      "kind": "download | manual",
+      "used_by": ["Text to Video", "Image to Video"],
+      "tools": ["video.t2v", "video.i2v"],
+      "repo": "dgrauet/ltx-2.5-mlx-q8",
+      "revision": "746ca9aacb697d2c739f544d68b584214dedcc75",
+      "size_gb": 54.1,
+      "licence": "LTX-2 Community License",
+      "licence_url": "https://huggingface.co/...",
+      "peak_gb": 35.0,
+      "gated": true,
+      "path_key": "ltx_model",
+      "path": "/Users/me/mlx-media/models/ltx-2.5-mlx-q8",
+      "installed": false,
+      "fits": true,
+      "disk_free_gb": 412.3,
+      "needs": null,
+      "install": null,
+      "download": {"status": "running | done | failed | cancelled", "error": null, "done_gb": 12.4,
+                   "total_gb": 54.1, "percent": 22.9}
+    }
+  ]
+}
+```
+
+- `kind: "download"` entries are weights the app downloads. `kind: "manual"` entries are model environments and
+  checkouts: `install` holds the README commands, and `repo`, `size_gb`, `peak_gb`, `fits` and `disk_free_gb` are
+  `null`.
+- `path_key` is the `config.toml` key of the install path; `null` means the Hugging Face cache.
+- `fits` is true when `peak_gb` plus `mem_reserve_gb` is at most `mem_total_gb`.
+- `needs` names an entry to install first. `download` is `null` unless this model is the current or last download.
+- Sizes are in GB of 10^9 bytes (as Hugging Face shows them); memory is in GB of 2^30 bytes (as `/api/system`).
+
+`POST /api/models/{id}/download` starts a download in the background and returns `{"status": "running"}`. One
+download runs at a time. Errors return HTTP 400 with `{"detail": "message"}` (a manual entry, already installed,
+another download running). Poll `GET /api/models` for progress; a failed download has the reason in
+`download.error`.
+
+`POST /api/models/{id}/cancel` stops the download and returns `{"status": "cancelled"}` (or the finished status).
+Finished files stay, and the next download skips them.
+
 ## UI behaviour
 
 - Left sidebar: the groups and their tools; a small system line at the bottom (free memory, queue).
