@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,11 @@ HF_HUB = tools.HF_HUB
 # memory; above it macOS swaps and the job gets much slower or fails (Fish Drama 3 at 39 GB on our 48 GB Mac is the
 # tightest case we ran).
 RESERVE_GB = 8.0
+# The download speed is the bytes added over at least this many seconds of progress samples (the UI polls every 2 s),
+# so one slow or fast poll does not swing it. Below MIN_SPAN_S of samples there is no speed yet.
+SPEED_WINDOW_S = 10.0
+MIN_SPAN_S = 1.5
+clock = time.monotonic  # replaced in tests
 
 
 @dataclass(frozen=True)
@@ -416,7 +422,9 @@ def start(m: Model) -> None:
                 f"{BY_ID[state['id']].label} is downloading. Wait for it or cancel it."
             )
         state.clear()
-        state.update(id=m.id, status="running", error=None, sizes=None, proc=None)
+        state.update(
+            id=m.id, status="running", error=None, sizes=None, proc=None, samples=[]
+        )
     threading.Thread(target=run, args=(m,), daemon=True).start()
 
 
@@ -506,13 +514,36 @@ def progress(m: Model) -> dict[str, Any] | None:
         status, error, sizes = state["status"], state["error"], state["sizes"]
     total = sum(sizes.values()) if sizes else 0
     done = min(on_disk(m, sizes), total) if sizes else 0
+    speed = rate(m, done) if status == "running" and total else None
     return {
         "status": status,
         "error": error,
         "done_gb": round(done / 1e9, 2),
         "total_gb": round(total / 1e9, 2) if total else None,
         "percent": percent(done, total) if total else 0.0,
+        "speed_mbs": None if speed is None else round(speed / 1e6, 1),
+        "eta_s": round((total - done) / speed) if speed else None,
     }
+
+
+def rate(m: Model, done: int) -> float | None:
+    """Bytes per second of m's running download, from the bytes on disk at each progress call.
+
+    The speed spans the samples of the last SPEED_WINDOW_S seconds plus one older sample, so it is an average over at
+    least that window once the download has run that long. None until the samples span MIN_SPAN_S.
+    """
+    with lock:
+        if state.get("id") != m.id:
+            return None
+        now = clock()
+        samples = state.setdefault("samples", [])
+        samples.append((now, done))
+        while len(samples) > 2 and samples[1][0] <= now - SPEED_WINDOW_S:
+            samples.pop(0)
+        t0, b0 = samples[0]
+    if now - t0 < MIN_SPAN_S:
+        return None
+    return max(0, done - b0) / (now - t0)
 
 
 def view(m: Model, mem_gb: float) -> dict[str, Any]:
