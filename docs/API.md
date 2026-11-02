@@ -200,6 +200,64 @@ The answer runs on the server whether or not a page listens, and it is saved whe
 turns that fit in 32K tokens.
 
 
+## Settings
+
+`GET /api/settings` returns what the Settings screen shows:
+
+```json
+{
+  "config": {"path": "/Users/me/mlx-media-workstation/config.toml", "exists": true, "error": null},
+  "paths": [
+    {
+      "key": "ltx_model",
+      "label": "LTX-2.5 weights",
+      "value": "~/mlx-media/models/ltx-2.5-mlx-q8",
+      "default": "~/mlx-media/models/ltx-2.5-mlx-q8",
+      "in_file": true,
+      "path": "/Users/me/mlx-media/models/ltx-2.5-mlx-q8",
+      "exists": true,
+      "active": "/Users/me/mlx-media/models/ltx-2.5-mlx-q8",
+      "used_by": {"models": ["LTX-2.5 (q8)"], "tools": ["Text to Video", "Image to Video"], "features": []}
+    }
+  ],
+  "assist": {
+    "provider": "local", "active": "local", "default": "local",
+    "providers": [{"id": "local", "label": "Local LLM", "description": "...", "available": true,
+                   "model": "Qwen3.8 27B (4-bit)", "llm": {}}]
+  },
+  "llm": {"idle_stop_s": 600.0},
+  "about": {"version": "0.1.0", "commit": "8172e42 2026-11-02", "root": "/Users/me/mlx-media-workstation",
+            "outputs": "/Users/me/mlx-media-workstation/outputs",
+            "readme": "/Users/me/mlx-media-workstation/README.md",
+            "repo_url": "https://github.com/0xbyt4/mlx-media-workstation"},
+  "restart_required": false
+}
+```
+
+- `paths` has one entry per `[paths]` key, in the order of `app/config.py`. `value` is the text in `config.toml`, or
+  the default when the file does not set it (`in_file` is then false). `path` is that value with "~" expanded (a
+  relative path counts from the app folder), and `exists` tells whether it is on disk. `active` is the path the
+  running app uses: it differs from `path` after a change until the app restarts.
+- `used_by` lists the entries of `GET /api/models`, the tools and the app features that need the path.
+- `config.error` is set when `config.toml` is not valid TOML; the values are then the defaults.
+- `about.commit` is `null` when git or the git checkout is not there.
+- `restart_required` is true when `config.toml` holds other values than the ones the app read at start.
+
+`PUT /api/settings` takes JSON with the values to change: `{"paths": {"ltx_model": "~/models/ltx"}, "assist":
+{"provider": "local"}}`. Both parts are optional. It writes `config.toml` and returns the same object as
+`GET /api/settings`, plus `changed` (for example `["paths.ltx_model"]`; empty when nothing changed).
+
+- Only the lines of the changed keys change. Comments, blank lines, other keys and other sections stay. A key that
+  is not in the file goes after the last key of its section; a missing section goes at the end; a missing file is
+  made.
+- The write is atomic (a temp file, then a rename) and keeps the file mode. A symbolic link stays a link.
+- The app reads `config.toml` only at start, so a change takes effect after a restart (`restart_required`).
+- Errors: HTTP 400 with `{"detail": {"message": "...", "fields": {"paths.ltx_model": "message"}}}` for an unknown
+  key, an unknown provider, an empty path, or a path with a double quote, a backslash or a line break. HTTP 409
+  when `config.toml` is not valid TOML or sets the key in a form this endpoint cannot edit (for example an inline
+  table); the file is then not changed.
+- Settings hold no secrets.
+
 ## UI behaviour
 
 - Left sidebar: the groups and their tools; a small system line at the bottom (free memory, queue).
