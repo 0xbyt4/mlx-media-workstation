@@ -35,9 +35,13 @@ def test_required_field_needs_text(value: str | None) -> None:
 
 
 @pytest.mark.parametrize("value", [None, ""])
-def test_empty_optional_field_takes_the_default(value: str | None) -> None:
+def test_empty_optional_number_takes_the_default(value: str | None) -> None:
     assert check_value(SEED, value) is None
-    assert check_value(NEGATIVE, value) is None
+
+
+def test_missing_text_field_takes_the_default_but_a_cleared_one_stays_empty() -> None:
+    assert check_value(NEGATIVE, None) is None
+    assert check_value(NEGATIVE, "") == ""
 
 
 def test_text_is_stored_as_given() -> None:
@@ -95,9 +99,6 @@ def test_number_with_only_a_minimum_accepts_large_values() -> None:
     assert check_value(END_AT, "600") == "600"
 
 
-@pytest.mark.xfail(
-    reason="check_value prints the missing bound as None: 'must be between 1.1 and None'",
-    strict=True,
-)
 def test_number_with_only_a_minimum_names_its_bound() -> None:
-    assert "None" not in refused(END_AT, "0.5")
+    message = refused(END_AT, "0.5")
+    assert "None" not in message and "at least" in message

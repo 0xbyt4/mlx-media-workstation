@@ -48,6 +48,9 @@ def test_load_jobs_cancels_unfinished_jobs(
         (state / job_id / "job.json").write_text(json.dumps(job))
     (state / "broken").mkdir()
     (state / "broken" / "job.json").write_text("{not json")
+    for name, text in (("empty", "{}"), ("list", "[]")):  # valid JSON, but not a job
+        (state / name).mkdir()
+        (state / name / "job.json").write_text(text)
     (state / "app.log").write_text("log")
 
     server.load_jobs()

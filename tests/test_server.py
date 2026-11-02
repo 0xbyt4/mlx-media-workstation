@@ -79,11 +79,6 @@ def test_create_job(client: TestClient, state: Path) -> None:
     )
 
 
-@pytest.mark.xfail(
-    reason="an emptied optional text field gets its default back: the page shows the "
-    "MOSS negative prompt or the Voice to Video wording cleared, but the job uses it",
-    strict=True,
-)
 @pytest.mark.parametrize(
     ("tool", "data", "name"),
     [

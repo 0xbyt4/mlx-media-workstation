@@ -124,6 +124,8 @@ def load_jobs() -> None:
             job = json.loads(meta.read_text())
         except (OSError, json.JSONDecodeError):
             continue
+        if not isinstance(job, dict) or not isinstance(job.get("id"), str):
+            continue  # not a job file this app wrote
         if job.get("status") in (
             "queued",
             "running",
@@ -296,7 +298,8 @@ def check_value(f: dict[str, Any], value: str | None) -> str | None:
     if value is None or value == "":
         if f.get("required"):
             raise HTTPException(400, f"{f['label']} is required")
-        return None
+        # a text field the user cleared stays empty; a missing one, or an empty number or choice, takes the default
+        return value if f["type"] in ("text", "textarea") else None
     if f.get("required") and not value.strip():
         raise HTTPException(400, f"{f['label']} is required")
     if f["type"] == "number":
@@ -307,9 +310,11 @@ def check_value(f: dict[str, Any], value: str | None) -> str | None:
         if not math.isfinite(x):
             raise HTTPException(400, f"{f['label']} must be a finite number")
         if ("min" in f and x < f["min"]) or ("max" in f and x > f["max"]):
-            raise HTTPException(
-                400, f"{f['label']} must be between {f.get('min')} and {f.get('max')}"
-            )
+            if "min" in f and "max" in f:
+                bound = f"between {f['min']} and {f['max']}"
+            else:
+                bound = f"at least {f['min']}" if "min" in f else f"at most {f['max']}"
+            raise HTTPException(400, f"{f['label']} must be {bound}")
         if f["name"] == "seed" and not 0 <= x < 2**32:
             raise HTTPException(400, "Seed must be between 0 and 4294967295")
     if f["type"] == "select" and value not in {o["value"] for o in f["options"]}:
