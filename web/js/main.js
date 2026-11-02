@@ -36,8 +36,8 @@ function subtitleOf(mod) {
 
 function show(route) {
   const mod = MODULES[route.view];
-  if (active && active.id === route.view && mod.update) {
-    mod.update(route.params);
+  if (active && active.id === route.view) {  // the same view stays mounted, so no draft or playback is lost
+    if (mod.update) mod.update(route.params);
     return;
   }
   if (active) {
@@ -218,6 +218,11 @@ function boot() {
   $('theme-btn').addEventListener('click', () => ui.setTheme(NEXT_THEME[ui.getTheme()]));
   $('run-pill').addEventListener('click', () => router.go('jobs'));
   $('nav').addEventListener('keydown', navKeys);
+  // the skip link moves focus only: changing the hash to #view would be read as a route
+  document.querySelector('.skip').addEventListener('click', (e) => {
+    e.preventDefault();
+    $('view').focus();
+  });
   guardNavigation();
 
   store.on('jobs', () => {

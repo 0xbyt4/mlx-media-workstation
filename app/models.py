@@ -395,7 +395,7 @@ def explain(e: BaseException, m: Model) -> str:
     ):
         return (
             f"Hugging Face refused {m.repo}: the model is gated or you are not logged in. Accept its licence on "
-            f"https://huggingface.co/{m.repo}, run `hf auth login` in a terminal, then try again."
+            f"https://huggingface.co/{m.repo}, run `.venv/bin/hf auth login` in a terminal in the app folder, then try again."
         )
     if isinstance(e, OSError) and e.errno == errno.ENOSPC:
         return f"The disk is full. {m.label} needs about {m.size_gb} GB; free some space and try again."

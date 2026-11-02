@@ -414,7 +414,7 @@ function downloadBlock(m, dl, live) {
       text: dl.error || 'No reason was given.',
       fixes: refused ? [
         h('span', null, 'Open ', extLink(hfPage(m), 'the model page'), ' and accept its licence.'),
-        h('span', null, 'In Terminal, run ', h('code', null, 'hf auth login'), ' once.'),
+        h('span', null, 'In Terminal, in the app folder, run ', h('code', null, '.venv/bin/hf auth login'), ' once.'),
         again,
       ] : [again],
     }));
@@ -445,7 +445,7 @@ function gate(m, blocked) {
     h('ol', {class: 'gate-steps'},
       h('li', null, 'Open ', extLink(hfPage(m), 'huggingface.co/' + m.repo), ', log in there, and accept the ',
         m.licence || 'licence', '.'),
-      h('li', null, 'In Terminal, log in once on this Mac:', commandBlock('hf auth login', 'Copy the login command')),
+      h('li', null, 'In Terminal, in the app folder, log in once on this Mac:', commandBlock('.venv/bin/hf auth login', 'Copy the login command')),
       h('li', null, 'Tick the box below and download. The download uses that login.')),
     h('p', {class: 'help'}, 'Workstation never asks for your Hugging Face token and never stores it.'),
     h('label', {class: 'gate-check', for: boxId}, box, 'I accepted the licence on Hugging Face'),
@@ -559,7 +559,7 @@ async function recheck(m) {
   await view.ctx.store.refresh('models');
   if (s !== view) return;
   const now = data() && data().models.find((x) => x.id === m.id);
-  toast(now && now.installed ? m.label + ' is installed.' : m.label + ' is still not found at ' + m.path + '.', {kind: now && now.installed ? null : 'err'});
+  toast(now && now.installed ? m.label + ' is installed.' : m.label + ' is still not found at ' + m.path + '. A path changed in Settings counts after a restart.', {kind: now && now.installed ? null : 'err'});
 }
 
 // A toast when a download ends while this view is open.

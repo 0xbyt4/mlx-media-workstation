@@ -70,7 +70,7 @@ started from a terminal, it writes the log there.
 
 These steps put everything under `~/mlx-media`, the default in `config.example.toml`. The versions are the ones we
 tested; newer versions can change command-line options. Some weights are gated on Hugging Face: accept the licence on
-the model page first, then log in with `hf auth login`.
+the model page first, then log in from the app folder with `.venv/bin/hf auth login`.
 
 Read each model's licence before you use its output (see [Model licences](#model-licences)).
 

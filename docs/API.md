@@ -119,7 +119,8 @@ list and deletes its folder.
 
 `POST /api/library/reveal` takes JSON `{"job": "<job id>", "name": "<file name>"}` and shows the file in Finder
 (`open -R`). It returns `{"status": "shown"}`. The file must be a listed output of that job: HTTP 404 for any other
-name, a symbolic link or an unknown job, and HTTP 400 for an input file.
+name, a symbolic link or an unknown job, HTTP 400 for an input file, and HTTP 409 while the job is queued or
+running.
 
 `DELETE /api/library/{job}/{name}` deletes one output file and removes it from the job's `outputs`. It returns
 `{"status": "deleted"}`. HTTP 400 for an input file, HTTP 409 while the job is queued or running, HTTP 404 for any
@@ -306,10 +307,18 @@ turns that fit in 32K tokens.
 
 ## UI behaviour
 
-- Left sidebar: the groups and their tools; a small system line at the bottom (free memory, queue).
-- Right side: the selected tool's form and a Generate button; below it the job list (queue and results).
-- Poll `/api/jobs` every 2 s while a job is queued or running, every 10 s otherwise; poll `/api/system` every 5 s.
-- Results: images as thumbnails (click to enlarge), audio with `<audio controls>`, video with `<video controls>`.
-  Each result shows its tool, status, elapsed time, peak memory, its parameters (collapsed) and notes.
-- "Use these settings" on a result fills the form with its `params` (not files).
-- Dark, calm theme; readable on a laptop screen. No external fonts or scripts.
+The page is split into ES modules; web/README.md describes the files, the view contract and the handoff between
+views.
+
+- Sidebar: six sections (Create, Jobs, Chat, Library, Models, Settings, also Cmd-1 to Cmd-6), a dock with the running
+  job's stage and time left, and a memory meter (job, local LLM, other apps, swap). Narrow windows get a top tab bar.
+- Create: the tool picker with time, peak memory and fit; the selected tool's form with prompt help ("Improve", with
+  Undo and Redo); an "On this Mac" card with peak memory, time and queue wait; Generate ("Add to queue" while a job
+  runs).
+- Jobs: the running job with progress, the queue with start estimates, and finished jobs with their media, settings,
+  "Use these settings", "Send to" (an output into another tool's file field), download and delete.
+- Chat, Library, Models and Settings use the endpoints of their sections above.
+- Polling: `/api/jobs` every 2 s while a job is queued or running, else 10 s; `/api/system` and `/api/llm` every 5 s;
+  `/api/models` every 60 s (2 s during a download); `/api/assist` every 60 s; `/api/chats` every 30 s (3 s while an
+  answer runs).
+- Theme: System, Light or Dark, saved in the browser. No external fonts or scripts.

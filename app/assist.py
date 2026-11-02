@@ -148,7 +148,12 @@ def local(
 
 def local_status() -> dict[str, Any]:
     s = llm.status()
-    return {"available": s["installed"], "model": s["model"], "llm": s}
+    # on a Mac with too little memory the model never loads, so the Improve buttons stay hidden
+    return {
+        "available": s["installed"] and llm.fits_with(0.0),
+        "model": s["model"],
+        "llm": s,
+    }
 
 
 PROVIDERS: dict[str, tuple[Provider, Callable[[], dict[str, Any]]]] = {

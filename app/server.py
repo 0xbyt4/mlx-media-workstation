@@ -83,7 +83,7 @@ claiming: set[str] = set()  # the queued job whose memory claim waits for LLM an
 
 @app.middleware("http")
 async def same_origin_writes(request: Request, call_next):
-    """Changes (POST, DELETE) only from this app's own page, and no oversized bodies."""
+    """Changes (every method but GET and HEAD) only from this app's own page, and no oversized bodies."""
     if request.method not in ("GET", "HEAD"):
         origin = request.headers.get("origin")
         if origin is not None and origin not in ORIGINS:
@@ -135,8 +135,8 @@ def load_jobs() -> None:
             job = json.loads(meta.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        if not isinstance(job, dict) or not isinstance(job.get("id"), str):
-            continue  # not a job file this app wrote
+        if not isinstance(job, dict) or job.get("id") != meta.parent.name:
+            continue  # not a job file this app wrote (the id names the folder that delete removes)
         if job.get("status") in (
             "queued",
             "running",

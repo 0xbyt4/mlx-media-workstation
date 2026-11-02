@@ -451,7 +451,7 @@ def test_refusals(paths):
 def test_gated_or_logged_out_message(error):
     msg = models.explain(error, LTX)
     assert "Accept its licence on https://huggingface.co/dgrauet/ltx-2.5-mlx-q8" in msg
-    assert "`hf auth login`" in msg
+    assert "`.venv/bin/hf auth login`" in msg
 
 
 def test_other_error_messages():

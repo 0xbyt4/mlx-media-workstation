@@ -16,7 +16,7 @@ const KIND_ICON = {image: 'image', audio: 'voice', video: 'video'};
 
 // Kept across mounts: details the user opened or closed, and queued jobs waiting for their Undo to expire.
 const openDetails = new Set();
-const removing = new Map();
+const removing = new Set();  // job ids being removed, hidden until the next refresh
 
 let s = null;
 
@@ -323,7 +323,8 @@ function updateWhen(run, queued) {
     const card = s.cards.get(j.id);
     const t = store.toolTime(j.tool);
     let text;
-    if (acc === null) text = run ? 'after ' + (run.tool_label || run.tool) : 'waiting';
+    if (j.waiting) text = j.waiting;  // first in line, held by prompt help or chat answers
+    else if (acc === null) text = run ? 'after ' + (run.tool_label || run.tool) : 'waiting';
     else text = acc < 30 ? 'starts next' : 'starts in ' + fmtAbout(acc);
     if (t) text += ' · takes ' + fmtAbout(t.seconds);
     if (card) card.refs.when.textContent = text;
@@ -331,29 +332,19 @@ function updateWhen(run, queued) {
   }
 }
 
-// Removal waits for the Undo toast to expire, then cancels the job on the server.
-function removeQueued(job) {
+// Removal cancels the job on the server at once: the worker may pick it up within seconds, so there is no Undo.
+async function removeQueued(job) {
   const label = job.tool_label || job.tool;
   const ctx = s.ctx;
-  removing.set(job.id, setTimeout(() => cancelWith(ctx, job, label), 8000));
+  removing.add(job.id);
   render();
-  toast(label + ' was removed from the queue.', {
-    timeout: 8000,
-    action: {label: 'Undo', run: () => {
-      clearTimeout(removing.get(job.id));
-      removing.delete(job.id);
-      render();
-    }},
-  });
-}
-
-async function cancelWith(ctx, job, label) {
-  removing.delete(job.id);
   try {
     await ctx.api.cancelJob(job.id);
+    toast(label + ' was removed from the queue.');
   } catch (e) {
     toast('Could not remove ' + label + ': ' + e.message, {kind: 'err'});
   }
+  removing.delete(job.id);
   store.refresh('jobs');
 }
 

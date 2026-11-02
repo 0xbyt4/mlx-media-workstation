@@ -485,3 +485,9 @@ def test_job_shows_why_it_waits(monkeypatch):
     monkeypatch.setattr(server, "claiming", {"j1"})
     assert "chat answer" in server.view(jobs["j1"])["waiting"]
     assert "waiting" not in server.view(jobs["j2"])
+
+
+def test_prompt_help_is_off_where_the_model_cannot_run(monkeypatch):
+    assert assist.status()["available"] is True
+    monkeypatch.setattr(models, "mem_total_gb", lambda: 24.0)  # 18 + 8 reserve > 24
+    assert assist.status()["available"] is False
