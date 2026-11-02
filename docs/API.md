@@ -1,7 +1,7 @@
 # API (contract between the server and the web UI)
 
 The server (`app/server.py`, FastAPI) listens on `http://127.0.0.1:7870` only. The UI is static files in `web/`
-(`index.html`, `app.js`, `style.css`), served at `/`. Plain HTML, CSS and JavaScript: no framework, no build step,
+(`index.html`, `css/`, `js/`; see `web/README.md`), served at `/`. Plain HTML, CSS and JavaScript: no framework, no build step,
 no CDN or other network request. All JSON is UTF-8.
 
 ## Tools

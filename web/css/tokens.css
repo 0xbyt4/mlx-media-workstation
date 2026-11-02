@@ -1,0 +1,151 @@
+/* Design tokens (docs/DESIGN.md section 1). Light values on :root; dark values for the System theme under
+   prefers-color-scheme, and again under [data-theme="dark"] for the explicit Dark theme. */
+:root {
+  color-scheme: light;
+  /* neutrals: cool graphite with a slight blue bias */
+  --bg: #f3f4f7;
+  --bg-sidebar: #e9ebf0;
+  --surface: #ffffff;
+  --surface-2: #f7f8fa;
+  --sunken: #eceef3;
+  --input: #ffffff;
+  --border: #d9dde5;
+  --border-strong: #c0c6d1;
+  --text: #191d25;
+  --text-2: #475061;
+  --text-3: #626b7c;
+  /* action accent */
+  --accent: #2f58cf;
+  --accent-hover: #2549b0;
+  --accent-soft: #e5ebfb;
+  --on-accent: #ffffff;
+  /* semantic */
+  --ok: #1d7444;
+  --ok-soft: #e1f2e8;
+  --warn: #8f5500;
+  --warn-soft: #fbefd9;
+  --err: #b9322a;
+  --err-soft: #fbe7e5;
+  /* media types */
+  --c-image: #a85c17;
+  --c-image-soft: #f8ebdd;
+  --c-voice: #ad3765;
+  --c-voice-soft: #f8e4ec;
+  --c-music: #6546c2;
+  --c-music-soft: #ece7fa;
+  --c-video: #0b7a80;
+  --c-video-soft: #dcf1f1;
+  --c-edit: #535c6c;
+  --c-edit-soft: #e8eaee;
+  --shadow-sm: 0 1px 2px rgba(22, 27, 38, 0.06);
+  --shadow-md: 0 1px 2px rgba(22, 27, 38, 0.06), 0 8px 24px rgba(22, 27, 38, 0.08);
+  --shadow-lg: 0 12px 40px rgba(22, 27, 38, 0.18);
+  --scrim: rgba(18, 22, 30, 0.38);
+
+  /* type */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 15px;
+  --fs-lg: 18px;
+  --fs-xl: 22px;
+
+  /* spacing (4 px grid) */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 20px;
+  --s6: 24px;
+  --s8: 32px;
+  /* radii */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-pill: 999px;
+  --sidebar-w: 228px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #15171c;
+    --bg-sidebar: #111317;
+    --surface: #1c1f26;
+    --surface-2: #20242c;
+    --sunken: #121419;
+    --input: #15181d;
+    --border: #2c313b;
+    --border-strong: #3d4450;
+    --text: #e8eaef;
+    --text-2: #b0b7c4;
+    --text-3: #8d95a4;
+    --accent: #86a5ff;
+    --accent-hover: #a2baff;
+    --accent-soft: rgba(134, 165, 255, 0.15);
+    --on-accent: #0c1430;
+    --ok: #63c28f;
+    --ok-soft: rgba(99, 194, 143, 0.14);
+    --warn: #e4b250;
+    --warn-soft: rgba(228, 178, 80, 0.14);
+    --err: #f2867f;
+    --err-soft: rgba(242, 134, 127, 0.13);
+    --c-image: #e7a160;
+    --c-image-soft: rgba(231, 161, 96, 0.14);
+    --c-voice: #ef86ab;
+    --c-voice-soft: rgba(239, 134, 171, 0.14);
+    --c-music: #ab92f2;
+    --c-music-soft: rgba(171, 146, 242, 0.15);
+    --c-video: #52c6cc;
+    --c-video-soft: rgba(82, 198, 204, 0.14);
+    --c-edit: #a3abb9;
+    --c-edit-soft: rgba(163, 171, 185, 0.14);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
+    --scrim: rgba(0, 0, 0, 0.55);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #15171c;
+  --bg-sidebar: #111317;
+  --surface: #1c1f26;
+  --surface-2: #20242c;
+  --sunken: #121419;
+  --input: #15181d;
+  --border: #2c313b;
+  --border-strong: #3d4450;
+  --text: #e8eaef;
+  --text-2: #b0b7c4;
+  --text-3: #8d95a4;
+  --accent: #86a5ff;
+  --accent-hover: #a2baff;
+  --accent-soft: rgba(134, 165, 255, 0.15);
+  --on-accent: #0c1430;
+  --ok: #63c28f;
+  --ok-soft: rgba(99, 194, 143, 0.14);
+  --warn: #e4b250;
+  --warn-soft: rgba(228, 178, 80, 0.14);
+  --err: #f2867f;
+  --err-soft: rgba(242, 134, 127, 0.13);
+  --c-image: #e7a160;
+  --c-image-soft: rgba(231, 161, 96, 0.14);
+  --c-voice: #ef86ab;
+  --c-voice-soft: rgba(239, 134, 171, 0.14);
+  --c-music: #ab92f2;
+  --c-music-soft: rgba(171, 146, 242, 0.15);
+  --c-video: #52c6cc;
+  --c-video-soft: rgba(82, 198, 204, 0.14);
+  --c-edit: #a3abb9;
+  --c-edit-soft: rgba(163, 171, 185, 0.14);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
+  --scrim: rgba(0, 0, 0, 0.55);
+}
