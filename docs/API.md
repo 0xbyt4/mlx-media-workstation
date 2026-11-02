@@ -82,6 +82,49 @@ list and deletes its folder.
 
 `GET /files/{id}/{name}` serves an output file.
 
+## Library
+
+`GET /api/library` returns every output of the finished (`done`) jobs, newest job first:
+
+```json
+[
+  {
+    "job": "20261023-231500-ab12",
+    "tool": "video.t2v",
+    "tool_label": "Text to Video",
+    "kind": "image | audio | video",
+    "name": "video.mp4",
+    "url": "/files/20261023-231500-ab12/video.mp4",
+    "note": "",
+    "size": 4194304,
+    "created": "2026-10-23T23:15:00",
+    "finished": "2026-10-23T23:19:40",
+    "elapsed": 278.4,
+    "peak_gb": 31.2,
+    "text": "the job's prompt, script or description",
+    "params": {"prompt": "...", "size": "704x1280"},
+    "path": "/Users/me/mlx-media-workstation/outputs/20261023-231500-ab12/video.mp4",
+    "width": 704,
+    "height": 1280,
+    "duration": 5.04
+  }
+]
+```
+
+- The list holds only the files in a job's `outputs`, never its inputs (`in_*` files). A file that was removed outside
+  the app, or that is a symbolic link, is left out.
+- `size` is in bytes. `text` is the first non-empty one of the `prompt`, `text` and `caption` params, else `""`.
+- `width` and `height` are set for images and videos, `duration` (seconds) for audio and videos; each is `null` when
+  ffprobe does not report it. The server probes each file once and keeps the result in memory until the file changes.
+
+`POST /api/library/reveal` takes JSON `{"job": "<job id>", "name": "<file name>"}` and shows the file in Finder
+(`open -R`). It returns `{"status": "shown"}`. The file must be a listed output of that job: HTTP 404 for any other
+name, a symbolic link or an unknown job, and HTTP 400 for an input file.
+
+`DELETE /api/library/{job}/{name}` deletes one output file and removes it from the job's `outputs`. It returns
+`{"status": "deleted"}`. HTTP 400 for an input file, HTTP 409 while the job is queued or running, HTTP 404 for any
+other name. The job stays in the job list, also when it has no outputs left.
+
 ## System
 
 `GET /api/system` returns `{"mem_total_gb": 48.0, "mem_free_gb": 37.5, "swap_used_gb": 2.8, "running": "job id or null", "queued": 1}`.

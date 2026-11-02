@@ -1,1 +1,356 @@
 /* Library view (owned by js/views/library.js). Scope every rule under .v-library. */
+
+.v-library .lib {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+/* ---------- search and filters ---------- */
+.v-library .lib-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.v-library .lib-search {
+  position: relative;
+  flex: 1 1 240px;
+  max-width: 380px;
+}
+.v-library .lib-search .ic {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  pointer-events: none;
+}
+.v-library .lib-search .input {
+  padding-left: 32px;
+}
+.v-library .lib-tools .select {
+  width: auto;
+  min-width: 150px;
+}
+.v-library .lib-count {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  margin-left: auto;
+}
+.v-library .lib-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 36px 0;
+  justify-content: center;
+  color: var(--text-2);
+}
+
+/* ---------- grid ---------- */
+.v-library .lib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 16px;
+}
+.v-library .lib-card {
+  position: relative;
+  min-width: 0;
+}
+.v-library .lib-open {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  border-radius: var(--r-md);
+  color: inherit;
+}
+.v-library .thumb {
+  position: relative;
+  display: block;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  aspect-ratio: 4 / 5;
+  background: var(--sunken);
+  border: 1px solid var(--border);
+}
+.v-library .lib-open:hover .thumb {
+  box-shadow: var(--shadow-md);
+}
+.v-library .lib-open:focus-visible {
+  outline: none;
+}
+.v-library .lib-open:focus-visible .thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.v-library .thumb img,
+.v-library .thumb video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.v-library .thumb video {
+  background: #0b0c10; /* media placeholder: the frame before the poster loads */
+}
+.v-library .lib-ph {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+}
+.v-library .kind-tag,
+.v-library .lib-dur {
+  position: absolute;
+  z-index: 1;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 600;
+  /* media overlay: the same on light and dark media, like the lightbox */
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+.v-library .kind-tag {
+  left: 6px;
+  top: 6px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.v-library .lib-dur {
+  right: 6px;
+  bottom: 6px;
+}
+
+/* audio cards: a tinted stand-in waveform and a play button */
+.v-library .audio-thumb {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: center;
+  gap: 10px;
+  padding: 14px;
+  background: var(--c-edit-soft);
+  color: var(--c-edit);
+}
+.v-library .audio-thumb.a-voice {
+  background: var(--c-voice-soft);
+  color: var(--c-voice);
+}
+.v-library .audio-thumb.a-music {
+  background: var(--c-music-soft);
+  color: var(--c-music);
+}
+.v-library .audio-thumb > .ic {
+  width: 22px;
+  height: 22px;
+}
+.v-library .wave {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 46px;
+}
+.v-library .wave i {
+  flex: 1;
+  min-width: 1px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.7;
+}
+.v-library .lib-prog {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: transparent;
+}
+.v-library .lib-prog i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+}
+.v-library .lib-play {
+  position: absolute;
+  z-index: 2;
+  right: 8px;
+  top: 8px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+.v-library .lib-play:hover {
+  color: var(--accent);
+  box-shadow: var(--shadow-md);
+}
+.v-library .lib-card.playing .lib-play {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.v-library .lib-card.playing .wave i {
+  opacity: 1;
+}
+
+.v-library .lib-meta {
+  display: grid;
+  gap: 2px;
+  padding: 0 2px;
+  min-width: 0;
+}
+.v-library .lib-meta b {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+.v-library .lib-text {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.v-library .lib-meta small {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- detail drawer ---------- */
+.v-library .lib-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: var(--scrim);
+}
+.v-library .lib-drawer {
+  position: fixed;
+  z-index: 31;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(460px, 100%);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+.v-library .lib-drawer:focus {
+  outline: none;
+}
+.v-library .lib-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.v-library .lib-drawer-head h2 {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.v-library .lib-drawer-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-content: start;
+}
+.v-library .lib-preview {
+  justify-self: center;
+  width: 100%;
+}
+.v-library .lib-preview.k-image,
+.v-library .lib-preview.k-video {
+  max-width: 340px;
+}
+.v-library .lib-preview .media-cap {
+  display: none; /* the drawer title names the file */
+}
+.v-library .lib-preview .media-img img,
+.v-library .lib-preview video {
+  max-height: 52vh;
+}
+.v-library .lib-actions {
+  display: grid;
+  gap: 8px;
+}
+.v-library .lib-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.v-library .lib-row .spacer {
+  flex: 1;
+}
+.v-library .lib-prompt-wrap,
+.v-library .lib-file {
+  display: grid;
+  gap: 6px;
+}
+.v-library .lib-prompt {
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 40vh;
+  overflow: auto;
+}
+.v-library .lib-path {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+@media (max-width: 720px) {
+  .v-library .lib-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+  }
+  .v-library .lib-search {
+    flex-basis: 100%;
+    max-width: none;
+  }
+  .v-library .lib-tools .select {
+    min-width: 0;
+    flex: 1 1 130px;
+  }
+  .v-library .lib-count {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+}
