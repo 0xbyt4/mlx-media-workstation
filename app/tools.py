@@ -55,8 +55,8 @@ IMAGE_SIZES = [
     ("1344x768", "16:9 (1344x768)"),
 ]
 VIDEO_SIZES = [
-    ("576x1024", "9:16 (576x1024)"),
-    ("704x1280", "9:16 sharper (704x1280), about 2x slower"),
+    ("704x1280", "9:16 (704x1280), sharper faces"),
+    ("576x1024", "9:16 fast (576x1024), about 2x faster, softer faces"),
     ("1024x576", "16:9 (1024x576)"),
     ("768x768", "1:1 (768x768)"),
 ]
@@ -335,7 +335,7 @@ TOOLS: list[dict[str, Any]] = [
         "id": "video.t2v",
         "group": "Video",
         "label": "Text to Video",
-        "description": "LTX-2.5 from a prompt, with sound. About 1.5-4 min for 5 s at 576x1024.",
+        "description": "LTX-2.5 from a prompt, with sound. About 3 min for 5 s at 704x1280, 2 min at 576x1024.",
         "fields": [
             field(
                 "prompt",
@@ -347,13 +347,21 @@ TOOLS: list[dict[str, Any]] = [
                 "and every sound; dialogue in quotes.",
             ),
             field(
-                "size", "Size", "select", default="576x1024", options=opts(VIDEO_SIZES)
+                "size", "Size", "select", default="704x1280", options=opts(VIDEO_SIZES)
             ),
             field(
                 "seconds", "Length (s)", "number", default=5, min=1, max=10, step=0.5
             ),
             field("audio", "Generate sound", "checkbox", default=True),
             SEED,
+            field(
+                "hq_decoder",
+                "Final-quality decoder",
+                "checkbox",
+                default=False,
+                advanced=True,
+                help="LTX-2.5's diffusion decoder: slightly cleaner skin and faces, about 2.5x slower in total.",
+            ),
         ],
     },
     {
@@ -372,13 +380,21 @@ TOOLS: list[dict[str, Any]] = [
             ),
             field("prompt", "Prompt", "textarea", default="", required=True),
             field(
-                "size", "Size", "select", default="576x1024", options=opts(VIDEO_SIZES)
+                "size", "Size", "select", default="704x1280", options=opts(VIDEO_SIZES)
             ),
             field(
                 "seconds", "Length (s)", "number", default=5, min=1, max=10, step=0.5
             ),
             field("audio", "Generate sound", "checkbox", default=True),
             SEED,
+            field(
+                "hq_decoder",
+                "Final-quality decoder",
+                "checkbox",
+                default=False,
+                advanced=True,
+                help="LTX-2.5's diffusion decoder: slightly cleaner skin and faces, about 2.5x slower in total.",
+            ),
         ],
     },
     {
@@ -924,6 +940,8 @@ def plan(
         ]
         if str(params.get("audio", "true")).lower() != "true":
             cmd.append("--no-audio")
+        if str(params.get("hq_decoder", "false")).lower() == "true":
+            cmd += ["--video-decoder", "diffusion"]
         if tool == "video.i2v":
             img = files.get("image", [None])[0]
             if img is None:

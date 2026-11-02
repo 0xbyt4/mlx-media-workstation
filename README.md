@@ -17,7 +17,7 @@ path; the other tools keep working.
 | Image | Klein Edit | FLUX.3 Klein with 1-10 reference images | about 1-4 min |
 | Voice | Fish Drama 3 | Fish Audio Drama 3 (mlx-audio, 4-bit); Qwen3-ASR checks each take | about 2x real time; 30-39 GB |
 | Music | ACE-Step 1.5 | ACE-Step 1.5 turbo (MLX DiT and LM) | two 20 s takes in about 30 s; about 23 GB |
-| Video | Text to Video | LTX-2.5 distilled (ltx-2-mlx, q8), with sound | 5 s at 576x1024 in about 2 min; 25-29 GB |
+| Video | Text to Video | LTX-2.5 distilled (ltx-2-mlx, q8), with sound | 5 s at 704x1280 in about 3 min, at 576x1024 in about 2 min; 25-29 GB |
 | Video | Image to Video | LTX-2.5 from a start image | 4 s in about 2 min |
 | Video | Voice to Video | LTX-2.5 audio-to-video: a person from an image speaks the audio | 7 s in about 3.5 min; about 28 GB |
 | Video | Extend Video | LTX-2.5 extend: continues a clip from its last second | 5 s more in about 2.5 min; 29-35 GB |

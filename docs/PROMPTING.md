@@ -55,7 +55,14 @@ Don't:
   the model cut or fade. [O][T]
 - Voice to video (a2v): one speaker per clip, clean vocals, front-facing sharp image framed like the final shot, the
   exact transcript in quotes; faces should be at least 150-200 px wide (waist-up), or eyes blur. Try 2-3 seeds. [O][C][T]
-- Render a little longer and trim the end (the last second can flash or blur). [C]
+- Faces need pixels. `--distilled` makes the motion and the rough face at half size (288x512 for a 576x1024 clip) and
+  only refines it at full size, so a face of 50-80 px in a full-body shot gets soft, uneven eyes and drifts. When the
+  face matters, frame a medium shot or closer, or render full-body shots at 704x1280. [V][T]
+- 704x1280 against 576x1024 (same prompt and seed, full-body dancer, 5 s): clearly sharper, steadier eyes, 1.8x the
+  time (189 s against 106 s), 26.9 GB peak against 25.3 GB, no swap. The diffusion decoder (`--video-decoder
+  diffusion`) gave only slightly cleaner skin for 2.5x the time. [T]
+- Render a little longer and trim the end (the last second can flash or blur; in our test the face softened in the
+  last 0.2 s). [C][T]
 - Extend: the model picks up the clip's last second of picture and sound. Repeat the person, outfit and place words
   of the first clip; describe only what happens next. Don't ask for an end framing that fills the frame: it caused a
   push-in despite "no zoom". To carry a voice, cut the clip just after the line; a silent last second loses it. [T]
