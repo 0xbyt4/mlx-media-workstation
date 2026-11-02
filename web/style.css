@@ -397,6 +397,9 @@ input[type="file"]::file-selector-button {
 
 .job-actions { margin-left: auto; display: flex; gap: 6px; }
 
+.job-bar { height: 3px; border-radius: 2px; background: var(--panel-2); overflow: hidden; }
+.job-bar-fill { height: 100%; width: 0; background: var(--running); transition: width 0.6s ease; }
+
 .badge {
   padding: 2px 8px;
   border-radius: 999px;

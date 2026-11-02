@@ -53,6 +53,7 @@ checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Erro
     "started": "2026-10-23T23:15:02",
     "finished": null,
     "elapsed": 42.5,
+    "progress": {"stage": "Stage 2: 1/3", "fraction": 0.52, "eta_s": 95},
     "position": 0,
     "params": {"prompt": "...", "size": "768x1344"},
     "outputs": [
@@ -67,6 +68,10 @@ checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Erro
 ```
 
 - `position` is the place in the queue for queued jobs (1 = next), 0 otherwise.
+- `progress` is set only while a job runs, otherwise `null`. It comes from the model's own output (app/progress.py).
+  `stage` is a short label, `fraction` is the share of the whole job done (0-1), and `eta_s` is the seconds left.
+  `eta_s` blends the live rate with the median time of finished jobs with the same settings. Each field is `null`
+  until the output shows it, and `eta_s` is `null` when the job has run past every estimate.
 - Only one job runs at a time (each model needs most of the memory of a 32-48 GB Mac).
 
 `POST /api/jobs/{id}/cancel` cancels a queued or running job. `DELETE /api/jobs/{id}` removes a finished job from the

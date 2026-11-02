@@ -108,6 +108,11 @@ function fmtDuration(sec) {
   return Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm';
 }
 
+function fmtLeft(sec) {
+  if (typeof sec !== 'number') return '';
+  return sec < 60 ? 'under 1 min left' : 'about ' + Math.round(sec / 60) + ' min left';
+}
+
 function fmtTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -687,6 +692,8 @@ function buildCard(job, sig) {
   const refs = card.refs;
   refs.elapsed = h('span', {class: 'meta-elapsed'});
   refs.peak = h('span', {class: 'meta-peak'});
+  refs.progress = h('span', {class: 'meta-progress'});
+  refs.bar = status === 'running' ? h('div', {class: 'job-bar', hidden: true}, h('div', {class: 'job-bar-fill'})) : null;
   refs.log = h('pre', {class: 'log'});
 
   const actions = h('div', {class: 'job-actions'});
@@ -715,8 +722,10 @@ function buildCard(job, sig) {
       h('span', {class: 'job-meta'},
         h('span', {title: job.created || ''}, fmtTime(job.created)),
         refs.elapsed,
+        refs.progress,
         refs.peak),
       actions),
+    refs.bar,
     prompt ? h('p', {class: 'job-prompt', title: prompt}, prompt) : null,
     outputs.length ? h('div', {class: 'outputs'}, outputs) : null,
     job.error ? h('div', {class: 'job-error'}, job.error) : null,
@@ -772,6 +781,12 @@ function updateCard(card, job) {
   const el = liveElapsed(job);
   card.refs.elapsed.textContent = job.status === 'running' || el > 0 ? fmtDuration(el) : '';
   card.refs.peak.textContent = typeof job.peak_gb === 'number' ? 'peak ' + fmtGb(job.peak_gb) : '';
+  const p = job.progress;
+  card.refs.progress.textContent = p ? [p.stage, fmtLeft(p.eta_s)].filter(Boolean).join(' · ') : '';
+  if (card.refs.bar) {
+    card.refs.bar.hidden = !p || typeof p.fraction !== 'number';
+    if (!card.refs.bar.hidden) card.refs.bar.firstChild.style.width = (p.fraction * 100).toFixed(1) + '%';
+  }
   const log = job.log_tail || '';
   if (card.refs.log.textContent !== log) {
     const pre = card.refs.log;

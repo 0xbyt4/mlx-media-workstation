@@ -1,0 +1,7 @@
+$ /opt/mlx-media/mflux/.venv/bin/mflux-generate-flux3 -q 8 --width 768 --height 1344 --steps 16 --prompt=A quiet street at dawn, a cyclist passes, birds sing. --seed 7 --output /opt/workstation/outputs/job/image.png
+  0%|          | 0/16 [00:00<?, ?it/s]  6%|▋         | 1/16 [00:03<00:53,  3.56s/it] 12%|█▎        | 2/16 [00:05<00:37,  2.70s/it] 19%|█▉        | 3/16 [00:07<00:31,  2.43s/it] 25%|██▌       | 4/16 [00:09<00:27,  2.29s/it] 31%|███▏      | 5/16 [00:11<00:24,  2.22s/it] 38%|███▊      | 6/16 [00:14<00:21,  2.18s/it] 44%|████▍     | 7/16 [00:16<00:19,  2.15s/it] 50%|█████     | 8/16 [00:18<00:17,  2.14s/it] 56%|█████▋    | 9/16 [00:20<00:14,  2.12s/it] 62%|██████▎   | 10/16 [00:22<00:12,  2.12s/it] 69%|██████▉   | 11/16 [00:24<00:10,  2.11s/it] 75%|███████▌  | 12/16 [00:26<00:08,  2.11s/it] 81%|████████▏ | 13/16 [00:28<00:06,  2.12s/it] 88%|████████▊ | 14/16 [00:30<00:04,  2.13s/it] 94%|█████████▍| 15/16 [00:33<00:02,  2.14s/it]100%|██████████| 16/16 [00:35<00:00,  2.16s/it]100%|██████████| 16/16 [00:35<00:00,  2.21s/it]
+INFO: Image saved successfully at: /opt/workstation/outputs/job/image.png
+INFO: Metadata embedded successfully at: /opt/workstation/outputs/job/image.png
+Peak MLX memory: 6.61 GB
+       41.11 real         2.59 user         3.88 sys
+         12090315600  peak memory footprint
