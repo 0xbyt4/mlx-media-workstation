@@ -154,7 +154,10 @@ export const api = {
 
   // prompt help
   assist: () => request('/api/assist'),
+  // formData carries request_id; cancelEnhance(request_id) stops that request (it then fails with HTTP 409).
   enhance: (formData, opts) => post('/api/assist/enhance', formData, opts),
+  cancelEnhance: (requestId) => post('/api/assist/cancel', JSON.stringify({request_id: requestId}),
+    {headers: {'Content-Type': 'application/json'}}),
 
   // local LLM and chat
   llm: () => request('/api/llm'),

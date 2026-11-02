@@ -4,12 +4,17 @@ The default provider is the local LLM (app/llm.py): nothing leaves the Mac. A pr
 tool, the field, the form values and the input images (label, JPEG path) and returns the new text, notes and the model
 name; PROVIDERS maps the names that config.toml's [assist] provider may use. Video inputs go as the frame where the
 clip ends; audio is never sent.
+
+A request can be cancelled while it waits for memory, loads the model or runs: the server tracks it under the
+client's request id (track), and cancel stops it, also when the cancel comes before the LLM request has started.
 """
 
 import json
 import subprocess
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -47,14 +52,79 @@ image already shows. For extend, the image is the frame where the clip ends and 
 {guide}
 </prompting_guide>"""
 
+CANCELLED = "Cancelled."
+
+# tool, field, form values, images, and on_start: called with the LLM request id when the request starts
 Provider = Callable[
-    [dict[str, Any], dict[str, Any], dict[str, str], list[tuple[str, Path]]],
+    [
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, str],
+        list[tuple[str, Path]],
+        Callable[[str], None],
+    ],
     dict[str, Any],
 ]
 
 
 class AssistError(Exception):
     """A failure the user can act on; the message is shown in the app."""
+
+
+class Cancelled(Exception):
+    """The client cancelled the request, or went away."""
+
+
+class Running:
+    """One prompt-help request: its LLM request id once started, and whether it was cancelled."""
+
+    def __init__(self) -> None:
+        self.rid: str | None = None
+        self.cancelled = False
+
+    def started(self, rid: str) -> None:
+        with lock:
+            self.rid = rid
+            cancel_now = self.cancelled
+        if cancel_now:  # the cancel came first: it is not lost
+            llm.cancel(rid)
+
+    def cancel(self) -> None:
+        with lock:
+            self.cancelled = True
+            rid = self.rid
+        if rid is not None:
+            llm.cancel(rid)
+
+
+lock = threading.Lock()  # guards running and each Running
+# the client's request id -> its request, until it ends
+running: dict[str, Running] = {}
+
+
+@contextmanager
+def track(request_id: str) -> Iterator[Running]:
+    """Register a request under the client's id while it runs, so cancel can find it."""
+    req = Running()
+    with lock:
+        if request_id in running:
+            raise AssistError("This request id is in use.")
+        running[request_id] = req
+    try:
+        yield req
+    finally:
+        with lock:
+            running.pop(request_id, None)
+
+
+def cancel(request_id: str) -> bool:
+    """Cancel the request with the client's id; False when no such request runs."""
+    with lock:
+        req = running.get(request_id)
+    if req is None:
+        return False
+    req.cancel()
+    return True
 
 
 def still(src: Path, dst: Path, video: bool, at: float | None = None) -> Path:
@@ -116,6 +186,7 @@ def local(
     target: dict[str, Any],
     values: dict[str, str],
     images: list[tuple[str, Path]],
+    on_start: Callable[[str], None],
 ) -> dict[str, Any]:
     """The local LLM, with the answer held to SCHEMA and thinking off (fast, and JSON from the first token)."""
     content: list[dict[str, Any]] = []
@@ -130,10 +201,16 @@ def local(
     t0 = time.time()
     try:
         done = llm.complete(
-            messages, [str(p) for _, p in images], schema=SCHEMA, max_tokens=MAX_TOKENS
+            messages,
+            [str(p) for _, p in images],
+            on_start,
+            schema=SCHEMA,
+            max_tokens=MAX_TOKENS,
         )
     except llm.LLMError as e:
         raise AssistError(str(e)) from None
+    if done["finish"] == "cancelled":
+        raise Cancelled(CANCELLED)
     if done["finish"] == "length":
         raise AssistError("The answer was cut off. Try a shorter draft.")
     text, notes = parse(done["content"])
@@ -182,10 +259,25 @@ def enhance(
     field_name: str,
     values: dict[str, str],
     images: list[tuple[str, Path]],
+    req: Running | None = None,
 ) -> dict[str, Any]:
-    """The field's new text from the configured provider. images: (label, JPEG path) pairs."""
+    """The field's new text from the configured provider. images: (label, JPEG path) pairs.
+
+    Raises Cancelled when req was cancelled, also when the answer came in after the cancel.
+    """
     if not values.get(field_name, "").strip():
         raise AssistError("Write a short idea in the field first.")
     target = next(f for f in tool["fields"] if f["name"] == field_name)
     run, _ = provider()
-    return run(tool, target, values, images)
+    req = req or Running()
+    if req.cancelled:
+        raise Cancelled(CANCELLED)
+    try:
+        out = run(tool, target, values, images, req.started)
+    except Cancelled:
+        if not req.cancelled:  # stopped by the app (it closes), not by the client
+            raise AssistError("Prompt help was stopped. Try again.") from None
+        raise
+    if req.cancelled:
+        raise Cancelled(CANCELLED)
+    return out

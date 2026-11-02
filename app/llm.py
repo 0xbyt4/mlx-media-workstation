@@ -312,10 +312,18 @@ def run(
 
 
 def complete(
-    messages: list[dict[str, Any]], images: Sequence[str] = (), **kw: Any
+    messages: list[dict[str, Any]],
+    images: Sequence[str] = (),
+    on_start: Callable[[str], None] | None = None,
+    **kw: Any,
 ) -> dict[str, Any]:
-    """Run one request to the end and return its done event. Raises LLMError on failure."""
+    """Run one request to the end and return its done event. Raises LLMError on failure.
+
+    on_start gets the request id at "started", before the request waits or runs, so a caller can cancel it.
+    """
     for ev in generate(messages, images, **kw):
+        if ev["event"] == "started" and on_start is not None:
+            on_start(ev["id"])
         if ev["event"] == "error":
             raise LLMError(ev["message"])
         if ev["event"] == "done":

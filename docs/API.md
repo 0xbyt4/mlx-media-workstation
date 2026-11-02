@@ -190,8 +190,10 @@ Finished files stay, and the next download skips them.
 local model's state (see `GET /api/llm`).
 
 `POST /api/assist/enhance` takes the same `multipart/form-data` as `POST /api/jobs`, plus `field`: the name of a field
-with `assist: true`. Image fields go along as images; a video field goes along as the frame where the clip ends (at
-`end_at` when that field is set). Audio files are not sent. It returns:
+with `assist: true`, and `request_id`: a random token that the client makes (1 to 64 characters of `A-Z`, `a-z`,
+`0-9`, `-` and `_`; optional, but without it the request can only be cancelled by closing the connection). Image
+fields go along as images; a video field goes along as the frame where the clip ends (at `end_at` when that field is
+set). Audio files are not sent. It returns:
 
 ```json
 {"text": "the new field text", "notes": "what the model added or assumed", "model": "Qwen3.8 27B (4-bit)",
@@ -202,6 +204,15 @@ Errors (model not installed, too little memory on this Mac, an empty draft, an a
 400 with `{"detail": "message"}`. The first request loads the model (16 GB from disk); later ones reuse it until it
 is unloaded. While a media job that does not fit next to the model runs, the request waits and answers when the job
 ends; `GET /api/llm` shows `waiting` > 0 meanwhile.
+
+`POST /api/assist/cancel` takes JSON `{"request_id": "..."}` and cancels that request while it waits for memory, loads
+the model or writes. It returns `{"status": "cancelling"}`, or `{"status": "idle"}` when no request with that id runs
+(it ended, the id is unknown, or the server is still reading the request's upload). A cancel that comes after the
+upload but before the request has reached the model is kept and applied when it does, so the model does not load for
+it. The cancelled `POST /api/assist/enhance` returns HTTP 409 with `{"detail": "Cancelled."}`, also when its answer
+was ready at the same moment; errors stay HTTP 400. A request whose client closes the connection (the page was closed,
+or the fetch was aborted) is cancelled the same way, so a client should abort its fetch after the cancel call. Two
+running requests cannot use the same `request_id` (HTTP 400).
 
 ## Local LLM and chat
 
@@ -313,8 +324,9 @@ views.
 - Sidebar: six sections (Create, Jobs, Chat, Library, Models, Settings, also Cmd-1 to Cmd-6), a dock with the running
   job's stage and time left, and a memory meter (job, local LLM, other apps, swap). Narrow windows get a top tab bar.
 - Create: the tool picker with time, peak memory and fit; the selected tool's form with prompt help ("Improve", with
-  Undo and Redo); an "On this Mac" card with peak memory, time and queue wait; Generate ("Add to queue" while a job
-  runs).
+  Cancel while it waits, loads or writes, and Undo and Redo after it); an "On this Mac" card with peak memory, time
+  and queue wait; Generate ("Add to queue" while a job runs). Choosing another tool cancels the open tool's running
+  Improve; going to another view does not: its text goes into the tool's saved form, with a toast.
 - Jobs: the running job with progress, the queue with start estimates, and finished jobs with their media, settings,
   "Use these settings", "Send to" (an output into another tool's file field), download and delete.
 - Chat, Library, Models and Settings use the endpoints of their sections above.
