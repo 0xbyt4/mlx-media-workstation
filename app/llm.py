@@ -26,6 +26,7 @@ LOAD_TIMEOUT = 300.0  # seconds to load the weights (about 16 GB from disk)
 IDLE_STOP = 600.0  # seconds without a request before the model is unloaded
 STOP_WAIT = 5.0  # seconds for a clean exit before SIGKILL
 CRASHED = "The model stopped unexpectedly. See outputs/llm.log."
+WORKER = ["-m", "app.llm_worker"]  # run with the LLM environment's python
 
 
 class LLMError(Exception):
@@ -39,7 +40,7 @@ class Worker:
         LOG.parent.mkdir(parents=True, exist_ok=True)
         with LOG.open("a") as log:
             self.proc = subprocess.Popen(
-                [str(PATHS.qwen_python), "-m", "app.llm_worker", str(PATHS.qwen_model)],
+                [str(PATHS.qwen_python), *WORKER, str(PATHS.qwen_model)],
                 cwd=ROOT,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -184,7 +185,8 @@ def generate(
     max_tokens: int = 4096,
     chat: str | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Run one request and yield its events: reasoning and content deltas, then done or error.
+    """Run one request and yield its events: "started" (with the request id), reasoning and content deltas, then done
+    or error.
 
     Closing the iterator early (a client that went away) cancels the request in the worker.
     """
@@ -209,6 +211,7 @@ def generate(
                 "chat": chat,
             }
         )
+        yield {"event": "started", "id": rid}
         while True:
             ev = q.get()
             finished = ev["event"] in ("done", "error")
@@ -236,6 +239,16 @@ def complete(
         if ev["event"] == "done":
             return ev
     raise LLMError(CRASHED)
+
+
+def cancel(rid: str) -> bool:
+    """Stop request rid between tokens; False when it is not running."""
+    with lock:
+        w = worker
+        known = w is not None and rid in w.pending
+    if known:
+        w.send({"op": "cancel", "id": rid})
+    return known
 
 
 def stop(reason: str = "The model was unloaded.") -> None:
