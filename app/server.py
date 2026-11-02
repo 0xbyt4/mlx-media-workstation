@@ -28,7 +28,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import models, models_api, tools
+from app import llm, models, models_api, tools
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs"
@@ -230,6 +230,7 @@ def worker() -> None:
                 job["status"], job["started"] = "running", now()
                 save(job)
         if job:
+            llm.make_room(models.tool_peak(job["tool"]))
             run_job(job)
             wake.set()
 
@@ -246,6 +247,7 @@ def shutdown() -> None:
     for pgid in pgids:
         stop_group(pgid)
     models.stop()
+    llm.stop("The app was closed.")
     wake.set()
 
 
@@ -489,11 +491,20 @@ def system() -> dict[str, Any]:
     }
 
 
+def running_peak() -> float:
+    """The peak memory in GB of the running job; the local LLM starts only when it fits next to it."""
+    with lock:
+        running = [j["tool"] for j in jobs.values() if j["status"] == "running"]
+    return max((models.tool_peak(t) for t in running), default=0.0)
+
+
 def start() -> None:
     """Load the history and start the worker. Called once by start.py after it knows the port is free."""
     OUT.mkdir(exist_ok=True)
     load_jobs()
+    llm.media_peak = running_peak
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=llm.watch_idle, daemon=True).start()
 
 
 app.include_router(models_api.router)
