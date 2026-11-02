@@ -158,10 +158,19 @@ other name. The job stays in the job list, also when it has no outputs left.
       "disk_free_gb": 412.3,
       "needs": null,
       "install": null,
-      "download": {"status": "running | done | failed | cancelled", "error": null, "done_gb": 12.4,
-                   "total_gb": 54.1, "percent": 22.9, "speed_mbs": 85.2, "eta_s": 489}
+      "download": {"status": "queued | running | done | failed | cancelled", "position": null, "error": null,
+                   "done_gb": 12.4, "total_gb": 54.1, "percent": 22.9, "speed_mbs": 85.2, "eta_s": 489}
     }
-  ]
+  ],
+  "queue": {
+    "running": "ltx-2.5-mlx-q8",
+    "queued": ["qwen3.8-27b-4bit"],
+    "count": 2,
+    "left_gb": 57.8,
+    "batch": ["flux-3-image-klein", "ltx-2.5-mlx-q8", "qwen3.8-27b-4bit"],
+    "batch_id": 3,
+    "disk_margin_gb": 10.0
+  }
 }
 ```
 
@@ -170,19 +179,52 @@ other name. The job stays in the job list, also when it has no outputs left.
   `null`.
 - `path_key` is the `config.toml` key of the install path; `null` means the Hugging Face cache.
 - `fits` is true when `peak_gb` plus `mem_reserve_gb` is at most `mem_total_gb`.
-- `needs` names an entry to install first. `download` is `null` unless this model is the current or last download.
+- `needs` names an entry to install first. `download` is `null` unless this model is queued, downloading, or was
+  downloaded since the app started. A queued entry has `status: "queued"` and `position` (1 = it starts next); its
+  other numbers are 0 or `null`. `position` is `null` in every other status. A failed or cancelled download keeps its
+  `error` until the model is queued again.
 - `download.speed_mbs` is the speed in MB/s (10^6 bytes), averaged over at least the last 10 s of polls, and
   `download.eta_s` the seconds left at that speed. Both are `null` until the download has run for about 2 s, and when
   it is not running; `eta_s` is also `null` while the speed is 0.
 - Sizes are in GB of 10^9 bytes (as Hugging Face shows them); memory is in GB of 2^30 bytes (as `/api/system`).
 
-`POST /api/models/{id}/download` starts a download in the background and returns `{"status": "running"}`. One
-download runs at a time. Errors return HTTP 400 with `{"detail": "message"}` (a manual entry, already installed,
-another download running). Poll `GET /api/models` for progress; a failed download has the reason in
-`download.error`.
+`queue` describes the download queue:
 
-`POST /api/models/{id}/cancel` stops the download and returns `{"status": "cancelled"}` (or the finished status).
-Finished files stay, and the next download skips them.
+- `running` is the id of the running download, or `null`. `queued` lists the waiting ids in the order they start.
+- `count` is the running and the queued downloads together. `left_gb` is what they still have to download: the Hub
+  sizes minus the files on disk, or the catalog `size_gb` before the download has asked the Hub.
+- `batch` lists every entry of the current run of downloads in order: the running, the queued and the finished ones.
+  A new run (with a higher `batch_id`) starts when models are queued while nothing downloads.
+- `disk_margin_gb` is the free space the queue keeps on each disk.
+
+One download runs at a time. When it ends (done, failed or cancelled), the next queued one starts. A failed download
+does not stop the queue. An entry whose `needs` entry is not installed when its turn comes fails with a message.
+
+`POST /api/models/queue` with `{"ids": ["flux-3-image-klein", "ltx-2.5-mlx-q8"]}` adds downloads in that order and
+starts the first one if nothing runs. Each entry goes after the entry it `needs`. Installed, running and queued ids are
+skipped. It returns `{"added": [...], "skipped": [...], "queue": {...}}` (`queue` as in `GET /api/models`). It queues
+nothing and returns HTTP 400 with a message when:
+
+- `ids` is empty, or names an unknown id or a manual entry (the message names them);
+- an entry needs a manual entry that is not installed, or a download entry that is neither installed, queued nor in
+  `ids`;
+- the downloads (with the running and queued ones) would leave less than `disk_margin_gb` free on a disk.
+
+The server cannot know if the licence of a gated model was accepted on Hugging Face. The UI asks first; a refused
+download fails with the reason in `download.error`.
+
+`POST /api/models/queue/clear` takes every queued download out of the queue (they become `cancelled`) and leaves the
+running one. It returns `{"removed": [...ids], "queue": {...}}`.
+
+`POST /api/models/{id}/download` queues one download (the same rules as above) and returns
+`{"status": "running", "position": null}` when it started, or `{"status": "queued", "position": 2}` when it waits.
+Asking again for a running or queued model returns its status. Errors return HTTP 400 with `{"detail": "message"}`
+(a manual entry, already installed, a missing need, not enough disk). Poll `GET /api/models` for progress; a failed
+download has the reason in `download.error`.
+
+`POST /api/models/{id}/cancel` stops the running download, or takes a queued one out of the queue, and returns
+`{"status": "cancelled"}` (or the finished status). The next queued download starts. Finished files stay, and the next
+download skips them. HTTP 400 when the model is neither running nor queued.
 ## Prompt help
 
 `GET /api/assist` returns `{"available": true, "provider": "local", "model": "Qwen3.8 27B (4-bit)", "llm": {...}}`.
