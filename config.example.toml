@@ -12,3 +12,6 @@ drama_python = "~/mlx-media/venv-drama/bin/python"
 drama_model = "~/mlx-media/models/fish-audio-drama-3-4bit"
 # the ACE-Step 1.5 checkout (with its .venv and checkpoints folders)
 ace_dir = "~/mlx-media/ace-step"
+# the local LLM's environment python and its weights (prompt help and chat)
+qwen_python = "~/mlx-media/venv-qwen/bin/python"
+qwen_model = "~/mlx-media/models/qwen3.8-27b-4bit"

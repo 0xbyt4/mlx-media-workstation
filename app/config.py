@@ -19,6 +19,8 @@ DEFAULTS = {
     "drama_python": "~/mlx-media/venv-drama/bin/python",
     "drama_model": "~/mlx-media/models/fish-audio-drama-3-4bit",
     "ace_dir": "~/mlx-media/ace-step",
+    "qwen_python": "~/mlx-media/venv-qwen/bin/python",
+    "qwen_model": "~/mlx-media/models/qwen3.8-27b-4bit",
 }
 
 
@@ -30,6 +32,8 @@ class Paths:
     drama_python: Path  # python of the Fish Drama 3 environment (mlx-audio)
     drama_model: Path  # Fish Drama 3 weights folder
     ace_dir: Path  # the ACE-Step 1.5 checkout (its .venv and checkpoints inside)
+    qwen_python: Path  # python of the local LLM environment (prompt help and chat)
+    qwen_model: Path  # Qwen3.8 27B 4-bit weights folder
 
 
 def load(file: Path = FILE) -> Paths:
