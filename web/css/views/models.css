@@ -38,6 +38,298 @@
 .v-models .mac-note {
   flex: 1 1 260px;
 }
+.v-models .mac-stats {
+  display: contents;
+}
+
+/* set up this Mac */
+.v-models .setup-slot:empty {
+  display: none;
+}
+.v-models .setup {
+  padding: 20px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.v-models .setup h2 {
+  font: 600 var(--fs-xl) / 1.25 var(--font-display);
+}
+.v-models .setup h2:focus {
+  outline: none;
+}
+.v-models .setup h2:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+.v-models .setup-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 8px 24px;
+}
+.v-models .setup-title {
+  display: grid;
+  gap: 2px;
+}
+.v-models .setup-steps {
+  display: flex;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+.v-models .setup-steps li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.v-models .setup-steps .n {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border-strong);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.v-models .setup-steps .now {
+  color: var(--text);
+  font-weight: 600;
+}
+.v-models .setup-steps .now .n {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.v-models .setup-steps .past .n {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.v-models .setup-intro {
+  color: var(--text-2);
+  max-width: 75ch;
+}
+.v-models .setup-group {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+.v-models .setup-group > legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-2);
+}
+.v-models .setup-group > legend .tool-ico {
+  width: 22px;
+  height: 22px;
+}
+.v-models .setup-group > legend .tool-ico .ic {
+  width: 14px;
+  height: 14px;
+}
+.v-models .setup-items {
+  display: grid;
+  gap: 6px;
+}
+.v-models .setup-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.v-models .setup-item:has(input:checked:not(:disabled)) {
+  border-color: var(--accent);
+}
+.v-models .setup-item input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.v-models .setup-item-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.v-models .setup-item-name {
+  font-weight: 600;
+  cursor: pointer;
+}
+.v-models .setup-item.off .setup-item-name {
+  cursor: default;
+}
+.v-models .setup-item-meta {
+  display: grid;
+  gap: 2px;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.v-models .setup-item-meta .gated {
+  color: var(--warn);
+}
+.v-models .setup-item-meta .gated .ic {
+  vertical-align: -2px;
+}
+.v-models .setup-why {
+  color: var(--warn);
+}
+.v-models .setup-item-side {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.v-models .setup-envs {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+.v-models .setup-envs > h3 {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-2);
+}
+.v-models .setup-env {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+}
+.v-models .setup-env-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: var(--fs-sm);
+}
+.v-models .setup-env-head .faint {
+  color: var(--text-3);
+}
+.v-models .setup-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+/* the pick and licence steps are long: their buttons stay in view */
+.v-models .setup-foot.sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+}
+.v-models .setup-foot > .setup-total,
+.v-models .setup-foot > .help {
+  flex: 1 1 240px;
+}
+.v-models .setup-total {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.v-models .setup-total.low {
+  color: var(--err);
+}
+.v-models .setup-gates {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+}
+.v-models .setup-lic-steps {
+  font-size: var(--fs-base);
+}
+.v-models .setup-lic-steps .gate .ic {
+  vertical-align: -2px;
+}
+
+/* the closed card */
+.v-models .setup-teaser {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 14px 16px;
+  gap: 8px 14px;
+}
+.v-models .setup-teaser h2 {
+  font: 600 var(--fs-md) / 1.3 var(--font-display);
+}
+
+/* the queue */
+.v-models .q-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+.v-models .q-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.v-models .q-item.q-running {
+  border-color: var(--accent);
+}
+.v-models .q-item.q-failed {
+  border-color: var(--err);
+}
+.v-models .q-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.v-models .q-name .faint {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.v-models .q-act {
+  display: flex;
+  gap: 6px;
+}
+.v-models .q-progress,
+.v-models .q-err {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.v-models .q-err p {
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.v-models .q-err > p:first-child {
+  color: var(--err);
+}
 
 /* groups and cards */
 .v-models .models-groups,
@@ -244,6 +536,30 @@
 @media (max-width: 720px) {
   .v-models .mac-sum {
     gap: 10px 20px;
+  }
+  .v-models .setup {
+    padding: 14px;
+  }
+  .v-models .setup-item {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .v-models .setup-item-side {
+    grid-column: 2;
+    grid-auto-flow: column;
+    justify-content: start;
+    align-items: center;
+    gap: 10px;
+  }
+  .v-models .setup-teaser {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .v-models .setup-teaser > .btn {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  .v-models .setup-foot > .setup-total,
+  .v-models .setup-foot > .help {
+    flex-basis: 100%;
   }
   .v-models .model {
     grid-template-columns: auto minmax(0, 1fr);

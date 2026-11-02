@@ -34,12 +34,16 @@ class NoNetwork:
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
     models.state.clear()
+    models.queue.clear()
+    models.history.clear()
+    models.batch.clear()
+    models.worker = False
     models.sizes_cache.clear()
     monkeypatch.setattr(models, "HfApi", NoNetwork)
     monkeypatch.setattr(models, "snapshot_download", NoNetwork)
     yield
     models.stop()
-    wait_for(lambda: models.state.get("proc") is None)
+    wait_for(lambda: not models.worker)
 
 
 @pytest.fixture
@@ -348,10 +352,15 @@ def test_a_finished_download_has_no_speed(paths, child):
     assert (p["status"], p["speed_mbs"], p["eta_s"]) == ("failed", None, None)
 
 
-def test_one_download_at_a_time(paths, child):
+def test_a_second_download_waits_in_the_queue(paths, child):
     start_qwen(child)
-    with pytest.raises(ValueError, match="is downloading"):
-        models.start(LTX)
+    models.sizes_cache[LTX.id] = {"a": 100}
+    assert models.start(LTX) == "queued"
+    assert models.progress(LTX)["status"] == "queued"
+    assert models.progress(LTX)["position"] == 1
+    assert models.start(LTX) == "queued"  # asking again changes nothing
+    assert models.start(QWEN) == "running"
+    assert models.queue == [LTX.id] and len(child[0]) == 1
 
 
 def test_cancel_kills_the_child_and_deletes_partial_files(paths, child):
@@ -418,7 +427,10 @@ def test_no_space_fails_before_the_child(paths, child, monkeypatch):
     models.sizes_cache[QWEN.id] = {"a": 5 * 10**9}
     stale = models.partial_dir(QWEN) / "old.run.incomplete"
     write(stale, 10**6)  # from an earlier run: deleted, and not counted as progress
-    monkeypatch.setattr(models, "disk_free", lambda m: 10**9)
+    free = iter(
+        [10**13, 10**9]
+    )  # the disk fills up between the queue check and the start
+    monkeypatch.setattr(models, "disk_free", lambda m: next(free))
     models.start(QWEN)
     wait_for(lambda: models.state["status"] != "running")
     assert models.state["error"].startswith("Not enough disk space")
@@ -519,11 +531,12 @@ def test_download_and_cancel_endpoints(client, paths, child):
     r = client.post("/api/models/mflux/download")
     assert r.status_code == 400 and "commands" in r.json()["detail"]
     r = client.post(f"/api/models/{QWEN.id}/download")
-    assert r.json() == {"status": "running"}
+    assert r.json() == {"status": "running", "position": None}
     wait_for(lambda: models.state["proc"] is not None)
     r = client.post(f"/api/models/{LTX.id}/download")
-    assert r.status_code == 400 and "is downloading" in r.json()["detail"]
-    assert client.post(f"/api/models/{LTX.id}/cancel").status_code == 400
+    assert r.json() == {"status": "queued", "position": 1}
+    assert client.post(f"/api/models/{ASR.id}/cancel").status_code == 400
+    assert client.post(f"/api/models/{LTX.id}/cancel").json() == {"status": "cancelled"}
     r = client.post(f"/api/models/{QWEN.id}/cancel")
     assert r.json() == {"status": "cancelled"}
 
@@ -533,4 +546,241 @@ def test_writes_from_another_site_are_refused(client, paths, child):
         f"/api/models/{QWEN.id}/download", headers={"Origin": "https://evil.example"}
     )
     assert r.status_code == 403
-    assert models.state == {}
+    r = client.post(
+        "/api/models/queue",
+        json={"ids": [QWEN.id]},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert r.status_code == 403
+    assert models.state == {} and models.queue == []
+
+
+# the queue
+
+
+@pytest.fixture
+def small(paths, monkeypatch):
+    """Hub sizes for every download entry, a big disk, and a child that installs the files when it ends with 0."""
+    for m in models.MODELS:
+        if not m.manual:
+            models.sizes_cache[m.id] = {f: 100 for f in m.files}
+    monkeypatch.setattr(models, "disk_free", lambda m: 10**13)
+    return paths
+
+
+def finish_ok(child):
+    def finish(proc):
+        if proc.returncode == 0:
+            m = models.BY_ID[models.state["id"]]
+            for f in m.files:
+                write(models.target(m) / f, 100)
+
+    child[2]["call"] = finish
+
+
+def running_proc(child, n: int) -> FakeProc:
+    """The n-th child (1-based), once it runs."""
+    wait_for(lambda: len(child[0]) >= n and models.state.get("proc") is child[0][n - 1])
+    return child[0][n - 1]
+
+
+def status(m: models.Model) -> str | None:
+    p = models.progress(m)
+    return p and p["status"]
+
+
+def test_queue_runs_in_order_and_advances_after_done_failed_and_cancel(small, child):
+    finish_ok(child)
+    klein = models.BY_ID["flux-3-image-klein"]
+    r = models.add([QWEN.id, ASR.id, LTX.id, klein.id])
+    assert r == {"added": [QWEN.id, ASR.id, LTX.id, klein.id], "skipped": []}
+    assert models.state["id"] == QWEN.id and models.queue == [ASR.id, LTX.id, klein.id]
+    assert [models.progress(m)["position"] for m in (ASR, LTX, klein)] == [1, 2, 3]
+    running_proc(child, 1).end(0)  # done
+    running_proc(child, 2).end(1, "Could not reach Hugging Face.")  # failed
+    running_proc(child, 3)
+    assert models.state["id"] == LTX.id
+    models.cancel(LTX)  # cancel of the running one
+    running_proc(child, 4).end(0)
+    wait_for(lambda: not models.worker)
+    assert [status(m) for m in (QWEN, ASR, LTX, klein)] == [
+        "done",
+        "failed",
+        "cancelled",
+        "done",
+    ]
+    assert models.progress(ASR)["error"] == "Could not reach Hugging Face."
+    s = models.summary()
+    assert (s["running"], s["queued"], s["count"]) == (None, [], 0)
+    assert s["batch"] == [QWEN.id, ASR.id, LTX.id, klein.id]
+    models.add([ASR.id])  # a retry after the run ended starts a new run
+    assert models.summary()["batch"] == [ASR.id]
+
+
+def test_a_retry_in_a_running_batch_keeps_its_place(small, child):
+    models.add([QWEN.id, ASR.id, LTX.id])
+    running_proc(child, 1)
+    models.cancel(ASR)
+    models.add([ASR.id])
+    s = models.summary()
+    assert s["batch"] == [QWEN.id, ASR.id, LTX.id]
+    assert s["queued"] == [LTX.id, ASR.id]
+
+
+def test_add_skips_installed_running_and_queued(small, child):
+    install(ASR)
+    models.add([QWEN.id])
+    running_proc(child, 1)
+    models.add([LTX.id])
+    r = models.add([QWEN.id, ASR.id, LTX.id])
+    assert r == {"added": [], "skipped": [QWEN.id, ASR.id, LTX.id]}
+    assert models.queue == [LTX.id]
+
+
+def test_add_refuses_unknown_and_manual_ids_and_queues_nothing(small, child):
+    with pytest.raises(ValueError, match="No such model: nope"):
+        models.add([QWEN.id, "nope"])
+    with pytest.raises(ValueError, match=r"mflux \(image runtime\)"):
+        models.add([QWEN.id, "mflux"])
+    assert models.queue == [] and models.state == {} and child[0] == []
+
+
+def test_cancel_of_a_queued_entry_takes_it_out(small, child):
+    models.add([QWEN.id, ASR.id, LTX.id])
+    running_proc(child, 1)
+    assert models.cancel(ASR) == "cancelled"
+    assert models.queue == [LTX.id] and status(ASR) == "cancelled"
+    assert models.progress(LTX)["position"] == 1
+    assert child[1] == []  # the running download goes on
+    assert models.state["status"] == "running"
+
+
+def test_clear_queue_leaves_the_running_download(small, child):
+    models.add([QWEN.id, ASR.id, LTX.id])
+    proc = running_proc(child, 1)
+    assert models.clear_queue() == [ASR.id, LTX.id]
+    assert models.queue == [] and status(LTX) == "cancelled"
+    proc.end(0)
+    wait_for(lambda: not models.worker)
+    assert len(child[0]) == 1
+
+
+def test_a_need_comes_first_or_the_add_is_refused(small, child, monkeypatch):
+    # ACE-Step needs its checkout, a manual entry
+    with pytest.raises(ValueError, match="Install ACE-Step 1.5 checkout first"):
+        models.add([QWEN.id, ACE.id])
+    assert models.queue == [] and child[0] == []
+    # a download entry that needs another download entry goes after it
+    extra = replace(QWEN, id="qwen-extra", needs=ASR.id)
+    monkeypatch.setitem(models.BY_ID, extra.id, extra)
+    models.sizes_cache[extra.id] = {"a": 1}
+    with pytest.raises(ValueError, match="add it to the downloads too"):
+        models.add([extra.id])
+    r = models.add([QWEN.id, extra.id, ASR.id])
+    assert r["added"] == [QWEN.id, ASR.id, extra.id]
+
+
+def test_a_queued_entry_whose_need_failed_fails_too(small, child, monkeypatch):
+    finish_ok(child)
+    extra = replace(QWEN, id="qwen-extra", needs=ASR.id)
+    monkeypatch.setitem(models.BY_ID, extra.id, extra)
+    models.sizes_cache[extra.id] = {"a": 1}
+    models.add([ASR.id, extra.id, LTX.id])
+    running_proc(child, 1).end(1, "no network")
+    proc = running_proc(child, 2)
+    assert models.state["id"] == LTX.id
+    assert status(extra) == "failed"
+    assert "Qwen3-ASR" in models.progress(extra)["error"]
+    proc.end(0)
+
+
+def test_disk_refusal_counts_the_running_and_queued_downloads(
+    paths, child, monkeypatch
+):
+    models.sizes_cache[QWEN.id] = {"a": 30 * 10**9}
+    models.sizes_cache[ASR.id] = {"a": 30 * 10**9}
+    models.sizes_cache[LTX.id] = {"a": 30 * 10**9}
+    monkeypatch.setattr(models, "disk_free", lambda m: 75 * 10**9)
+    models.add([QWEN.id])
+    running_proc(child, 1)
+    models.add([ASR.id])  # 60 GB of 75, with 10 kept free
+    with pytest.raises(ValueError, match="Not enough disk space") as e:
+        models.add([LTX.id])
+    assert "90.0 GB" in str(e.value) and "10 GB free" in str(e.value)
+    assert models.queue == [ASR.id]
+
+
+def test_disk_needs_subtract_the_files_already_on_disk(paths, child, monkeypatch):
+    models.sizes_cache[QWEN.id] = {f: 10 * 10**9 for f in QWEN.files}  # 50 GB
+    for f in QWEN.files[:4]:
+        write(models.target(QWEN) / f)
+    with open(models.target(QWEN) / QWEN.files[0], "wb") as fh:
+        fh.truncate(40 * 10**9)  # sparse: 40 GB on disk, 10 GB left
+    monkeypatch.setattr(models, "disk_free", lambda m: 25 * 10**9)
+    models.add([QWEN.id])
+    assert models.summary()["left_gb"] == 10.0
+
+
+def test_the_next_download_waits_for_a_cancelled_one_to_clean_up(small, child):
+    cleanup = threading.Event()
+    child[2]["call"] = lambda proc: cleanup.wait(
+        5
+    )  # the old thread is still busy after the kill
+    models.add([QWEN.id])
+    running_proc(child, 1)
+    models.cancel(QWEN)
+    models.add([ASR.id])
+    time.sleep(0.1)
+    assert len(child[0]) == 1 and models.queue == [ASR.id]
+    assert models.state["id"] == QWEN.id
+    child[2]["call"] = lambda proc: None
+    cleanup.set()
+    running_proc(child, 2)
+    assert models.state["id"] == ASR.id
+
+
+def test_shutdown_empties_the_queue_and_stops_the_download(small, child):
+    models.add([QWEN.id, ASR.id, LTX.id])
+    proc = running_proc(child, 1)
+    models.stop()
+    wait_for(lambda: not models.worker)
+    assert child[1] == [(proc.pid, signal.SIGKILL)]
+    assert models.queue == [] and len(child[0]) == 1
+    assert [status(m) for m in (QWEN, ASR, LTX)] == ["cancelled"] * 3
+
+
+def test_a_new_run_of_downloads_starts_a_new_batch(small, child):
+    finish_ok(child)
+    models.add([QWEN.id])
+    first = models.summary()["batch_id"]
+    models.add([ASR.id])  # joins the running batch
+    assert models.summary()["batch"] == [QWEN.id, ASR.id]
+    running_proc(child, 1).end(0)
+    running_proc(child, 2).end(0)
+    wait_for(lambda: not models.worker)
+    models.add([LTX.id])
+    s = models.summary()
+    assert s["batch"] == [LTX.id] and s["batch_id"] == first + 1
+
+
+def test_queue_endpoints(client, small, child, monkeypatch):
+    monkeypatch.setattr(models, "mem_total_gb", lambda: 48.0)
+    r = client.post("/api/models/queue", json={"ids": []})
+    assert r.status_code == 400
+    r = client.post("/api/models/queue", json={"ids": ["nope", "mflux"]})
+    assert r.status_code == 400 and "nope" in r.json()["detail"]
+    r = client.post("/api/models/queue", json={"ids": [QWEN.id, ASR.id, LTX.id]})
+    body = r.json()
+    assert body["added"] == [QWEN.id, ASR.id, LTX.id] and body["skipped"] == []
+    q = body["queue"]
+    assert (q["running"], q["queued"], q["count"]) == (QWEN.id, [ASR.id, LTX.id], 3)
+    assert q["left_gb"] == 0.0 and q["disk_margin_gb"] == 10.0
+    running_proc(child, 1)
+    got = client.get("/api/models").json()
+    by = {m["id"]: m for m in got["models"]}
+    assert by[LTX.id]["download"]["status"] == "queued"
+    assert by[LTX.id]["download"]["position"] == 2
+    assert got["queue"]["count"] == 3
+    r = client.post("/api/models/queue/clear")
+    assert r.json()["removed"] == [ASR.id, LTX.id]
+    assert r.json()["queue"]["count"] == 1

@@ -5,6 +5,9 @@ Face cache for the models that mflux and mlx-audio load by name. Runtimes (model
 manual: their entry carries the README commands. One download runs at a time, in a child process
 (`python -m app.models <id>`), so a cancel stops it at once. Finished files stay and the next download skips them;
 partial files are deleted. Progress is the bytes on disk against the file sizes the Hub lists for that commit.
+
+More downloads wait in a queue. When a download ends (done, failed or cancelled), the download thread starts the next
+one. The lock guards `state`, `queue`, `history` and `batch`; request threads and download threads both change them.
 """
 
 import errno
@@ -43,6 +46,8 @@ RESERVE_GB = 8.0
 # so one slow or fast poll does not swing it. Below MIN_SPAN_S of samples there is no speed yet.
 SPEED_WINDOW_S = 10.0
 MIN_SPAN_S = 1.5
+# The queue keeps this much disk free: macOS needs room for swap and updates.
+DISK_MARGIN_GB = 10.0
 clock = time.monotonic  # replaced in tests
 
 
@@ -293,6 +298,16 @@ BY_ID = {m.id: m for m in MODELS}
 lock = threading.Lock()
 # the current or last download: id, status (running, done, failed, cancelled), error, sizes and the child process
 state: dict[str, Any] = {}
+# the model ids that wait to download, in order
+queue: list[str] = []
+# the last result of earlier downloads: model id -> {status, error, sizes}
+history: dict[str, dict[str, Any]] = {}
+# every model id of the current run of downloads (running, queued and finished), in order; a new run starts when
+# models are queued while nothing downloads. batch_id counts the runs, so the UI can tell a new one.
+batch: list[str] = []
+batch_id = 0
+# true while a download thread runs; it may still clean up after a cancel, so the next download waits for it
+worker = False
 sizes_cache: dict[
     str, dict[str, int]
 ] = {}  # model id -> {file: bytes}, fetched once from the Hub
@@ -406,26 +421,154 @@ def explain(e: BaseException, m: Model) -> str:
     return f"Download failed: {type(e).__name__}: {e}"
 
 
-def start(m: Model) -> None:
-    """Start downloading m in the background. Raises ValueError (shown to the user) when it cannot start."""
+def check(m: Model) -> None:
+    """Raise ValueError (shown to the user) when m cannot be downloaded at all."""
     if m.manual:
         raise ValueError(
             f"{m.label} is installed with the commands shown here (README.md)."
         )
     if installed(m):
         raise ValueError(f"{m.label} is already installed.")
-    if m.needs and not installed(BY_ID[m.needs]):
-        raise ValueError(f"Install {BY_ID[m.needs].label} first.")
+
+
+def start(m: Model) -> str:
+    """Download m now, or after the downloads before it. Returns "running" or "queued"."""
+    check(m)
+    add([m.id])
     with lock:
-        if state.get("status") == "running":
+        return "queued" if m.id in queue else "running"
+
+
+def busy_ids() -> set[str]:
+    """The running and the queued model ids (call under the lock)."""
+    running = {state["id"]} if state.get("status") == "running" else set()
+    return running | set(queue)
+
+
+def order(ids: list[str], busy: set[str]) -> list[str]:
+    """ids with each entry after the entry it needs. Raises ValueError when a need is missing (call under the lock)."""
+    wanted = set(ids)
+    out: list[str] = []
+
+    def visit(i: str, path: tuple[str, ...]) -> None:
+        if i in out:
+            return
+        m = BY_ID[i]
+        need = BY_ID[m.needs] if m.needs else None
+        if need and not installed(need):
+            if need.id in path:
+                raise ValueError(f"{m.label} and {need.label} need each other.")
+            if need.manual:
+                raise ValueError(
+                    f"Install {need.label} first: {m.label} needs it. Its commands are on its card."
+                )
+            if need.id in wanted:
+                visit(need.id, (*path, i))
+            elif need.id not in busy:
+                raise ValueError(
+                    f"{m.label} needs {need.label}: add it to the downloads too."
+                )
+        out.append(i)
+
+    for i in ids:
+        visit(i, ())
+    return out
+
+
+def left_bytes(m: Model) -> int:
+    """The bytes m still has to download: the Hub sizes minus what is on disk, or the catalog size before the Hub was
+    asked."""
+    sizes = sizes_cache.get(m.id)
+    if sizes:
+        return max(0, sum(sizes.values()) - on_disk(m, sizes))
+    return int((m.size_gb or 0) * 1e9)
+
+
+def disk_of(m: Model) -> int:
+    return existing(target(m)).stat().st_dev
+
+
+def check_disk(ids: list[str]) -> None:
+    """Refuse when the downloads of ids (running and queued ones included) leave less than DISK_MARGIN_GB free on a
+    disk (call under the lock)."""
+    need: dict[int, int] = {}
+    first: dict[int, Model] = {}
+    for i in ids:
+        m = BY_ID[i]
+        d = disk_of(m)
+        need[d] = need.get(d, 0) + left_bytes(m)
+        first.setdefault(d, m)
+    for d, n in need.items():
+        m = first[d]
+        free = disk_free(m)
+        if n > free - DISK_MARGIN_GB * 1e9:
             raise ValueError(
-                f"{BY_ID[state['id']].label} is downloading. Wait for it or cancel it."
+                f"Not enough disk space: these downloads need about {n / 1e9:.1f} GB on the disk of "
+                f"{existing(target(m))}, and {free / 1e9:.1f} GB is free. Workstation keeps "
+                f"{DISK_MARGIN_GB:.0f} GB free for macOS. Pick fewer models or free some space."
             )
+
+
+def add(ids: list[str]) -> dict[str, list[str]]:
+    """Queue the downloads of ids in this order (each after the entry it needs) and start the first one when nothing
+    runs. Installed, running and queued ids are skipped. Raises ValueError, and queues nothing, when an id is unknown or
+    manual, a need is missing, or the disk is too small."""
+    global batch_id, worker
+    unknown = [i for i in ids if i not in BY_ID]
+    if unknown:
+        raise ValueError(f"No such model: {', '.join(unknown)}.")
+    manual = [BY_ID[i].label for i in ids if BY_ID[i].manual]
+    if manual:
+        raise ValueError(
+            f"Install these with the commands on their cards (README.md): {', '.join(manual)}."
+        )
+    done = {i for i in ids if installed(BY_ID[i])}
+    with lock:
+        busy = busy_ids()
+        fresh = list(dict.fromkeys(i for i in ids if i not in done and i not in busy))
+        new = order(fresh, busy)
+        running = state.get("status") == "running"
+        if new:
+            check_disk(([state["id"]] if running else []) + queue + new)
+        if new and not worker and not queue:
+            batch.clear()
+            batch_id += 1
+        for i in new:
+            history.pop(i, None)
+        queue.extend(new)
+        batch.extend(i for i in new if i not in batch)  # a retry keeps its place
+        first = None
+        if not worker:
+            first = advance()
+            worker = first is not None
+    if first is not None:
+        threading.Thread(target=run, args=(first,), daemon=True).start()
+    return {"added": new, "skipped": [i for i in ids if i not in new]}
+
+
+def advance() -> Model | None:
+    """Start the next queued download that can start; returns it (call under the lock, start its thread after)."""
+    while queue:
+        m = BY_ID[queue.pop(0)]
+        if installed(m):  # installed by hand meanwhile
+            continue
+        need = BY_ID[m.needs] if m.needs else None
+        if need and not installed(need):
+            history[m.id] = {
+                "status": "failed",
+                "error": f"{need.label} is not installed, and {m.label} needs it.",
+                "sizes": None,
+            }
+            continue
+        if state.get("id"):
+            history[state["id"]] = {k: state[k] for k in ("status", "error", "sizes")}
+        history.pop(m.id, None)
         state.clear()
         state.update(
             id=m.id, status="running", error=None, sizes=None, proc=None, samples=[]
         )
-    threading.Thread(target=run, args=(m,), daemon=True).start()
+        return m
+    return None
 
 
 def fail(message: str) -> None:
@@ -435,7 +578,27 @@ def fail(message: str) -> None:
 
 
 def run(m: Model) -> None:
-    """The download thread: file sizes from the Hub, a disk space check, then the child process."""
+    """The download thread: it downloads m, then starts the next queued download."""
+    global worker
+    try:
+        download(m)
+    finally:
+        with lock:
+            if state.get("id") == m.id:
+                state["proc"] = None
+                if state["status"] == "running":  # an error download() did not expect
+                    state["status"], state["error"] = (
+                        "failed",
+                        "The download stopped with an unexpected error.",
+                    )
+            nxt = advance()
+            worker = nxt is not None
+        if nxt is not None:
+            threading.Thread(target=run, args=(nxt,), daemon=True).start()
+
+
+def download(m: Model) -> None:
+    """File sizes from the Hub, a disk space check, then the child process."""
     try:
         sizes = remote_sizes(m)
     except Exception as e:  # noqa: BLE001 - any failure belongs to this download
@@ -482,8 +645,16 @@ def run(m: Model) -> None:
 
 
 def cancel(m: Model) -> str:
-    """Stop m's download; returns the download's status. Raises ValueError if m is not downloading."""
+    """Stop m's download, or take it out of the queue; returns its status. Raises ValueError if m is neither."""
     with lock:
+        if m.id in queue:
+            queue.remove(m.id)
+            history[m.id] = {
+                "status": "cancelled",
+                "error": "Cancelled.",
+                "sizes": None,
+            }
+            return "cancelled"
         if state.get("id") != m.id:
             raise ValueError(f"{m.label} is not downloading.")
         if state["status"] != "running":
@@ -499,8 +670,19 @@ def cancel(m: Model) -> str:
     return "cancelled"
 
 
+def clear_queue() -> list[str]:
+    """Take every queued download out of the queue (the running one goes on); returns their ids."""
+    with lock:
+        gone = list(queue)
+        queue.clear()
+        for i in gone:
+            history[i] = {"status": "cancelled", "error": "Cancelled.", "sizes": None}
+    return gone
+
+
 def stop() -> None:
-    """Cancel the running download (the app is closing)."""
+    """Empty the queue and cancel the running download (the app is closing)."""
+    clear_queue()
     with lock:
         running = state.get("id") if state.get("status") == "running" else None
     if running:
@@ -509,14 +691,27 @@ def stop() -> None:
 
 def progress(m: Model) -> dict[str, Any] | None:
     with lock:
-        if state.get("id") != m.id:
+        if m.id in queue:
+            return {
+                "status": "queued",
+                "position": queue.index(m.id) + 1,
+                "error": None,
+                "done_gb": 0.0,
+                "total_gb": None,
+                "percent": 0.0,
+                "speed_mbs": None,
+                "eta_s": None,
+            }
+        rec = state if state.get("id") == m.id else history.get(m.id)
+        if rec is None:
             return None
-        status, error, sizes = state["status"], state["error"], state["sizes"]
+        status, error, sizes = rec["status"], rec["error"], rec["sizes"]
     total = sum(sizes.values()) if sizes else 0
     done = min(on_disk(m, sizes), total) if sizes else 0
     speed = rate(m, done) if status == "running" and total else None
     return {
         "status": status,
+        "position": None,
         "error": error,
         "done_gb": round(done / 1e9, 2),
         "total_gb": round(total / 1e9, 2) if total else None,
@@ -571,11 +766,29 @@ def view(m: Model, mem_gb: float) -> dict[str, Any]:
     }
 
 
+def summary() -> dict[str, Any]:
+    """The queue: the running and queued ids, the GB they still have to download, and the current run of downloads."""
+    with lock:
+        running = state["id"] if state.get("status") == "running" else None
+        queued, run_ids, run_no = list(queue), list(batch), batch_id
+    waiting = ([running] if running else []) + queued
+    return {
+        "running": running,
+        "queued": queued,
+        "count": len(waiting),
+        "left_gb": round(sum(left_bytes(BY_ID[i]) for i in waiting) / 1e9, 1),
+        "batch": run_ids,
+        "batch_id": run_no,
+        "disk_margin_gb": DISK_MARGIN_GB,
+    }
+
+
 def catalog() -> dict[str, Any]:
     mem_gb = mem_total_gb()
     return {
         "machine": {"mem_total_gb": mem_gb, "mem_reserve_gb": RESERVE_GB},
         "models": [view(m, mem_gb) for m in MODELS],
+        "queue": summary(),
     }
 
 
