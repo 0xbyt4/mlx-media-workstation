@@ -120,6 +120,7 @@ TOOLS: list[dict[str, Any]] = [
                 "prompt",
                 "Prompt",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="One paragraph of about 100-200 words: subject, outfit, pose, framing, lens, light, place, style. English. Keep it under about 400 tokens: longer prompts give a black image (mflux bug 920).",
@@ -168,6 +169,7 @@ TOOLS: list[dict[str, Any]] = [
                 "prompt",
                 "Prompt",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help='Put any text to render in double quotes, e.g. a sign that reads "PUSH".',
@@ -197,6 +199,7 @@ TOOLS: list[dict[str, Any]] = [
                 "prompt",
                 "Prompt",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="Name them <ref_image_0>, <ref_image_1>, ... in upload order; put the background first. Give each one role and say what must stay unchanged. Add a head-and-shoulders reference for faces.",
@@ -217,6 +220,7 @@ TOOLS: list[dict[str, Any]] = [
                 "text",
                 "Script",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="Speakers: <|speaker:0|> ... <|speaker:1|> ... Cues in brackets mid-sentence: [laughs], "
@@ -296,6 +300,7 @@ TOOLS: list[dict[str, Any]] = [
                 "caption",
                 "Description",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="Genre, mood, instruments, tempo feel, use (e.g. 'tense escape room thriller underscore, ticking clock').",
@@ -305,6 +310,7 @@ TOOLS: list[dict[str, Any]] = [
                 "lyrics",
                 "Lyrics",
                 "textarea",
+                assist=True,
                 default="",
                 help="Only when not instrumental. Use [verse], [chorus] tags.",
             ),
@@ -341,6 +347,7 @@ TOOLS: list[dict[str, Any]] = [
                 "prompt",
                 "Prompt",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="4-8 sentences: shot, place and light, action, character, camera (say how the frame ends), "
@@ -378,7 +385,14 @@ TOOLS: list[dict[str, Any]] = [
                 required=True,
                 help="Cropped to the video size; use the same aspect ratio.",
             ),
-            field("prompt", "Prompt", "textarea", default="", required=True),
+            field(
+                "prompt",
+                "Prompt",
+                "textarea",
+                assist=True,
+                default="",
+                required=True,
+            ),
             field(
                 "size", "Size", "select", default="704x1280", options=opts(VIDEO_SIZES)
             ),
@@ -423,6 +437,7 @@ TOOLS: list[dict[str, Any]] = [
                 "prompt",
                 "Who and how",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="e.g. 'A medium shot of a woman in a navy uniform in a dim museum gallery, facing the lens. "
@@ -461,6 +476,7 @@ TOOLS: list[dict[str, Any]] = [
                 "prompt",
                 "What happens next",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="4-8 sentences. Repeat the words that describe the person, outfit and place in the first clip. "

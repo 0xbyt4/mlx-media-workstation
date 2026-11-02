@@ -238,6 +238,11 @@ select { appearance: none; padding-right: 28px; cursor: pointer;
 
 .field.type-checkbox { justify-content: flex-end; }
 
+.assist-row { display: none; align-items: center; gap: 8px; flex-wrap: wrap; }
+body.assist-on .assist-row { display: flex; }
+.assist-note { color: var(--text-dim); flex: 1 1 240px; }
+.assist-note.err { color: var(--err); }
+
 .check {
   display: flex;
   align-items: center;

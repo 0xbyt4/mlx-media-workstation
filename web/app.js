@@ -36,6 +36,7 @@ const state = {
   lightbox: {items: [], index: 0},
   sessionFiles: new Map(), // "toolId:field" -> File[]; memory only, never stored
   menu: null,
+  assist: null, // GET /api/assist: is prompt help available
 };
 
 // ---------- helpers ----------
@@ -347,7 +348,7 @@ function makeControl(f) {
     input = h('input', {type: 'text', id, name: f.name, spellcheck: 'false'});
   }
 
-  appendChildren(wrap, [label, input, helpEl, errEl]);
+  appendChildren(wrap, [label, input, f.assist ? makeAssistRow(f, ctl) : null, helpEl, errEl]);
   ctl.get = () => input.value;
   ctl.set = (v) => {
     const s = v === null || v === undefined ? '' : String(v);
@@ -379,6 +380,64 @@ function makeControl(f) {
   };
   ctl.reset();
   return ctl;
+}
+
+// "Improve" under a text field: the prompt helper rewrites the draft; shown only when it is available (body.assist-on).
+function makeAssistRow(f, ctl) {
+  const note = h('span', {class: 'assist-note small'});
+  const undo = h('button', {type: 'button', class: 'btn ghost small-btn', hidden: true}, 'Undo');
+  const btn = h('button', {type: 'button', class: 'btn small-btn assist-btn'}, 'Improve');
+  let before = null;
+  btn.addEventListener('click', async () => {
+    const tool = state.tool;
+    if (!tool || btn.disabled) return;
+    if (ctl.get().trim() === '') {
+      note.textContent = 'Write a short idea first.';
+      note.className = 'assist-note small err';
+      return;
+    }
+    const fd = buildFormData(tool);
+    fd.append('field', f.name);
+    btn.disabled = true;
+    btn.textContent = 'Improving...';
+    note.textContent = '';
+    try {
+      const res = await api('/api/assist/enhance', {method: 'POST', body: fd});
+      if (state.controls.get(f.name) !== ctl) return; // the user switched tools meanwhile
+      before = ctl.get();
+      ctl.set(res.text);
+      saveFormNow();
+      undo.hidden = false;
+      const extra = typeof res.cost_usd === 'number' ? ', about $' + res.cost_usd.toFixed(3)
+        : typeof res.seconds === 'number' ? ', ' + Math.round(res.seconds) + ' s' : '';
+      note.textContent = res.notes + ' (' + res.model + extra + ')';
+      note.className = 'assist-note small';
+    } catch (e) {
+      note.textContent = e.offline ? 'Server offline.' : e.message;
+      note.className = 'assist-note small err';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Improve';
+    }
+  });
+  undo.addEventListener('click', () => {
+    if (before === null) return;
+    ctl.set(before);
+    before = null;
+    saveFormNow();
+    undo.hidden = true;
+    note.textContent = '';
+  });
+  return h('div', {class: 'assist-row'}, btn, undo, note);
+}
+
+async function loadAssist() {
+  try {
+    state.assist = await api('/api/assist');
+  } catch {
+    state.assist = null;
+  }
+  document.body.classList.toggle('assist-on', !!(state.assist && state.assist.available));
 }
 
 function makeFileControl(f, ctl, label, helpEl, errEl) {
@@ -549,20 +608,7 @@ async function submitForm() {
     return;
   }
 
-  const fd = new FormData();
-  fd.append('tool', tool.id);
-  for (const [name, ctl] of state.controls) {
-    const v = ctl.get();
-    if (ctl.field.type === 'file') {
-      if (v) fd.append(name, v, v.name);
-    } else if (ctl.field.type === 'files') {
-      for (const file of v) fd.append(name, file, file.name);
-    } else if (ctl.field.type === 'checkbox') {
-      fd.append(name, v ? 'true' : 'false');
-    } else {
-      fd.append(name, v);
-    }
-  }
+  const fd = buildFormData(tool);
   saveFormNow();
 
   const btn = $('generate');
@@ -580,6 +626,24 @@ async function submitForm() {
     btn.disabled = false;
     btn.textContent = 'Generate';
   }
+}
+
+function buildFormData(tool) {
+  const fd = new FormData();
+  fd.append('tool', tool.id);
+  for (const [name, ctl] of state.controls) {
+    const v = ctl.get();
+    if (ctl.field.type === 'file') {
+      if (v) fd.append(name, v, v.name);
+    } else if (ctl.field.type === 'files') {
+      for (const file of v) fd.append(name, file, file.name);
+    } else if (ctl.field.type === 'checkbox') {
+      fd.append(name, v ? 'true' : 'false');
+    } else {
+      fd.append(name, v);
+    }
+  }
+  return fd;
 }
 
 function useSettings(job) {
@@ -1073,6 +1137,7 @@ function init() {
 
   setInterval(tickElapsed, 1000);
   loadTools();
+  loadAssist();
   refreshJobs();
   refreshSystem();
 }

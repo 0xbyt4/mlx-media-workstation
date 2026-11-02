@@ -357,6 +357,11 @@ def fits(peak_gb: float, mem_gb: float) -> bool:
     return peak_gb + RESERVE_GB <= mem_gb
 
 
+def tool_peak(tool_id: str) -> float:
+    """The peak memory in GB of a job of this tool (0 for tools that load no model)."""
+    return max((m.peak_gb or 0.0 for m in MODELS if tool_id in m.tools), default=0.0)
+
+
 def remote_sizes(m: Model) -> dict[str, int]:
     """The files this download takes and their sizes at the pinned commit (asked once per model)."""
     if m.id not in sizes_cache:

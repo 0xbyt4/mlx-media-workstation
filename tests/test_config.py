@@ -1,5 +1,6 @@
 """config.toml loading: defaults, overrides, "~" and relative paths, unknown keys."""
 
+import dataclasses
 import tomllib
 from pathlib import Path
 
@@ -31,6 +32,8 @@ def defaults(home: Path) -> config.Paths:
         drama_python=base / "venv-drama" / "bin" / "python",
         drama_model=base / "models" / "fish-audio-drama-3-4bit",
         ace_dir=base / "ace-step",
+        qwen_python=base / "venv-qwen" / "bin" / "python",
+        qwen_model=base / "models" / "qwen3.8-27b-4bit",
     )
 
 
@@ -48,13 +51,9 @@ def test_override_replaces_only_the_given_keys(tmp_path: Path, home: Path) -> No
         tmp_path,
         '[paths]\nmflux_bin = "/opt/mflux/bin"\nace_dir = "/Volumes/Models/ace"\n',
     )
-    expected = defaults(home)
-    assert config.load(file) == config.Paths(
+    assert config.load(file) == dataclasses.replace(
+        defaults(home),
         mflux_bin=Path("/opt/mflux/bin"),
-        ltx_bin=expected.ltx_bin,
-        ltx_model=expected.ltx_model,
-        drama_python=expected.drama_python,
-        drama_model=expected.drama_model,
         ace_dir=Path("/Volumes/Models/ace"),
     )
 
@@ -75,7 +74,7 @@ def test_unknown_keys_are_refused(tmp_path: Path, home: Path) -> None:
         config.load(file)
     assert str(exc.value) == (
         "config.toml: unknown key(s) in [paths]: mflux, zeta. Known keys: mflux_bin, "
-        "ltx_bin, ltx_model, drama_python, drama_model, ace_dir."
+        "ltx_bin, ltx_model, drama_python, drama_model, ace_dir, qwen_python, qwen_model."
     )
 
 

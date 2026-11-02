@@ -15,3 +15,7 @@ ace_dir = "~/mlx-media/ace-step"
 # the local LLM's environment python and its weights (prompt help and chat)
 qwen_python = "~/mlx-media/venv-qwen/bin/python"
 qwen_model = "~/mlx-media/models/qwen3.8-27b-4bit"
+
+[assist]
+# Prompt help ("Improve" under the prompt fields) and chat use the local LLM: provider = "local" (the only one built in)
+provider = "local"

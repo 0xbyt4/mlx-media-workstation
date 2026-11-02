@@ -17,6 +17,7 @@ import secrets
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -27,8 +28,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
-from app import models, models_api, progress, tools
+from app import assist, chat, llm, models, models_api, progress, tools
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs"
@@ -230,6 +232,7 @@ def worker() -> None:
                 job["status"], job["started"] = "running", now()
                 save(job)
         if job:
+            llm.make_room(models.tool_peak(job["tool"]))
             run_job(job)
             wake.set()
 
@@ -246,6 +249,7 @@ def shutdown() -> None:
     for pgid in pgids:
         stop_group(pgid)
     models.stop()
+    llm.stop("The app was closed.")
     wake.set()
 
 
@@ -462,6 +466,72 @@ def get_file(job_id: str, name: str) -> FileResponse:
     return FileResponse(path)
 
 
+@app.get("/api/assist")
+def assist_status() -> dict[str, Any]:
+    return assist.status()
+
+
+@app.post("/api/assist/enhance")
+async def assist_enhance(request: Request) -> dict[str, Any]:
+    """The same form as a job, plus `field`: the prompt helper writes that field's text. Images and video frames go along."""
+    form = await request.form()
+    tool = tools.BY_ID.get(str(form.get("tool", "")))
+    if tool is None:
+        raise HTTPException(400, "Unknown tool")
+    field_name = str(form.get("field", ""))
+    if not any(f["name"] == field_name and f.get("assist") for f in tool["fields"]):
+        raise HTTPException(400, "This field has no prompt help")
+    values = {
+        f["name"]: str(form.get(f["name"]) or "").replace("\r\n", "\n")
+        for f in tool["fields"]
+        if f["type"] not in ("file", "files")
+    }
+    uploads: list[tuple[dict[str, Any], int, bytes]] = []
+    for f in tool["fields"]:
+        if f["type"] not in ("file", "files") or not f.get("accept", "").startswith(
+            ("image/", "video/")
+        ):
+            continue
+        parts = [
+            u for u in form.getlist(f["name"]) if hasattr(u, "filename") and u.filename
+        ]
+        for i, up in enumerate(parts[: f.get("max", 1)]):
+            if (up.size or 0) > MAX_UPLOAD:
+                raise HTTPException(400, f"{f['label']}: file too large (max 200 MB)")
+            uploads.append((f, i, await up.read()))
+
+    try:
+        end_at = float(values["end_at"]) if values.get("end_at") else None
+    except ValueError:
+        raise HTTPException(400, "'Use the clip up to' must be a number") from None
+
+    def run() -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            images = []
+            for f, i, data in uploads:
+                src = Path(tmp) / f"in_{f['name']}_{i}"
+                src.write_bytes(data)
+                video = f["accept"].startswith("video/")
+                label = f["label"] + (
+                    f" #{i} in upload order" if f["type"] == "files" else ""
+                )
+                if video:
+                    label += " (the frame where the clip ends)"
+                    try:  # the same checks as a job: a clear message, not ffmpeg's
+                        tools.check_extend_source(src, end_at)
+                    except ValueError as e:
+                        raise assist.AssistError(str(e)) from None
+                images.append(
+                    (label, assist.still(src, src.with_suffix(".jpg"), video, end_at))
+                )
+            return assist.enhance(tool, field_name, values, images)
+
+    try:
+        return await run_in_threadpool(run)
+    except assist.AssistError as e:
+        raise HTTPException(400, str(e)) from None
+
+
 @app.get("/api/system")
 def system() -> dict[str, Any]:
     page = 16384
@@ -494,12 +564,22 @@ def system() -> dict[str, Any]:
     }
 
 
+def running_peak() -> float:
+    """The peak memory in GB of the running job; the local LLM starts only when it fits next to it."""
+    with lock:
+        running = [j["tool"] for j in jobs.values() if j["status"] == "running"]
+    return max((models.tool_peak(t) for t in running), default=0.0)
+
+
 def start() -> None:
     """Load the history and start the worker. Called once by start.py after it knows the port is free."""
     OUT.mkdir(exist_ok=True)
     load_jobs()
+    llm.media_peak = running_peak
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=llm.watch_idle, daemon=True).start()
 
 
 app.include_router(models_api.router)
+app.include_router(chat.router)
 app.mount("/", StaticFiles(directory=WEB, html=True), name="web")
