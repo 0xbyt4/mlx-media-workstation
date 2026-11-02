@@ -1,0 +1,51 @@
+$ /opt/mlx-media/ace-step/.venv/bin/python /opt/workstation/app/runners/ace.py /opt/workstation/outputs/job/music_job.json
+2026-11-01 21:41:20.782 | INFO     | acestep.gpu_config:get_gpu_config:846 - macOS MPS detected (37.4 GB unified memory, tier=unlimited). Applying Apple Silicon optimizations: no compile, no quantization, mlx backend, no CPU offload.
+2026-11-01 21:41:20.783 | INFO     | acestep.core.generation.handler.init_service_loader:_load_main_model_from_checkpoint:174 - [initialize_service] Attempting to load model with attention implementation: sdpa
+2026-11-01 21:41:26.842 | INFO     | acestep.core.generation.handler.mlx_dit_init:_init_mlx_dit:34 - [MLX-DiT] Native MLX DiT decoder initialized successfully (mx.compile=False).
+2026-11-01 21:41:27.295 | INFO     | acestep.core.generation.handler.mlx_vae_init:_init_mlx_vae:75 - [MLX-VAE] Decode/encode compiled with mx.compile().
+2026-11-01 21:41:27.295 | INFO     | acestep.core.generation.handler.mlx_vae_init:_init_mlx_vae:85 - [MLX-VAE] Native MLX VAE initialized (dtype=mlx.core.float32, compiled=True).
+2026-11-01 21:41:27.525 | INFO     | acestep.llm_inference:initialize:609 - loading 5Hz LM tokenizer... it may take 80~90s
+2026-11-01 21:41:36.088 | INFO     | acestep.llm_inference:initialize:613 - 5Hz LM tokenizer loaded successfully in 8.56 seconds
+2026-11-01 21:41:36.088 | INFO     | acestep.llm_inference:initialize:618 - Initializing constrained decoding processor...
+2026-11-01 21:41:36.088 | INFO     | acestep.llm_inference:initialize:624 - Setting constrained decoding max_duration to 600s based on GPU config (tier: unlimited)
+2026-11-01 21:41:37.581 | INFO     | acestep.llm_inference:initialize:632 - Constrained processor initialized in 1.49 seconds
+2026-11-01 21:41:37.597 | INFO     | acestep.llm_inference:initialize:681 - Attempting MLX backend for Apple Silicon acceleration...
+2026-11-01 21:41:37.597 | INFO     | acestep.llm_inference:_load_mlx_model:2947 - Loading MLX model from /opt/mlx-media/ace-step/checkpoints/acestep-5Hz-lm-1.7B
+2026-11-01 21:41:37.604 | INFO     | acestep.llm_inference:_load_mlx_model:2982 - Adding 'model.' prefix to weight keys for MLX compatibility
+2026-11-01 21:41:37.914 | INFO     | acestep.llm_inference:_load_mlx_model:3003 - MLX model loaded successfully in 0.32s
+2026-11-01 21:41:37.915 | INFO     | acestep.inference:generate_music:662 - [generate_music] LLM usage decision: thinking=True, use_cot_caption=True, use_cot_language=True, use_cot_metas=True, need_lm_for_cot=True, llm_initialized=True, use_lm=True
+2026-11-01 21:41:37.915 | INFO     | acestep.inference:generate_music:720 - LM chunk 1/1 (infer_type=llm_dit) (size: 1, seeds: [7])
+2026-11-01 21:41:37.915 | INFO     | acestep.llm_inference:generate_with_stop_condition:1371 - Phase 1: Generating CoT metadata...
+2026-11-01 21:41:38.467 | INFO     | acestep.llm_inference:_run_mlx_single_native:3595 - MLX native prefill: 40 tokens in 0.54s (73.5 tok/s)
+MLX Gen (native):   0%|          | 0/3500 [00:00<?, ?tok/s]MLX Gen (native):   0%|          | 1/3500 [00:00<15:37,  3.73tok/s]MLX Gen (native):   0%|          | 6/3500 [00:00<03:03, 19.01tok/s]MLX Gen (native):   5%|▍         | 162/3500 [00:03<00:58, 57.54tok/s]MLX Gen (native):   5%|▍         | 168/3500 [00:03<00:58, 57.29tok/s]MLX Gen (native):   5%|▍         | 168/3500 [00:03<01:03, 52.24tok/s]
+2026-11-01 21:41:41.697 | INFO     | acestep.llm_inference:_run_mlx_single_native:3711 - MLX native generation complete: 168 tokens in 3.23s (52.0 tok/s) | prefill 0.54s + decode 3.23s = 3.77s total
+2026-11-01 21:41:41.697 | INFO     | acestep.llm_inference:generate_with_stop_condition:1422 - Phase 1 completed in 3.78s. Generated metadata: ['bpm', 'caption', 'duration', 'keyscale', 'language', 'timesignature']
+2026-11-01 21:41:41.697 | INFO     | acestep.llm_inference:generate_with_stop_condition:1482 - Phase 2: Generating audio codes...
+2026-11-01 21:41:41.699 | INFO     | acestep.llm_inference:_run_mlx_single_native:3514 - MLX native: pre-transitioned FSM to CODES_GENERATION (native fast path)
+2026-11-01 21:41:41.978 | INFO     | acestep.llm_inference:_run_mlx_single_native:3571 - MLX native prefill: 242 tokens (cond=209, uncond=33) in 0.28s (867.5 tok/s)
+MLX CFG Gen (native):   0%|          | 0/60 [00:00<?, ?tok/s]MLX CFG Gen (native):   7%|▋         | 4/60 [00:00<00:01, 38.99tok/s]MLX CFG Gen (native):  13%|█▎        | 8/60 [00:00<00:01, 37.39tok/s]MLX CFG Gen (native):  73%|███████▎  | 44/60 [00:01<00:00, 35.39tok/s]MLX CFG Gen (native):  80%|████████  | 48/60 [00:01<00:00, 35.04tok/s]MLX CFG Gen (native):  85%|████████▌ | 51/60 [00:01<00:00, 35.71tok/s]
+2026-11-01 21:41:43.407 | INFO     | acestep.llm_inference:_run_mlx_single_native:3711 - MLX native generation complete: 51 tokens in 1.43s (35.7 tok/s) | prefill 0.28s + decode 1.43s = 1.71s total
+2026-11-01 21:41:43.407 | INFO     | acestep.llm_inference:generate_with_stop_condition:1650 - Phase 2 completed in 1.71s. Generated 50 audio codes
+2026-11-01 21:41:43.621 | INFO     | acestep.core.generation.handler.generate_music:generate_music:313 - [generate_music] Turbo model detected: overriding guidance_scale 7.0 -> 1.0 (turbo does not use CFG).
+2026-11-01 21:41:43.621 | INFO     | acestep.core.generation.handler.generate_music:generate_music:329 - [generate_music] Starting generation...
+2026-11-01 21:41:43.621 | INFO     | acestep.core.generation.handler.generate_music:generate_music:332 - [generate_music] Preparing inputs...
+2026-11-01 21:41:43.622 | INFO     | acestep.core.generation.handler.generate_music_request:_prepare_reference_and_source_audio:204 - [generate_music] cover task: no src_audio but audio codes provided, proceeding with codes
+2026-11-01 21:41:43.676 | INFO     | acestep.core.generation.handler.conditioning_target:_prepare_target_latents_and_wavs:78 - [generate_music] Decoding audio codes for item 0...
+2026-11-01 21:41:45.778 | INFO     | acestep.core.generation.handler.conditioning_text:_prepare_precomputed_lm_hints:31 - [generate_music] Decoding audio codes for LM hints for item 0...
+2026-11-01 21:41:45.781 | INFO     | acestep.core.generation.handler.conditioning_text:_prepare_text_conditioning_inputs:119 - 
+2026-11-01 21:41:46.037 | INFO     | acestep.core.generation.handler.conditioning_embed:preprocess_batch:110 - [preprocess_batch] Inferring prompt embeddings...
+2026-11-01 21:41:46.790 | INFO     | acestep.core.generation.handler.conditioning_embed:preprocess_batch:113 - [preprocess_batch] Inferring lyric embeddings...
+2026-11-01 21:41:46.792 | INFO     | acestep.core.generation.handler.service_generate_execute:_execute_service_generate_diffusion:173 - [service_generate] Generating audio... (DiT backend: MLX (native))
+2026-11-01 21:41:49.297 | INFO     | acestep.models.mlx.dit_generate:mlx_generate_diffusion:410 - [MLX-DiT] DCW enabled (mode=double, scaler=0.050, high_scaler=0.020, wavelet=haar, backend=MLX-native Haar).
+Using precomputed LM hints
+MLX DiT diffusion:   0%|          | 0/8 [00:00<?, ?it/s]MLX DiT diffusion:  12%|█▎        | 1/8 [00:00<00:06,  1.14it/s]MLX DiT diffusion:  38%|███▊      | 3/8 [00:01<00:01,  3.35it/s]MLX DiT diffusion:  62%|██████▎   | 5/8 [00:01<00:00,  5.17it/s]MLX DiT diffusion:  88%|████████▊ | 7/8 [00:01<00:00,  6.61it/s]MLX DiT diffusion: 100%|██████████| 8/8 [00:01<00:00,  5.19it/s]
+2026-11-01 21:41:50.839 | INFO     | acestep.core.generation.handler.service_generate_execute:_execute_service_generate_diffusion:267 - [service_generate] DiT diffusion complete via MLX (1.54s total, 0.193s/step).
+2026-11-01 21:41:50.839 | INFO     | acestep.core.generation.handler.generate_music_decode:_prepare_generate_music_decode_state:42 - [generate_music] Model generation completed. Decoding latents...
+2026-11-01 21:41:51.100 | INFO     | acestep.core.generation.handler.generate_music_decode:_decode_generate_music_pred_latents:127 - [generate_music] Decoding latents with VAE...
+2026-11-01 21:41:51.109 | INFO     | acestep.core.generation.handler.generate_music_decode:_decode_generate_music_pred_latents:172 - [generate_music] Using tiled VAE decode to reduce VRAM usage...
+2026-11-01 21:41:51.741 | INFO     | acestep.core.generation.handler.mlx_vae_decode_native:_mlx_vae_decode:66 - [MLX-VAE] Decoded 1 sample(s), 250 latent frames -> audio in 0.63s (convert=0.001s, decode=0.63s, dtype=mlx.core.float32)
+2026-11-01 21:41:51.815 | INFO     | acestep.core.generation.handler.generate_music_payload:_build_generate_music_success_payload:38 - [generate_music] VAE decode completed. Preparing audio tensors...
+2026-11-01 21:41:51.815 | INFO     | acestep.core.generation.handler.generate_music_payload:_build_generate_music_success_payload:50 - [generate_music] Done! Generated 1 audio tensors.
+1 takes written
+       39.15 real        19.23 user         6.07 sys
+         22604979952  peak memory footprint

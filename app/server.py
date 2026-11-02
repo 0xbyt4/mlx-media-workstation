@@ -28,7 +28,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import models, models_api, tools
+from app import models, models_api, progress, tools
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs"
@@ -272,6 +272,11 @@ def view(job: dict[str, Any]) -> dict[str, Any]:
         )
     else:
         v["elapsed"] = job.get("elapsed")
+    v["progress"] = (
+        progress.estimate(job, jobs.values(), OUT, time.time())
+        if job["status"] == "running" and job.get("started")
+        else None
+    )
     v["position"] = 0
     if job["status"] == "queued":
         queued = sorted(
