@@ -481,3 +481,9 @@ def test_system_without_answers(
         "running": None,
         "queued": 0,
     }
+
+
+def test_page_files_are_revalidated(client: TestClient) -> None:
+    for path in ("/", "/js/main.js", "/css/tokens.css"):
+        r = client.get(path)
+        assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"

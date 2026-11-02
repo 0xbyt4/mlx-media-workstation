@@ -101,7 +101,8 @@ const fetchTools = loader('tools', api.tools, (tools) => {
   state.toolsById = new Map(tools.map((t) => [t.id, t]));
 });
 
-const downloading = () => !!(state.models && state.models.models.some((m) => m.download && m.download.status === 'running'));
+const downloading = () => !!(state.models && ((state.models.queue && state.models.queue.count > 0) ||
+  state.models.models.some((m) => m.download && m.download.status === 'running')));
 
 function startLoops() {
   loops.jobs = poll(fetchJobs, (jobs, err) => {

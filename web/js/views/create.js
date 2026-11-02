@@ -996,7 +996,7 @@ function renderSetup() {
   s.els.setup.append(h('div', {class: 'banner banner-info'}, icon('info'),
     h('div', {class: 'banner-body'}, h('strong', null, 'No models installed yet'),
       h('span', null, 'Workstation does not ship the models. Pick the ones that fit this Mac and it downloads them for you. Mix needs no model and works now.'),
-      h('div', {class: 'banner-actions'}, h('button', {type: 'button', class: 'btn btn-primary btn-sm', onclick: () => s.ctx.router.go('models')}, 'Set up models')))));
+      h('div', {class: 'banner-actions'}, h('button', {type: 'button', class: 'btn btn-primary btn-sm', onclick: () => s.ctx.router.go('models', {setup: '1'})}, 'Set up models')))));
 }
 
 // ---------- handoff: settings, text and files from other views ----------

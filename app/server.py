@@ -99,6 +99,10 @@ async def same_origin_writes(request: Request, call_next):
             return JSONResponse({"detail": "Request too large"}, status_code=413)
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
+    if not request.url.path.startswith(
+        "/api/"
+    ):  # the page's own files: check for a newer copy after an update
+        response.headers.setdefault("Cache-Control", "no-cache")
     return response
 
 
