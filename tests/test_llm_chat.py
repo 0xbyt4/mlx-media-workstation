@@ -35,6 +35,7 @@ def fake_llm(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "LOG", tmp_path / "llm.log")
     monkeypatch.setattr(models, "mem_total_gb", lambda: 48.0)
     monkeypatch.setattr(chat, "CHATS", tmp_path / "chats")
+    monkeypatch.setattr(llm, "closed", False)
     yield use
     llm.release()
     llm.stop("test over")
@@ -415,3 +416,72 @@ def test_system_prompt_names_every_tool_with_prompt_help():
             assert f"- {tool['id']}: {tool['label']}" in chat.SYSTEM
             assert ", ".join(names) in chat.SYSTEM
     assert "edit.mix" not in chat.SYSTEM  # nothing to write for it
+
+
+def test_closing_at_started_frees_the_request():
+    gen = llm.generate(user("hi"))
+    next(gen)
+    gen.close()
+    assert llm.active == 0 and not llm.cancels
+    llm.claim(35.0)
+    gen = llm.generate(user("hi"))
+    next(gen)
+    gen.close()
+    assert not llm.waiting and llm.status()["waiting"] == 0
+
+
+def test_cancel_before_the_model_loads_does_not_load_it():
+    gen = llm.generate(user("hi"))
+    rid = next(gen)["id"]
+    llm.cancel(rid)
+    assert list(gen)[-1]["finish"] == "cancelled"
+    assert llm.status()["state"] == "off"
+
+
+def test_close_cancels_waiting_requests_and_starts_no_worker():
+    llm.claim(35.0)
+    gen = llm.generate(user("hi"))
+    next(gen)
+    next(gen)  # waiting
+    llm.close()
+    llm.release()
+    assert list(gen)[-1]["finish"] == "cancelled"
+    with pytest.raises(llm.LLMError, match="closed"):
+        llm.complete(user("hi"))
+    assert llm.status()["state"] == "off"
+
+
+def test_claim_gives_up_when_the_job_is_cancelled():
+    gen = llm.generate(user("SLOW"))
+    rid = next(gen)["id"]
+    next(gen)
+    off = threading.Event()
+    result = {}
+    t = threading.Thread(
+        target=lambda: result.update(ok=llm.claim(35.0, off.is_set)), daemon=True
+    )
+    t.start()
+    time.sleep(0.2)
+    off.set()  # the job was cancelled while its claim waited
+    t.join(5)
+    assert result == {"ok": False}
+    assert llm.status()["media_peak_gb"] == 0.0 and llm.status()["state"] == "ready"
+    assert llm.cancel(rid)
+    list(gen)
+
+
+def test_job_shows_why_it_waits(monkeypatch):
+    jobs = {
+        j: {
+            "id": j,
+            "tool": "video.t2v",
+            "status": "queued",
+            "params": {},
+            "created": c,
+        }
+        for j, c in (("j1", "2026-11-02T10:00:01"), ("j2", "2026-11-02T10:00:02"))
+    }
+    monkeypatch.setattr(server, "jobs", jobs)
+    monkeypatch.setattr(server, "claiming", {"j1"})
+    assert "chat answer" in server.view(jobs["j1"])["waiting"]
+    assert "waiting" not in server.view(jobs["j2"])

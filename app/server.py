@@ -68,6 +68,7 @@ wake = threading.Event()
 stopping = threading.Event()
 jobs: dict[str, dict[str, Any]] = {}
 procs: dict[str, subprocess.Popen] = {}
+claiming: set[str] = set()  # the queued job whose memory claim waits for LLM answers
 
 
 @app.middleware("http")
@@ -232,14 +233,20 @@ def worker() -> None:
             job = queued[0] if queued else None
         if not job:
             continue
-        # before the job counts as running: prompt help and chat answers sent before it finish first
-        llm.claim(models.tool_peak(job["tool"]))
-        with lock:
-            go = job["status"] == "queued" and not stopping.is_set()
-            if go:
-                job["status"], job["started"] = "running", now()
-                save(job)
         try:
+            # before the job counts as running: prompt help and chat answers sent before it finish first
+            with lock:
+                claiming.add(job["id"])
+            go = llm.claim(
+                models.tool_peak(job["tool"]),
+                lambda j=job: j["status"] != "queued" or stopping.is_set(),
+            )
+            with lock:
+                claiming.discard(job["id"])
+                go = go and job["status"] == "queued" and not stopping.is_set()
+                if go:
+                    job["status"], job["started"] = "running", now()
+                    save(job)
             if go:
                 run_job(job)
         finally:
@@ -259,7 +266,7 @@ def shutdown() -> None:
     for pgid in pgids:
         stop_group(pgid)
     models.stop()
-    llm.stop("The app was closed.")
+    llm.close("The app was closed.")
     wake.set()
 
 
@@ -279,6 +286,10 @@ def view(job: dict[str, Any]) -> dict[str, Any]:
         "log_tail",
     )
     v = {k: job.get(k) for k in keys}
+    if (
+        job["id"] in claiming
+    ):  # first in line, but answers of prompt help or chat finish first
+        v["waiting"] = "Waiting for the prompt help or chat answer to finish."
     v["outputs"] = v["outputs"] or []
     if job["status"] == "running" and job.get("started"):
         v["elapsed"] = round(

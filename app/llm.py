@@ -15,7 +15,7 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
 from app import models
@@ -26,11 +26,10 @@ LOG = ROOT / "outputs" / "llm.log"
 LOAD_TIMEOUT = 300.0  # seconds to load the weights (about 16 GB from disk)
 IDLE_STOP = 600.0  # seconds without a request before the model is unloaded
 STOP_WAIT = 5.0  # seconds for a clean exit before SIGKILL
-JOB_WAIT = (
-    600.0  # seconds a media job waits for the answers before it, then stops the model
-)
+JOB_WAIT = 600.0  # seconds a media job waits for the answers before it; then it stops the model
 CRASHED = "The model stopped unexpectedly. See outputs/llm.log."
-WAITING = "Waiting for memory: a media job is running. This continues when it finishes."
+WAITING = "Waiting for memory: a media job needs it. This continues when the job ends."
+CLOSED = "The app was closed."
 WORKER = ["-m", "app.llm_worker"]  # run with the LLM environment's python
 
 
@@ -106,7 +105,7 @@ class Worker:
             try:
                 self.send({"op": "shutdown"})
                 self.proc.stdin.close()
-            except (LLMError, ValueError):
+            except (LLMError, ValueError, OSError):
                 pass
             try:
                 self.proc.wait(STOP_WAIT)
@@ -135,6 +134,7 @@ cancels: dict[
     str, threading.Event
 ] = {}  # request id -> its cancel flag, from "started" to the end
 waiting: set[str] = set()  # the requests waiting for memory
+closed = False  # set when the app closes: no new worker starts
 
 
 def installed() -> bool:
@@ -189,7 +189,11 @@ def start() -> Worker:
             check_installed()
             w = Worker()
             with lock:
-                worker = w
+                if not closed:
+                    worker = w
+            if worker is not w:  # the app closed while it started
+                w.stop(CLOSED)
+                raise LLMError(CLOSED)
         if not w.ready.wait(LOAD_TIMEOUT) or not w.alive():
             message = (
                 w.fatal or w.reason or "The model did not load. See outputs/llm.log."
@@ -217,46 +221,44 @@ def generate(
     check_installed()
     rid = f"r{next(ids)}"
     cancelled = threading.Event()
-    with room:
-        cancels[rid] = cancelled
-        must_wait = not fits_with(job_peak)
-        if must_wait:
-            waiting.add(rid)
-        else:
-            active += 1
+    counted = False  # counted in active
     try:
+        with room:
+            cancels[rid] = cancelled
+            if fits_with(job_peak):
+                active += 1
+                counted = True
+            else:
+                waiting.add(rid)
         yield {"event": "started", "id": rid}
-        if must_wait:
-            try:
-                yield {"event": "waiting", "message": WAITING}
-                with room:
-                    room.wait_for(lambda: fits_with(job_peak) or cancelled.is_set())
-                    if not cancelled.is_set():
-                        active += 1
-            finally:
-                with room:
-                    waiting.discard(rid)
-                    room.notify_all()
-            if cancelled.is_set():
-                yield {
-                    "event": "done",
-                    "finish": "cancelled",
-                    "reasoning": "",
-                    "content": "",
-                    "stats": {},
-                }
-                return
-        try:
-            yield from run(
-                rid, cancelled, messages, images, thinking, schema, max_tokens, chat
-            )
-        finally:
+        if not counted:
+            yield {"event": "waiting", "message": WAITING}
             with room:
-                active -= 1
+                room.wait_for(lambda: fits_with(job_peak) or cancelled.is_set())
+                waiting.discard(rid)
+                if not cancelled.is_set():
+                    active += 1
+                    counted = True
                 room.notify_all()
-    finally:
+        if cancelled.is_set():  # before the model loads for it
+            yield {
+                "event": "done",
+                "finish": "cancelled",
+                "reasoning": "",
+                "content": "",
+                "stats": {},
+            }
+            return
+        yield from run(
+            rid, cancelled, messages, images, thinking, schema, max_tokens, chat
+        )
+    finally:  # also when the iterator is closed at any yield
         with room:
             cancels.pop(rid, None)
+            waiting.discard(rid)
+            if counted:
+                active -= 1
+            room.notify_all()
 
 
 def run(
@@ -348,21 +350,54 @@ def stop(reason: str = "The model was unloaded.") -> None:
         w.stop(reason)
 
 
-def claim(peak: float) -> None:
-    """Hold the memory for a media job (before it starts): the requests waiting since the last job run first, then
-    the model unloads if the job does not fit next to it. New requests wait until release."""
-    global job_peak
+def close(reason: str = CLOSED) -> None:
+    """The app closes: cancel every request, also the waiting ones, stop the worker and start none again."""
+    global closed
     with room:
-        room.wait_for(lambda: not waiting, JOB_WAIT)
+        closed = True
+        for flag in cancels.values():
+            flag.set()
+        room.notify_all()
+    stop(reason)
+
+
+def wait_room(
+    ready: Callable[[], bool], abort: Callable[[], bool], end: float
+) -> bool | None:
+    """Wait (holding room) until ready: True; False at the time limit; None when abort says the job is off."""
+    while not ready():
+        if abort():
+            return None
+        left = end - time.time()
+        if left <= 0:
+            return False
+        room.wait(min(left, 1.0))
+    return True
+
+
+def claim(peak: float, abort: Callable[[], bool] = lambda: False) -> bool:
+    """Hold the memory for a media job (before it starts): the requests waiting since the last job run first, then
+    the model unloads if the job does not fit next to it. New requests wait until release. Returns False when abort
+    (the job was cancelled, or the app closes) ended the wait; the memory is then free again."""
+    global job_peak
+    end = time.time() + JOB_WAIT
+    with room:
+        if wait_room(lambda: not waiting, abort, end) is None:
+            return False
         job_peak = peak
         if fits_with(peak):
-            return
-        drained = room.wait_for(lambda: active == 0, JOB_WAIT)
+            return True
+        drained = wait_room(lambda: active == 0, abort, end)
+        if drained is None:
+            job_peak = 0.0
+            room.notify_all()
+            return False
     stop(
         "Unloaded to free the memory for a media job."
         if drained
         else "Stopped: a media job could not wait longer for this answer."
     )
+    return True
 
 
 def release() -> None:

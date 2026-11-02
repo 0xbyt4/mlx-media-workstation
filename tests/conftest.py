@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import server, tools
+from app import llm, server, tools
 
 MODELS = Path("/models")
 
@@ -90,6 +90,8 @@ def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(server, "procs", {})
     monkeypatch.setattr(server, "stopping", threading.Event())
     monkeypatch.setattr(server, "wake", threading.Event())
+    monkeypatch.setattr(server, "claiming", set())
+    monkeypatch.setattr(llm, "closed", False)  # shutdown() closes the LLM for good
     return out
 
 

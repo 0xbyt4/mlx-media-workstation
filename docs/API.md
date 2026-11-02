@@ -70,6 +70,8 @@ checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Erro
 
 - `position` is the place in the queue for queued jobs (1 = next), 0 otherwise.
 - `progress` is set only while a job runs, otherwise `null`. It comes from the model's own output (app/progress.py).
+- `waiting` (a text) is set only on the first queued job while it waits for prompt help or chat answers to finish
+  before it starts.
   `stage` is a short label, `fraction` is the share of the whole job done (0-1), and `eta_s` is the seconds left.
   `eta_s` blends the live rate with the median time of finished jobs with the same settings. Each field is `null`
   until the output shows it, and `eta_s` is `null` when the job has run past every estimate.
@@ -165,7 +167,8 @@ ends; `GET /api/llm` shows `waiting` > 0 meanwhile.
 
 - `state` is `off`, `loading` or `ready`. The model loads on the first request and unloads after `idle_stop_s`
   without use, or before a media job that does not fit next to it.
-- `waiting` counts requests that wait for such a job to end. They run before the next job starts.
+- `waiting` counts requests that wait for such a job to end. They run before the next job starts; that job waits
+  for them at most 10 minutes, then it stops the model and the answer ends with an error.
 - `media_peak_gb` is the peak memory of the job that holds the memory now (0 when none).
 
 `POST /api/llm/unload` stops the model and returns `{"status": "off"}`.
