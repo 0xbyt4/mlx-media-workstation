@@ -19,6 +19,7 @@ const NOUN = {image: 'image', audio: 'audio file', video: 'video'};
 // Kept across mounts: chosen files (never stored) and prompt-help state per "toolId:field".
 const sessionFiles = new Map();
 const improve = new Map();
+const improveRuns = new Map(); // "toolId:field" -> the running Improve request: {id, api, ctrl, cancelled}
 const fileInfo = new WeakMap();
 
 let s = null; // the mounted view
@@ -181,6 +182,8 @@ function selectTool(id) {
     takeHandoff(id);
     return;
   }
+  // Leaving a tool cancels its running Improve (leaving the view does not: see runImprove).
+  if (s.tool) for (const name of s.controls.keys()) cancelImprove(s.tool.id + ':' + name);
   saveFormNow();
   s.tool = tool;
   lsSet(KEY.lastTool, id);
@@ -571,7 +574,7 @@ function onFormInput(e) {
   if (ctl && ctl.counter) updateCounter(ctl);
   if (ctl && ctl.wrap.classList.contains('invalid') && ctl.validate() === null) showFieldError(ctl, null);
   const key = ctl && s.tool.id + ':' + ctl.field.name;
-  if (ctl && ctl.improveBtn && ['empty', 'error'].includes((improve.get(key) || {}).status)) {
+  if (ctl && ctl.improveBtn && ['empty', 'error', 'cancelled'].includes((improve.get(key) || {}).status)) {
     improve.delete(key);
     renderImprove(ctl);
   }
@@ -742,11 +745,14 @@ async function runImprove(tool, f) {
   fd.append('field', f.name);
   const api = s.ctx.api;
   const router = s.ctx.router;
+  const run = {id: crypto.randomUUID(), api, ctrl: new AbortController(), cancelled: false};
+  fd.append('request_id', run.id);
+  improveRuns.set(key, run);
   improve.set(key, {status: 'working'});
   renderImprove(ctl);
   const release = store.fast('llm');
   try {
-    const res = await api.enhance(fd);
+    const res = await api.enhance(fd, {signal: run.ctrl.signal});
     let before;
     const live = s && s.tool && s.tool.id === tool.id ? s.controls.get(f.name) : null;
     if (live) {
@@ -754,7 +760,8 @@ async function runImprove(tool, f) {
       live.set(res.text);
       saveFormNow();
     } else {
-      // The user left this tool: the new text goes into its saved form, and Undo still works there.
+      // The user left the view (choosing another tool cancels instead): the new text goes into the tool's saved
+      // form, and Undo still works there. Going to Jobs while Improve waits for that job's memory is normal use.
       const saved = lsGet(KEY.form(tool.id)) || {};
       before = saved[f.name] ?? '';
       saved[f.name] = res.text;
@@ -763,13 +770,29 @@ async function runImprove(tool, f) {
     }
     improve.set(key, {status: 'done', before, after: res.text, notes: res.notes, model: res.model, seconds: res.seconds, cost: res.cost_usd});
   } catch (e) {
-    const message = e.offline ? 'Server offline.' : e.message;
-    improve.set(key, {status: 'error', message});
-    if (!(s && s.tool && s.tool.id === tool.id)) toast('Prompt help for ' + tool.label + ' failed: ' + message, {kind: 'err'});
+    if (run.cancelled) {
+      improve.set(key, {status: 'cancelled'});
+    } else {
+      const message = e.offline ? 'Server offline.' : e.message;
+      improve.set(key, {status: 'error', message});
+      if (!(s && s.tool && s.tool.id === tool.id)) toast('Prompt help for ' + tool.label + ' failed: ' + message, {kind: 'err'});
+    }
   } finally {
+    if (improveRuns.get(key) === run) improveRuns.delete(key);
     release();
     if (s && s.tool && s.tool.id === tool.id) renderImprove(s.controls.get(f.name));
   }
+}
+
+// Stops a running Improve on the server, whether it waits for memory, loads the model or writes, and drops its
+// answer. The field keeps its text: Improve writes the field only when the answer comes, so there is nothing to undo.
+function cancelImprove(key) {
+  const run = improveRuns.get(key);
+  if (!run) return;
+  improveRuns.delete(key);
+  run.cancelled = true;
+  run.api.cancelEnhance(run.id).catch(() => {}); // the aborted fetch also cancels it when this call fails
+  run.ctrl.abort();
 }
 
 function undoImprove(ctl, redo) {
@@ -792,30 +815,41 @@ function renderImprove(ctl) {
   if (!ctl || !ctl.improveBtn) return;
   const on = assistOn();
   ctl.improveBtn.hidden = !on;
-  const st = improve.get(s.tool.id + ':' + ctl.field.name) || {status: 'idle'};
+  const key = s.tool.id + ':' + ctl.field.name;
+  const st = improve.get(key) || {status: 'idle'};
   const working = st.status === 'working';
   ctl.improveBtn.disabled = working;
   ctl.improveBtn.replaceChildren(...(working ? [h('span', {class: 'spinner sm'}), 'Improving'] : [icon('wand', 'ic-sm'), 'Improve']));
   const slot = ctl.improveNote;
+  // The note is rebuilt on every LLM poll: keep the keyboard focus on Cancel.
+  const focused = slot.contains(document.activeElement) ? document.activeElement.dataset.improve : null;
   slot.replaceChildren();
   if (!on && st.status !== 'done' && st.status !== 'undone') return;
   const llm = store.get('llm') || {};
   const model = (store.get('assist') || {}).model || llm.model || 'The local model';
   const label = ctl.field.label.toLowerCase();
   if (working) {
+    const cancel = h('button', {type: 'button', class: 'btn btn-sm btn-ghost', 'data-improve': 'cancel',
+      'aria-label': 'Cancel Improve for ' + ctl.field.label, onclick: () => {
+        cancelImprove(key);
+        ctl.focus();
+      }}, icon('x', 'ic-sm'), 'Cancel');
     if (llm.waiting > 0) {
       const run = store.runningJob();
       const left = run && run.progress ? fmtLeft(run.progress.eta_s) : '';
       slot.append(note('wait', h('span', {class: 'spinner'}),
         'Waiting for memory. ' + model + ' does not fit next to ' + (run ? run.tool_label || run.tool : 'the running job') + '.',
-        'Improve runs as soon as that job ends' + (left ? ' (' + left + ')' : '') + ', before the next queued job. Your text stays here.'));
+        'Improve runs as soon as that job ends' + (left ? ' (' + left + ')' : '') + ', before the next queued job. Your text stays here.', cancel));
     } else if (llm.state === 'loading' || llm.state === 'off') {
       slot.append(note('wait', h('span', {class: 'spinner'}), 'Loading ' + model + ' into memory.',
-        'The first request reads about ' + Math.round(llm.peak_gb || 16) + ' GB from disk. Your text stays here until the new one is ready.'));
+        'The first request reads about ' + Math.round(llm.peak_gb || 16) + ' GB from disk. Your text stays here until the new one is ready.', cancel));
     } else {
       slot.append(note('wait', h('span', {class: 'spinner'}), model + ' is rewriting your ' + label + '.',
-        'Your text stays here until the new one is ready.'));
+        'Your text stays here until the new one is ready.', cancel));
     }
+    if (focused === 'cancel') cancel.focus();
+  } else if (st.status === 'cancelled') {
+    slot.append(note('quiet', icon('x'), 'Cancelled. Your text is unchanged.'));
   } else if (st.status === 'done') {
     const how = typeof st.cost === 'number' ? 'about $' + st.cost.toFixed(3) : typeof st.seconds === 'number' ? Math.round(st.seconds) + ' s' : '';
     slot.append(note('', icon('wand'), st.notes || 'Rewrote the ' + label + ' for this tool.',

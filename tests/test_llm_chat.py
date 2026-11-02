@@ -2,6 +2,7 @@
 
 import io
 import json
+import socket
 import sys
 import threading
 import time
@@ -9,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
 
 from app import assist, chat, llm, models, server, tools
@@ -37,8 +39,9 @@ def fake_llm(tmp_path, monkeypatch):
     monkeypatch.setattr(chat, "CHATS", tmp_path / "chats")
     monkeypatch.setattr(llm, "closed", False)
     yield use
+    # cancel first: a request a failed test left waiting must not start a worker once the real paths are back
+    llm.close("test over")
     llm.release()
-    llm.stop("test over")
 
 
 @pytest.fixture
@@ -249,6 +252,160 @@ def test_assist_endpoint(client):
     assert r.status_code == 200 and r.json()["text"].startswith("improved:")
     r = client.post("/api/assist/enhance", data={"tool": "video.t2v", "field": "size"})
     assert r.status_code == 400
+
+
+def test_complete_gives_the_request_id_at_start():
+    seen = []
+    done = llm.complete(user("hi"), on_start=seen.append)
+    assert done["content"] == "Hello world" and seen and seen[0].startswith("r")
+
+
+def enhance_in_thread(client, draft, request_id):
+    result = {}
+    form = {"tool": "video.t2v", "field": "prompt", "prompt": draft}
+    if request_id is not None:
+        form["request_id"] = request_id
+    t = threading.Thread(
+        target=lambda: result.update(r=client.post("/api/assist/enhance", data=form)),
+        daemon=True,
+    )
+    t.start()
+    return t, result
+
+
+def test_assist_cancel_while_waiting_for_memory(client):
+    llm.claim(35.0)
+    t, result = enhance_in_thread(client, "a gull", "w-1")
+    assert wait_for(lambda: llm.status()["waiting"] == 1)
+    r = client.post("/api/assist/cancel", json={"request_id": "w-1"})
+    assert r.json() == {"status": "cancelling"}
+    t.join(5)
+    assert result["r"].status_code == 409 and result["r"].json() == {
+        "detail": "Cancelled."
+    }
+    assert not assist.running and not llm.cancels
+    assert llm.status()["waiting"] == 0 and llm.status()["state"] == "off"
+
+
+def test_assist_cancel_while_generating(client):
+    t, result = enhance_in_thread(client, "SLOW", "g_1")
+    assert wait_for(lambda: llm.status()["busy"])
+    time.sleep(0.1)  # some tokens are out
+    assert client.post("/api/assist/cancel", json={"request_id": "g_1"}).json() == {
+        "status": "cancelling"
+    }
+    t.join(5)
+    assert result["r"].status_code == 409
+    assert not assist.running and not llm.cancels and not llm.status()["busy"]
+    assert client.post("/api/assist/cancel", json={"request_id": "g_1"}).json() == {
+        "status": "idle"
+    }
+
+
+def test_assist_cancel_before_the_llm_request_starts():
+    req = assist.Running()
+    req.cancel()  # the request is still reading its inputs: no LLM request yet
+    tool = tools.BY_ID["video.t2v"]
+    target = next(f for f in tool["fields"] if f["name"] == "prompt")
+    with pytest.raises(assist.Cancelled):
+        assist.local(tool, target, {"prompt": "SLOW"}, [], req.started)
+    assert not llm.cancels and llm.status()["state"] == "off"  # the model never loaded
+    with pytest.raises(assist.Cancelled):
+        assist.enhance(tool, "prompt", {"prompt": "SLOW"}, [], req)
+
+
+def test_assist_cancel_unknown_and_bad_ids(client):
+    r = client.post("/api/assist/cancel", json={"request_id": "nope"})
+    assert r.status_code == 200 and r.json() == {"status": "idle"}
+    assert client.post("/api/assist/cancel", json={}).status_code == 422
+    form = {"tool": "video.t2v", "field": "prompt", "prompt": "a gull"}
+    for bad in ("a b", "x" * 65, "../x"):
+        r = client.post("/api/assist/enhance", data={**form, "request_id": bad})
+        assert r.status_code == 400 and "request_id" in r.json()["detail"]
+
+
+def test_assist_requests_are_forgotten_when_they_end(client):
+    form = {"tool": "video.t2v", "field": "prompt", "request_id": "c1"}
+    r = client.post("/api/assist/enhance", data={**form, "prompt": "a gull"})
+    assert r.status_code == 200 and not assist.running
+    r = client.post("/api/assist/enhance", data={**form, "prompt": " "})
+    assert r.status_code == 400 and not assist.running
+    t, result = enhance_in_thread(client, "SLOW", "c1")
+    assert wait_for(lambda: llm.status()["busy"])
+    r = client.post("/api/assist/enhance", data={**form, "prompt": "a gull"})
+    assert r.status_code == 400 and "in use" in r.json()["detail"]
+    assist.cancel("c1")
+    t.join(5)
+    assert result["r"].status_code == 409 and not assist.running
+
+
+def test_assist_stopped_by_the_app_is_an_error_not_a_cancel():
+    llm.claim(35.0)
+    result = {}
+
+    def run():
+        try:
+            assist.enhance(
+                tools.BY_ID["video.t2v"],
+                "prompt",
+                {"prompt": "hi"},
+                [],
+                assist.Running(),
+            )
+        except (assist.AssistError, assist.Cancelled) as e:
+            result["e"] = e
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    assert wait_for(lambda: llm.status()["waiting"] == 1)
+    llm.close()
+    t.join(5)
+    assert isinstance(result["e"], assist.AssistError)
+
+
+@pytest.mark.parametrize("draft", ["SLOW", "waiting"])
+def test_assist_is_cancelled_when_the_client_goes_away(draft):
+    """A real server: the app's middleware must not hide the disconnect."""
+    if draft == "waiting":
+        llm.claim(35.0)
+    srv = uvicorn.Server(
+        uvicorn.Config(server.app, host="127.0.0.1", port=0, log_level="warning")
+    )
+    thread = threading.Thread(target=srv.run, daemon=True)
+    thread.start()
+    try:
+        assert wait_for(lambda: srv.started)
+        port = srv.servers[0].sockets[0].getsockname()[1]
+        body = (
+            "--b\r\n"
+            + "".join(
+                f'Content-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n--b\r\n'
+                for k, v in (
+                    ("tool", "video.t2v"),
+                    ("field", "prompt"),
+                    ("request_id", "gone"),
+                )
+            )
+            + f'Content-Disposition: form-data; name="prompt"\r\n\r\n{draft}\r\n--b--\r\n'
+        ).encode()
+        sock = socket.create_connection(("127.0.0.1", port))
+        sock.sendall(
+            b"POST /api/assist/enhance HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            b"Content-Type: multipart/form-data; boundary=b\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode()
+            + body
+        )
+        if draft == "waiting":
+            assert wait_for(lambda: llm.status()["waiting"] == 1)
+        else:
+            assert wait_for(lambda: llm.status()["busy"])
+        assert "gone" in assist.running
+        sock.close()
+        assert wait_for(lambda: not assist.running and not llm.cancels)
+        assert llm.status()["waiting"] == 0 and not llm.status()["busy"]
+    finally:
+        srv.should_exit = True
+        thread.join(5)
 
 
 # ---------- chat ----------

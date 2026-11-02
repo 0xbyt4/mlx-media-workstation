@@ -1,7 +1,7 @@
 """A stand-in for app/llm_worker.py that speaks its JSON-line protocol without a model (tests only).
 
 The model path argument picks the behaviour: "fail" reports a load error, "crash" exits after loading. A user message
-containing SLOW streams tokens until cancelled; a request with a schema answers JSON.
+containing SLOW streams tokens until cancelled (also with a schema); any other request with a schema answers JSON.
 """
 
 import json
@@ -49,7 +49,7 @@ def main():
     while (req := jobs.get()) is not None:
         rid, cancel = req["id"], cancels[req["id"]]
         text = last_text(req["messages"])
-        if req.get("schema"):
+        if req.get("schema") and "SLOW" not in text:
             content = json.dumps(
                 {"text": "improved: " + text[-20:], "notes": "added detail"}
             )

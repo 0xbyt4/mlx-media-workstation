@@ -9,6 +9,7 @@ next job until that whole group is gone; a cancel stops the group (SIGTERM, then
 stops the queue and every model before the app exits; a group left over from a crash is killed at the next start.
 """
 
+import asyncio
 import json
 import math
 import os
@@ -20,6 +21,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from app import (
@@ -70,6 +73,8 @@ INPUT_NAMES = {
 MAX_UPLOAD = 200 * 1024 * 1024
 MAX_REQUEST = 1024 * 1024 * 1024
 KILL_AFTER = 10.0  # seconds between SIGTERM and SIGKILL
+# a prompt-help request id that the client makes
+REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 app = FastAPI(title="Workstation", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
@@ -505,9 +510,35 @@ def assist_status() -> dict[str, Any]:
     return assist.status()
 
 
+async def until_disconnect(
+    request: Request, fn: Callable[[], Any], on_disconnect: Callable[[], None]
+) -> Any:
+    """Run fn in a thread; call on_disconnect when the client goes away first, then still wait for fn to end.
+
+    Waits on receive() instead of polling request.is_disconnected(): behind @app.middleware("http") the poll never
+    sees the disconnect, while receive() returns http.disconnect once the body has been read and the client is gone.
+    """
+    work = asyncio.ensure_future(run_in_threadpool(fn))
+    gone = asyncio.ensure_future(request.receive())
+    try:
+        await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
+        # after the body, receive() returns only when the client is gone
+        if not work.done():
+            on_disconnect()
+        return await work
+    finally:
+        if gone.done():
+            gone.exception()  # retrieved, so asyncio does not log it
+        gone.cancel()
+        # this coroutine was cancelled: stop the thread's request too
+        if not work.done():
+            on_disconnect()
+
+
 @app.post("/api/assist/enhance")
 async def assist_enhance(request: Request) -> dict[str, Any]:
-    """The same form as a job, plus `field`: the prompt helper writes that field's text. Images and video frames go along."""
+    """The same form as a job, plus `field` and `request_id`: the prompt helper writes that field's text. Images and
+    video frames go along. POST /api/assist/cancel with the same request_id cancels it (HTTP 409 "Cancelled.")."""
     form = await request.form()
     tool = tools.BY_ID.get(str(form.get("tool", "")))
     if tool is None:
@@ -515,6 +546,9 @@ async def assist_enhance(request: Request) -> dict[str, Any]:
     field_name = str(form.get("field", ""))
     if not any(f["name"] == field_name and f.get("assist") for f in tool["fields"]):
         raise HTTPException(400, "This field has no prompt help")
+    request_id = str(form.get("request_id") or "") or secrets.token_hex(8)
+    if not REQUEST_ID.fullmatch(request_id):
+        raise HTTPException(400, "Bad request_id: 1 to 64 letters, digits, - or _")
     values = {
         f["name"]: str(form.get(f["name"]) or "").replace("\r\n", "\n")
         for f in tool["fields"]
@@ -539,7 +573,7 @@ async def assist_enhance(request: Request) -> dict[str, Any]:
     except ValueError:
         raise HTTPException(400, "'Use the clip up to' must be a number") from None
 
-    def run() -> dict[str, Any]:
+    def run(req: assist.Running) -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as tmp:
             images = []
             for f, i, data in uploads:
@@ -558,12 +592,25 @@ async def assist_enhance(request: Request) -> dict[str, Any]:
                 images.append(
                     (label, assist.still(src, src.with_suffix(".jpg"), video, end_at))
                 )
-            return assist.enhance(tool, field_name, values, images)
+            return assist.enhance(tool, field_name, values, images, req)
 
     try:
-        return await run_in_threadpool(run)
+        with assist.track(request_id) as req:
+            return await until_disconnect(request, lambda: run(req), req.cancel)
+    except assist.Cancelled as e:
+        raise HTTPException(409, str(e)) from None
     except assist.AssistError as e:
         raise HTTPException(400, str(e)) from None
+
+
+class AssistCancel(BaseModel):
+    request_id: str
+
+
+@app.post("/api/assist/cancel")
+def assist_cancel(body: AssistCancel) -> dict[str, str]:
+    """Cancel a prompt-help request while it waits for memory, loads the model or runs."""
+    return {"status": "cancelling" if assist.cancel(body.request_id) else "idle"}
 
 
 @app.get("/api/system")
