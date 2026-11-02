@@ -33,6 +33,7 @@ no CDN or other network request. All JSON is UTF-8.
 - Field `type` is one of `text`, `textarea`, `number`, `select`, `checkbox`, `file` (one file), `files` (several).
 - `advanced: true` fields go in a collapsed "Advanced" section.
 - `step` may be given for numbers (for example 0.05). A `null` default means an empty input.
+- `assist: true` marks a text field that has an "Improve" button (see Prompt help below).
 
 ## Jobs
 
@@ -128,6 +129,25 @@ another download running). Poll `GET /api/models` for progress; a failed downloa
 
 `POST /api/models/{id}/cancel` stops the download and returns `{"status": "cancelled"}` (or the finished status).
 Finished files stay, and the next download skips them.
+## Prompt help
+
+`GET /api/assist` returns `{"available": true, "provider": "local", "model": "Qwen3.8 27B (4-bit)", "llm": {...}}`.
+`available` is false when the provider's model is not installed; the UI then hides the "Improve" buttons. `llm` is the
+local model's state (see `GET /api/llm`).
+
+`POST /api/assist/enhance` takes the same `multipart/form-data` as `POST /api/jobs`, plus `field`: the name of a field
+with `assist: true`. Image fields go along as images; a video field goes along as the frame where the clip ends (at
+`end_at` when that field is set). Audio files are not sent. It returns:
+
+```json
+{"text": "the new field text", "notes": "what the model added or assumed", "model": "Qwen3.8 27B (4-bit)",
+ "cost_usd": null, "seconds": 9.4}
+```
+
+Errors (model not installed, an empty draft, a media job using the memory, an answer in the wrong form) return HTTP
+400 with `{"detail": "message"}`. The first request loads the model (16 GB from disk); later ones reuse it until it
+is unloaded.
+
 
 ## UI behaviour
 
