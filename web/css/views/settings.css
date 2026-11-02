@@ -1,1 +1,209 @@
 /* Settings view (owned by js/views/settings.js). Scope every rule under .v-settings. */
+
+.v-settings .settings {
+  display: grid;
+  gap: var(--s5);
+  max-width: 760px;
+}
+.v-settings .set-notice,
+.v-settings .set-body {
+  display: grid;
+  gap: var(--s5);
+}
+.v-settings .set-notice:empty {
+  display: none;
+}
+.v-settings .set-sec {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.v-settings .set-sec > h2 {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.v-settings .set-sec > p {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.v-settings code {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  background: var(--sunken);
+  padding: 0 4px;
+  border-radius: var(--r-xs);
+}
+.v-settings .mono {
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+/* cards and rows */
+.v-settings .set-card {
+  padding: 4px 16px;
+}
+.v-settings .set-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 16px;
+  align-items: center;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.v-settings .set-row:first-child {
+  border-top: 0;
+}
+.v-settings .set-row.stack {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.v-settings .set-row .label {
+  font-weight: 500;
+  font-size: var(--fs-base);
+}
+.v-settings .set-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.v-settings .seg button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* prompt help */
+.v-settings .choice-list {
+  display: grid;
+  gap: 8px;
+}
+.v-settings .choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  cursor: pointer;
+}
+.v-settings .choice:has(input:checked) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.v-settings .choice input {
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+.v-settings .choice-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+}
+.v-settings .choice .help {
+  grid-column: 2;
+}
+
+/* local LLM */
+.v-settings .set-llm-info {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.v-settings .set-llm-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+}
+
+/* model paths */
+.v-settings .set-path-label {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  align-items: baseline;
+}
+.v-settings .set-path-label .mono {
+  font-weight: 400;
+}
+.v-settings .path-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.v-settings .path-row .input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+}
+.v-settings .path-row .input[aria-invalid="true"] {
+  border-color: var(--err);
+}
+.v-settings .set-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+}
+.v-settings .set-mark.is-ok,
+.v-settings .set-found {
+  color: var(--ok);
+}
+.v-settings .set-mark.is-miss,
+.v-settings .set-missing {
+  color: var(--err);
+}
+.v-settings .set-mark.is-edit {
+  color: var(--accent);
+}
+.v-settings .set-found,
+.v-settings .set-missing {
+  font-weight: 600;
+}
+.v-settings .set-save {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* about */
+.v-settings .set-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+.v-settings .set-links a {
+  color: var(--accent);
+}
+
+@media (max-width: 560px) {
+  .v-settings .set-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .v-settings .set-actions {
+    justify-content: flex-start;
+  }
+  .v-settings .set-row > .seg {
+    justify-self: start;
+  }
+  .v-settings .path-row {
+    flex-wrap: wrap;
+  }
+  .v-settings .path-row .input {
+    flex-basis: calc(100% - 30px);
+  }
+}
