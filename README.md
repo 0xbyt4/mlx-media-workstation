@@ -159,6 +159,21 @@ commercial use. A short summary follows; read the full text on each model page:
 Each model runs as its own process group from its own environment, with `HF_HUB_OFFLINE=1`. A finished or cancelled
 job gives all its memory back.
 
+## Development
+
+The tests run no model and need no network. Install the development tools into the app's environment, then run the
+checks:
+
+```sh
+uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev.txt
+.venv/bin/ruff check
+.venv/bin/ruff format --check
+.venv/bin/python -m pytest
+```
+
+GitHub Actions runs the same checks on macOS for each push to `main` and each pull request
+(`.github/workflows/ci.yml`).
+
 ## Security
 
 - The server listens on `127.0.0.1` only. It checks the Host and Origin headers, so other web pages in your browser

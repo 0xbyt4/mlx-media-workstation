@@ -11,5 +11,7 @@ line-length = 88
 target-version = "py312"
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
 testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["-ra"]
+strict = true
