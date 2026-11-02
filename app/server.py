@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from app import assist, chat, llm, models, models_api, progress, tools
+from app import assist, chat, library, llm, models, models_api, progress, tools
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs"
@@ -598,4 +598,5 @@ def start() -> None:
 
 app.include_router(models_api.router)
 app.include_router(chat.router)
+app.include_router(library.router)
 app.mount("/", StaticFiles(directory=WEB, html=True), name="web")
