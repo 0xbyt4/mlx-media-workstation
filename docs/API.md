@@ -115,7 +115,7 @@ list and deletes its folder.
       "needs": null,
       "install": null,
       "download": {"status": "running | done | failed | cancelled", "error": null, "done_gb": 12.4,
-                   "total_gb": 54.1, "percent": 22.9}
+                   "total_gb": 54.1, "percent": 22.9, "speed_mbs": 85.2, "eta_s": 489}
     }
   ]
 }
@@ -127,6 +127,9 @@ list and deletes its folder.
 - `path_key` is the `config.toml` key of the install path; `null` means the Hugging Face cache.
 - `fits` is true when `peak_gb` plus `mem_reserve_gb` is at most `mem_total_gb`.
 - `needs` names an entry to install first. `download` is `null` unless this model is the current or last download.
+- `download.speed_mbs` is the speed in MB/s (10^6 bytes), averaged over at least the last 10 s of polls, and
+  `download.eta_s` the seconds left at that speed. Both are `null` until the download has run for about 2 s, and when
+  it is not running; `eta_s` is also `null` while the speed is 0.
 - Sizes are in GB of 10^9 bytes (as Hugging Face shows them); memory is in GB of 2^30 bytes (as `/api/system`).
 
 `POST /api/models/{id}/download` starts a download in the background and returns `{"status": "running"}`. One

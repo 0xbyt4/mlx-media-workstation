@@ -304,6 +304,50 @@ def test_download_runs_to_done(paths, child):
     assert p["total_gb"] == round(500 / 1e9, 2)
 
 
+def test_speed_and_time_left_follow_the_bytes_on_disk(paths, child, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(models, "clock", lambda: now[0])
+    models.sizes_cache[QWEN.id] = {f: 10**9 for f in QWEN.files}  # 5 GB
+    models.start(QWEN)
+    wait_for(lambda: models.state.get("proc") is not None)
+    partial = models.partial_dir(QWEN) / "a.incomplete"
+    partial.parent.mkdir(parents=True, exist_ok=True)
+
+    def at(t: float, size: int) -> dict:
+        now[0] = 100.0 + t
+        with partial.open("wb") as f:
+            f.truncate(size)  # sparse: no real bytes written
+        return models.progress(QWEN)
+
+    p = at(0, 0)
+    assert (p["speed_mbs"], p["eta_s"]) == (None, None)
+    p = at(1, 10**8)  # under MIN_SPAN_S: no speed yet
+    assert (p["speed_mbs"], p["eta_s"]) == (None, None)
+    p = at(4, 2 * 10**8)
+    assert (p["speed_mbs"], p["eta_s"]) == (50.0, 96)  # 4.8 GB left at 50 MB/s
+    # samples older than the window drop out, so a change of speed shows within about SPEED_WINDOW_S
+    at(14, 7 * 10**8)
+    p = at(24, 12 * 10**8)
+    assert p["speed_mbs"] == 50.0
+    p = at(34, 22 * 10**8)
+    # (2.2 - 1.2) GB over the 10 s since the anchor at t=24
+    assert p["speed_mbs"] == 100.0
+    assert p["eta_s"] == 28
+    # a stall gives speed 0 and no time left
+    at(46, 22 * 10**8)
+    p = at(58, 22 * 10**8)
+    assert (p["speed_mbs"], p["eta_s"]) == (0.0, None)
+
+
+def test_a_finished_download_has_no_speed(paths, child):
+    proc = start_qwen(child)
+    models.progress(QWEN)
+    proc.end(1, "failed")
+    wait_for(lambda: models.state["status"] != "running")
+    p = models.progress(QWEN)
+    assert (p["status"], p["speed_mbs"], p["eta_s"]) == ("failed", None, None)
+
+
 def test_one_download_at_a_time(paths, child):
     start_qwen(child)
     with pytest.raises(ValueError, match="is downloading"):
