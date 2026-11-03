@@ -34,11 +34,13 @@ llm_idle_minutes = 10
 profile = "full"
 
 [agent]
-# Chat agent mode (docs/AGENT.md). Read at start.
+# Chat agent mode (docs/AGENT.md), also in Settings > Agent. Read at start: a change applies after a restart.
 # the Python that run_python uses in the sandbox; "" = the app's own Python with the standard library only. For
-# numpy, pandas or matplotlib, make a separate environment for the sandbox and give its python here
+# numpy, pandas or matplotlib, make a separate environment for the sandbox and give the absolute path of its python
+# here, for example "~/mlx-media/venv-sandbox/bin/python" (docs/AGENT.md, "Settings", has the commands)
 python = ""
-# a SearXNG instance you run yourself (JSON format on), used first by web_search; "" = none
+# a SearXNG instance you run yourself (JSON format on), used first by web_search: the base URL, for example
+# "http://127.0.0.1:8888"; "" = none
 searxng_url = ""
 # the Wikipedia that web_search asks: a language code such as en, de or tr
 wikipedia_language = "en"

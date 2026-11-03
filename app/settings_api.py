@@ -1,8 +1,9 @@
-"""The Settings screen's endpoints: the model paths, the prompt help provider and the [app] switches in config.toml, and
-facts about the app.
+"""The Settings screen's endpoints: the model paths, the prompt help provider, the [app] switches and the [agent]
+values in config.toml, and facts about the app.
 
-The app reads [paths] and [assist] once, at start (app/config.py), so a change there takes effect after a restart. The
-[app] values (keep awake, notify, LLM idle unload, profile) apply at once: a write replaces config.APP and calls on_change. A write
+The app reads [paths] and [assist] once, at start (app/config.py), and [agent] once, when it builds the agent registry
+(app/agent/settings.py), so a change there takes effect after a restart. The [app] values (keep awake, notify, LLM idle
+unload, profile) apply at once: a write replaces config.APP and calls on_change. A write
 changes only the lines of the keys it sets: comments, blank lines, other keys and other sections stay as they are.
 The new text is parsed again before it replaces the file, and the replace is atomic (a temp file, then os.replace).
 Nothing here holds a secret. Writes pass the server's same-origin check.
@@ -25,6 +26,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app import assist, config, llm, models, tools
+from app.agent import sandbox
+from app.agent import settings as agent_settings
 
 router = APIRouter(prefix="/api/settings")
 lock = threading.Lock()
@@ -59,10 +62,23 @@ BAD_CHARS = re.compile(r'["\\\x00-\x1f\x7f]')
 MAX_PATH = 1024
 
 
+def agent_at_start() -> agent_settings.Settings | None:
+    """The [agent] values the app read at start; None when config.toml holds a bad value there (the server stops
+    then)."""
+    try:
+        return agent_settings.load(config.FILE)
+    except SystemExit:
+        return None
+
+
+AGENT = agent_at_start()  # the values the agent registry is built from
+
+
 class Change(BaseModel):
     paths: dict[str, str] = {}
     assist: dict[str, str] = {}
     app: dict[str, Any] = {}  # JSON types as sent: true/false and whole minutes
+    agent: dict[str, Any] = {}  # strings, and true/false for marginalia
 
 
 def resolve(value: str) -> Path:
@@ -150,8 +166,11 @@ def snapshot() -> dict[str, Any]:
     for name, (_, info) in assist.PROVIDERS.items():
         label, text = PROVIDER_TEXT.get(name, (name, ""))
         providers.append({"id": name, "label": label, "description": text, **info()})
-    pending = provider != config.ASSIST.provider or any(
-        r["path"] != r["active"] for r in rows
+    agent = agent_snapshot(data)
+    pending = (
+        provider != config.ASSIST.provider
+        or any(r["path"] != r["active"] for r in rows)
+        or agent["restart_required"]
     )
     return {
         "config": {"path": str(file), "exists": file.exists(), "error": error},
@@ -169,6 +188,7 @@ def snapshot() -> dict[str, Any]:
             "profiles": list(config.PROFILES),
         },
         "llm": {"idle_stop_s": llm.idle_stop()},
+        "agent": agent,
         "about": {
             **version(),
             "root": str(config.ROOT),
@@ -176,6 +196,31 @@ def snapshot() -> dict[str, Any]:
             "readme": str(config.ROOT / "README.md"),
             "repo_url": REPO_URL,
         },
+        "restart_required": pending,
+    }
+
+
+def agent_snapshot(data: dict[str, Any]) -> dict[str, Any]:
+    """The [agent] values in config.toml (a missing or bad value shows its default), and whether they differ from the
+    ones the app uses until it restarts."""
+    file_agent = data.get("agent", {}) if isinstance(data.get("agent"), dict) else {}
+    values = {
+        k: file_agent[k]
+        if k in file_agent and agent_settings.check(k, file_agent[k]) is None
+        else default
+        for k, default in agent_settings.DEFAULTS.items()
+    }
+    python = agent_settings.interpreter(str(values["python"]))
+    pending = AGENT is not None and agent_settings.from_values(values) != AGENT
+    return {
+        **values,
+        "defaults": agent_settings.DEFAULTS,
+        "python_path": str(python) if python else None,
+        "python_found": bool(
+            python and python.is_file() and os.access(python, os.X_OK)
+        ),
+        "default_python": sandbox.default_interpreter().argv[0],
+        "languages": list(agent_settings.LANGUAGES),
         "restart_required": pending,
     }
 
@@ -322,6 +367,12 @@ def update(change: Change) -> list[str]:
             errors[f"app.{key}"] = error
         else:
             switches[key] = value
+    agent: dict[str, Any] = {}
+    for key, value in change.agent.items():
+        try:
+            agent[key] = agent_settings.clean(key, value)
+        except ValueError as e:
+            errors[f"agent.{key}"] = str(e)
     if errors:
         raise HTTPException(
             400, {"message": "Some values are not valid.", "fields": errors}
@@ -335,7 +386,12 @@ def update(change: Change) -> list[str]:
         text = text or ""
         changed = []
         new = text
-        sections = (("paths", paths), ("assist", helper), ("app", switches))
+        sections = (
+            ("paths", paths),
+            ("assist", helper),
+            ("app", switches),
+            ("agent", agent),
+        )
         for section, values in sections:
             old = data.get(section, {})
             if not isinstance(old, dict):

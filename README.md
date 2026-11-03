@@ -31,10 +31,10 @@ The sidebar has six sections. Cmd-1 to Cmd-6 open them. The chat profile shows o
 - **Models**: what each tool needs, what is installed, the download size, the peak memory and whether it fits this
   Mac. It downloads weights one at a time from a queue. When models are missing, a setup card takes you through three
   steps: pick the models, accept the licences of the gated ones, and download.
-- **Settings**: the profile, the install paths in `config.toml`, the prompt help provider, the job options and facts
-  about the app. A path change takes effect after a restart. The profile and the job options apply at once: keep the
-  Mac awake while jobs run, show a macOS notification when a job is done or failed, and unload the local LLM after a
-  chosen idle time.
+- **Settings**: the profile, the install paths in `config.toml`, the prompt help provider, the job options, the
+  agent's sandbox Python and web search sources, and facts about the app. A path or agent change takes effect after a
+  restart. The profile and the job options apply at once: keep the Mac awake while jobs run, show a macOS
+  notification when a job is done or failed, and unload the local LLM after a chosen idle time.
 
 | Jobs | Chat |
 |---|---|
