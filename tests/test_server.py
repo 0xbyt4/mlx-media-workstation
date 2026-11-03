@@ -5,6 +5,7 @@ import re
 import subprocess
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,7 +13,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import server, tools
+from app import config, server, tools
 from tests.conftest import FakeMedia, MacEffects
 
 Job = Callable[..., dict[str, Any]]
@@ -48,6 +49,22 @@ def test_other_host_names_are_refused(client: TestClient) -> None:
     assert (
         client.get("/api/tools", headers={"host": "localhost:7870"}).status_code == 200
     )
+
+
+def test_no_page_may_show_the_app_in_a_frame(client: TestClient) -> None:
+    """Every response, refusals included, forbids framing (clickjacking of the approval buttons)."""
+    responses = [
+        client.get("/"),
+        client.get("/js/main.js"),
+        client.get("/api/tools"),
+        client.get("/api/jobs/missing"),
+        client.get("/api/tools", headers={"host": "evil.example"}),
+        client.post("/api/jobs", headers={"origin": "http://evil.example"}),
+    ]
+    assert [r.status_code for r in responses] == [200, 200, 200, 404, 400, 403]
+    for r in responses:
+        assert r.headers["x-frame-options"] == "DENY"
+        assert r.headers["content-security-policy"] == "frame-ancestors 'none'"
 
 
 # Creating jobs
@@ -467,6 +484,7 @@ def test_system(
         "swap_used_gb": 1.5,
         "running": "j1",
         "queued": 2,
+        "profile": "full",
     }
 
 
@@ -480,7 +498,17 @@ def test_system_without_answers(
         "swap_used_gb": 0.0,
         "running": None,
         "queued": 0,
+        "profile": "full",
     }
+
+
+def test_system_reports_the_profile(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_system(monkeypatch, "", "", "")
+    assert client.get("/api/system").json()["profile"] == "full"
+    monkeypatch.setattr(config, "APP", replace(config.APP, profile="chat"))
+    assert client.get("/api/system").json()["profile"] == "chat"
 
 
 def test_page_files_are_revalidated(client: TestClient) -> None:

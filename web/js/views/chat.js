@@ -1,22 +1,92 @@
 // Chat: conversations with the local LLM (app/chat.py). An answer streams as server-sent events, keeps running on
 // the server when the page leaves, and comes back with GET /api/chats/{id}/stream. Model text is rendered as
 // Markdown by building DOM nodes; it never goes into the page as HTML.
+//
+// An agent chat's answer is a series of steps: the model's text, then tool calls shown as compact cards. A call that
+// needs the user's approval shows an approval card in the thread (POST .../approve); a page that comes back replays it
+// from the stream. The Tools menu turns tools on or off, grants a folder and revokes chat-wide approvals.
 
 import {store} from '../store.js';
-import {h, icon, toolIcon, grow, fmtBytes, fmtLeft, fmtTime, timeAgo, toast, inlineConfirm, lightbox} from '../ui.js';
+import {h, icon, toolIcon, grow, fmtBytes, fmtLeft, fmtTime, timeAgo, toast, inlineConfirm, lightbox, lsGet, lsSet, menu, closeMenu} from '../ui.js';
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 const MAX_IMAGES = 4; // per message (app/chat.py MAX_IMAGES)
 const MAX_IMAGE = 20 * 1024 * 1024;
-const EXAMPLES = [
-  {title: 'Write a video prompt', text: 'Write a Text to Video prompt for a 5 second shot: a lighthouse keeper climbs a spiral staircase during a storm. Add the sounds.'},
-  {title: 'Lyrics for a song', text: 'Write a style caption and lyrics (two short verses and a chorus) for a calm synth-pop song about a city in the rain.'},
-  {title: 'Plan a short scene', text: 'Plan a 20 second museum scene at night as 4 shots. For each shot, say which tool to use and why.'},
-  {title: 'Ask about an image', text: 'What should move in this image in a 5 second Image to Video clip? Write the prompt.', attach: true},
+// A chat's mode picks its system prompt (app/chat.py MODES) and is fixed after the first message. Only workstation
+// answers get "Use in" cards.
+const MODE_INFO = {
+  workstation: {
+    label: 'Workstation', icon: 'wand', help: 'Knows the app\'s tools. A text written for a tool gets a "Use in" button.',
+    title: 'Ask about a prompt, a shot list or lyrics',
+    text: 'The model runs on this Mac and nothing is uploaded. Attach an image to ask about it. A text written for a tool gets a "Use in" button.',
+    examples: [
+      {title: 'Write a video prompt', text: 'Write a Text to Video prompt for a 5 second shot: a lighthouse keeper climbs a spiral staircase during a storm. Add the sounds.'},
+      {title: 'Lyrics for a song', text: 'Write a style caption and lyrics (two short verses and a chorus) for a calm synth-pop song about a city in the rain.'},
+      {title: 'Plan a short scene', text: 'Plan a 20 second museum scene at night as 4 shots. For each shot, say which tool to use and why.'},
+      {title: 'Ask about an image', text: 'What should move in this image in a 5 second Image to Video clip? Write the prompt.', attach: true},
+    ],
+  },
+  general: {
+    label: 'General', icon: 'chat', help: 'A plain assistant for any question. It does not know the app\'s tools.',
+    title: 'Ask anything',
+    text: 'The model runs on this Mac and nothing is uploaded. It has no internet access. Attach an image to ask about it.',
+    examples: [
+      {title: 'Explain something', text: 'Explain how a heat pump works, in plain words and in under 150 words.'},
+      {title: 'Make a text clearer', text: 'Make this text shorter and clearer. Keep the meaning and the tone:\n\n'},
+      {title: 'Make a plan', text: 'Make a plan to learn the basics of Python in two weeks, one hour a day.'},
+      {title: 'Ask about an image', text: 'What is in this image? Describe it in a few sentences.', attach: true},
+    ],
+  },
+  agent: {
+    label: 'Agent', icon: 'chip', help: 'A general assistant that can use tools: web search, Python in a sandbox, files in a folder you grant.',
+    title: 'Ask, and let it use tools',
+    text: 'The model runs on this Mac. It asks you before it sends anything off this Mac or runs code. Choose its tools in the Tools menu below.',
+    examples: [
+      {title: 'Look something up', text: 'Search the web: when was the Antikythera mechanism found, and by whom?'},
+      {title: 'Compute with Python', text: 'Use Python to find the sum of the first 1000 prime numbers.'},
+      {title: 'Read my notes', text: 'List the files in my folder and summarize the newest note.'},
+      {title: 'Check the Library', text: 'Search my Library for images of a fox and list them.', full: true},
+    ],
+  },
+};
+const OFFER_AGENT = true; // offers agent mode in the picker and the New chat menu
+const MODES = ['workstation', 'general'].concat(OFFER_AGENT ? ['agent'] : []);
+const MODE_KEY = 'ws.chatMode'; // the mode of the last new chat, per browser
+// Agent tools: the risk levels of app/agent/policy.py in plain words, the states of a call, and the user's answers.
+const RISK = [
+  {label: 'App only', pill: 'idle'},
+  {label: 'Your folder', pill: 'idle'},
+  {label: 'Leaves this Mac', pill: 'warn'},
+  {label: 'Runs code', pill: 'err'},
 ];
+const STATUS = {
+  ok: ['ok', 'Done'], error: ['err', 'Error'], denied: ['warn', 'Denied'], refused: ['warn', 'Not allowed'],
+  cancelled: ['idle', 'Stopped'], skipped: ['idle', 'Not run'],
+};
+const DECISION = {
+  once: 'You allowed it once.', chat: 'You allowed it for this chat.', deny: 'You denied it.',
+  timeout: 'Denied: no answer in time.', stopped: 'Stopped while it waited for your answer.',
+};
 
-// Kept across mounts for this session: the open chat, the composer draft, the chosen images and the Thinking switch.
-const memo = {activeId: null, draft: '', attach: [], thinking: false};
+// The modes a new chat can take here: the chat profile has no media tools, so it has no Workstation mode.
+function offered() {
+  return s.ctx.store.profile() === 'chat' ? MODES.filter((m) => m !== 'workstation') : MODES;
+}
+
+// "Use in" cards need the media tools: only Workstation chats in the full profile show them.
+function showCards() {
+  return chatMode() === 'workstation' && s.ctx.store.profile() !== 'chat';
+}
+
+// Links in agent chats name their host: a page the agent read can make it write a link that carries private text off
+// this Mac in one click.
+function showHosts() {
+  return chatMode() === 'agent';
+}
+
+// Kept across mounts for this session: the open chat, the composer draft, the chosen images, the Thinking switch and
+// the mode for the next new chat.
+const memo = {activeId: null, draft: '', attach: [], thinking: false, mode: null};
 
 let s = null; // the mounted view
 
@@ -40,6 +110,7 @@ function mount(root, ctx, params) {
     store.on('tools', () => {
       if (s.chat && !s.loading) renderThread(false);
     }),
+    store.on('profile', onProfile),
     store.on('offline', (off) => {
       if (!off && memo.activeId && !s.live) reloadChat(memo.activeId);
     }),
@@ -53,6 +124,8 @@ function mount(root, ctx, params) {
 
 function unmount() {
   if (!s) return;
+  closeMenu();
+  closeTools();
   detachLive();
   s.listPoll.stop();
   for (const off of s.offs) off();
@@ -87,6 +160,15 @@ function onModelState() {
   if (s.live) paintLive(s.live);
 }
 
+// The profile changed (web/README.md): the modes on offer, the "Use in" cards and the examples follow it.
+function onProfile() {
+  closeMenu();
+  s.els.newMode.hidden = offered().length < 2;
+  renderHead();
+  renderComposer();
+  if (!s.loading) renderThread(false);
+}
+
 // ---------- layout ----------
 
 function build() {
@@ -98,10 +180,18 @@ function build() {
       renderList();
     },
   });
-  els.newBtn = h('button', {type: 'button', class: 'btn btn-block', onclick: newChat}, icon('plus', 'ic-sm'), 'New chat');
+  els.newBtn = h('button', {type: 'button', class: 'btn new-chat-main', onclick: () => newChat()}, icon('plus', 'ic-sm'), 'New chat');
+  els.newMode = h('button', {
+    type: 'button', class: 'btn btn-icon new-chat-mode', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    'aria-label': 'New chat in a mode', title: 'New chat in a mode',
+    hidden: offered().length < 2,
+    onclick: () => menu(els.newMode, offered().map((m) => ({
+      label: 'New ' + MODE_INFO[m].label + ' chat', icon: MODE_INFO[m].icon, run: () => newChat(m),
+    }))),
+  }, icon('chev-down', 'ic-sm'));
   els.list = h('ul', {class: 'convo-list', role: 'list', 'aria-label': 'Chats'});
   els.convos = h('aside', {class: 'convos', id: 'chat-convos', 'aria-label': 'Conversations'},
-    h('div', {class: 'convos-head'}, els.newBtn,
+    h('div', {class: 'convos-head'}, h('div', {class: 'new-chat'}, els.newBtn, els.newMode),
       h('div', {class: 'search'}, h('label', {class: 'sr-only', for: 'chat-search'}, 'Search chats'), icon('search', 'ic-sm'), els.search)),
     els.list);
 
@@ -111,6 +201,7 @@ function build() {
     onclick: () => showConvos(!els.chat.classList.contains('show-convos')),
   }, icon('menu'));
   els.title = h('h2', {id: 'chat-title'});
+  els.modeChip = h('span', {class: 'chip mode-chip'});
   els.chip = h('span', {class: 'model-chip', role: 'status'});
   els.unload = h('button', {type: 'button', class: 'btn btn-ghost btn-sm', hidden: true, onclick: unload}, 'Unload');
   els.msgs = h('div', {class: 'msgs', role: 'region', 'aria-labelledby': 'chat-title', tabindex: '0'});
@@ -136,6 +227,19 @@ function build() {
   });
   els.attachBtn = h('button', {type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => els.file.click()},
     icon('clip', 'ic-sm'), 'Image');
+  els.toolsBtn = h('button', {
+    type: 'button', class: 'btn btn-ghost btn-sm tools-btn', 'aria-haspopup': 'dialog', 'aria-expanded': 'false',
+    'aria-controls': 'chat-tools', title: 'The tools this chat may use, the folder it may read, and what it may do without asking.',
+    onclick: () => (s.tools ? closeTools(true) : openTools()),
+  }, icon('wand', 'ic-sm'), 'Tools');
+  els.toolsPop = h('div', {class: 'tools-pop', id: 'chat-tools', role: 'dialog', 'aria-label': 'Tools for this chat', hidden: true});
+  els.toolsPop.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeTools(true);
+    }
+  });
   els.think = h('input', {
     type: 'checkbox', id: 'chat-think', role: 'switch',
     onchange: () => {
@@ -148,7 +252,7 @@ function build() {
     h('label', {class: 'sr-only', for: 'chat-input'}, 'Message'),
     els.input,
     h('div', {class: 'composer-bar'},
-      els.attachBtn, els.file,
+      els.attachBtn, els.file, els.toolsBtn,
       h('label', {class: 'switch think-switch', for: 'chat-think', title: 'The model reasons before it answers: slower, better for hard questions.'},
         els.think, h('span', {class: 'track'}), icon('bulb', 'ic-sm'), 'Thinking'),
       h('span', {class: 'spacer'}),
@@ -157,9 +261,9 @@ function build() {
       els.send));
 
   els.thread = h('section', {class: 'thread', 'aria-label': 'Conversation'},
-    h('div', {class: 'thread-head'}, els.toggle, els.title, els.chip, els.unload),
+    h('div', {class: 'thread-head'}, els.toggle, h('div', {class: 'thread-title'}, els.title, els.modeChip), els.chip, els.unload),
     els.msgs,
-    h('div', {class: 'composer-wrap'}, els.notices, els.note, composer),
+    h('div', {class: 'composer-wrap'}, els.toolsPop, els.notices, els.note, composer),
     els.status);
   dropTarget(els.thread);
 
@@ -220,6 +324,13 @@ function chipState(f) {
 function renderHead() {
   const els = s.els;
   els.title.textContent = s.chat ? s.chat.title : memo.activeId ? 'Chat' : 'New chat';
+  const mode = chatMode();
+  els.modeChip.hidden = !mode;
+  if (mode) {
+    const info = MODE_INFO[mode] || MODE_INFO.workstation;
+    els.modeChip.title = info.label + ' mode: ' + info.help;
+    els.modeChip.replaceChildren(icon(info.icon, 'ic-sm'), h('span', {class: 'sr-only'}, 'Mode: '), info.label);
+  }
   const f = modelFacts();
   const [pill, label, sub] = chipState(f);
   els.chip.replaceChildren(icon('chip', 'ic-sm'), h('b', null, f.llm ? f.llm.model : 'Local model'),
@@ -361,16 +472,92 @@ function focusRow(id, part) {
   if (el) el.focus();
 }
 
-function newChat() {
+// A new chat in the given mode, or in the mode of the last new chat.
+function newChat(mode) {
   showConvos(false);
+  if (mode) rememberMode(mode);
   if (memo.activeId || s.chat) openChat(null);
+  else if (mode) {
+    renderHead();
+    renderThread(true);
+    renderComposer();
+  }
   s.els.input.focus();
+}
+
+// ---------- modes ----------
+
+// The mode for the next new chat: the last one chosen in this browser, if the page still offers it.
+function nextMode() {
+  if (!memo.mode) {
+    const saved = lsGet(MODE_KEY);
+    memo.mode = saved;
+  }
+  return offered().includes(memo.mode) ? memo.mode : offered()[0];
+}
+
+function rememberMode(mode) {
+  memo.mode = mode;
+  lsSet(MODE_KEY, mode);
+}
+
+// The open chat's mode (a chat saved before modes is workstation), the next mode when no chat is open yet, or null
+// while a chat loads.
+function chatMode() {
+  if (s.chat) return s.chat.mode || 'workstation';
+  return memo.activeId ? null : nextMode();
+}
+
+// The segmented control on an empty chat. With no chat yet it only picks the mode for the chat that the first message
+// creates; an existing empty chat changes on the server.
+function modePicker() {
+  if (offered().length < 2) return null;
+  const mode = chatMode();
+  const info = MODE_INFO[mode] || MODE_INFO.workstation;
+  const seg = h('div', {class: 'seg', role: 'group', 'aria-label': 'Chat mode', 'aria-describedby': 'chat-mode-help'},
+    offered().map((m) => h('button', {
+      type: 'button', 'data-mode': m, 'aria-pressed': String(m === mode), disabled: s.sending || s.modeBusy,
+      onclick: () => pickMode(m),
+    }, icon(MODE_INFO[m].icon, 'ic-sm'), MODE_INFO[m].label)));
+  return h('div', {class: 'mode-pick'}, seg, h('p', {class: 'mode-help', id: 'chat-mode-help'}, info.help));
+}
+
+async function pickMode(mode) {
+  if (mode === chatMode() || s.sending || s.modeBusy) return;
+  const me = s;
+  rememberMode(mode);
+  if (s.chat) {
+    const id = s.chat.id;
+    s.modeBusy = true;
+    renderComposer();
+    try {
+      const c = await me.api.setChatMode(id, mode);
+      if (s !== me || !s.chat || s.chat.id !== id) return;
+      s.chat.mode = c.mode;
+      const row = s.chats.find((x) => x.id === id);
+      if (row) row.mode = c.mode;
+    } catch (e) {
+      if (s !== me) return;
+      showNote(errText(e)); // 409: a message arrived from another window
+      reloadChat(id);
+    } finally {
+      me.modeBusy = false;
+      if (s === me) renderComposer(); // also when another chat opened meanwhile: Send is free again
+    }
+  }
+  renderHead();
+  renderThread(false);
+  renderComposer();
+  const btn = s.els.msgs.querySelector('.mode-pick [data-mode="' + mode + '"]');
+  if (btn) btn.focus();
+  announce(MODE_INFO[mode].label + ' mode.');
 }
 
 // ---------- open and reload ----------
 
 async function openChat(id) {
   detachLive();
+  closeTools();
   const seq = ++s.openSeq;
   memo.activeId = id;
   s.ctx.router.replace('chat', id ? {id} : null);
@@ -434,7 +621,7 @@ async function reloadChat(id, resumeOk = true) {
 
 async function send() {
   const els = s.els;
-  if (s.live || s.sending || s.loading || modelFacts().blocked) return;
+  if (s.live || s.sending || s.loading || s.modeBusy || modelFacts().blocked) return;
   const text = els.input.value.trim();
   const files = memo.attach.slice();
   if (!text && !files.length) {
@@ -449,14 +636,7 @@ async function send() {
     me.sending = true;
     renderComposer();
     try {
-      const c = await me.api.createChat();
-      if (s !== me) return;
-      id = c.id;
-      memo.activeId = id;
-      s.openSeq++;
-      s.ctx.router.replace('chat', {id});
-      s.chats = [c, ...s.chats.filter((x) => x.id !== c.id)];
-      s.chat = Object.assign({}, c, {messages: []}); // the summary's `messages` is a count
+      id = await createChatNow();
     } catch (e) {
       if (s !== me) return;
       showNote(errText(e));
@@ -464,6 +644,7 @@ async function send() {
     } finally {
       me.sending = false;
     }
+    if (s !== me) return;
   }
   const fd = new FormData();
   fd.append('text', text);
@@ -496,12 +677,28 @@ async function send() {
   if (!memo.attach.includes(files[0])) files.forEach((a) => URL.revokeObjectURL(a.url));
 }
 
+// Creates the chat that the page shows as new (on the first message, or when the Tools menu opens) and returns its id.
+async function createChatNow() {
+  const me = s;
+  const c = await me.api.createChat(nextMode());
+  if (s !== me) return c.id;
+  memo.activeId = c.id;
+  s.openSeq++;
+  s.ctx.router.replace('chat', {id: c.id});
+  s.chats = [c, ...s.chats.filter((x) => x.id !== c.id)];
+  s.chat = Object.assign({}, c, {messages: []}); // the summary's `messages` is a count
+  renderList();
+  renderHead();
+  return c.id;
+}
+
 async function regenerate() {
   if (!s.chat || s.live) return;
   const me = s;
   const id = s.chat.id;
   const msgs = s.chat.messages;
-  while (msgs.length && msgs[msgs.length - 1].role === 'assistant') msgs.pop();
+  // the answer: its assistant messages and an agent's tool messages, as the server drops them
+  while (msgs.length && ['assistant', 'tool'].includes(msgs[msgs.length - 1].role)) msgs.pop();
   showNote('');
   s.els.input.focus();
   const fd = new FormData();
@@ -588,6 +785,10 @@ function detachLive() {
 
 function onEvent(live, ev) {
   const m = live.msg;
+  if (live.agent && onAgentEvent(live, ev)) {
+    if (!live.frame) live.frame = requestAnimationFrame(() => paintLive(live));
+    return;
+  }
   if (ev.event === 'waiting') {
     live.waiting = ev.message || 'Waiting for memory.';
     announce('Waiting for memory. The answer starts when the media job ends.');
@@ -613,8 +814,16 @@ function onEvent(live, ev) {
 function newLive(chatId) {
   const live = {
     chatId, ctrl: new AbortController(), release: store.fast('llm'), msg: {role: 'assistant', content: '', reasoning: ''},
-    waiting: null, stopping: false, thinkTouched: false, frame: 0,
+    waiting: null, stopping: false, thinkTouched: false, frame: 0, agent: chatMode() === 'agent',
   };
+  if (live.agent) {
+    Object.assign(live, {segs: [], step: 0, asking: null, focusAsk: false});
+    live.flow = h('div', {class: 'agent-flow'});
+    live.state = h('div', {class: 'msg-wait'});
+    live.node = h('article', {class: 'msg msg-ai is-live', 'aria-label': 'Answer from ' + modelName()},
+      h('span', {class: 'who'}, modelName()), live.flow, live.state);
+    return live;
+  }
   live.thinkLabel = h('span', {class: 'think-label'});
   live.thinkBody = h('div', {class: 'think-body'});
   live.think = h('details', {class: 'think', hidden: true},
@@ -629,6 +838,10 @@ function newLive(chatId) {
 function paintLive(live) {
   live.frame = 0;
   if (!s || s.live !== live) return;
+  if (live.agent) {
+    paintAgent(live);
+    return;
+  }
   const stick = nearBottom();
   const m = live.msg;
   if (m.reasoning) {
@@ -639,7 +852,7 @@ function paintLive(live) {
     live.thinkBody.classList.toggle('caret', thinking);
     if (!live.thinkTouched) live.think.open = thinking;
   }
-  live.bubble.replaceChildren(renderMarkdown(m.content, true));
+  live.bubble.replaceChildren(renderMarkdown(m.content, true, showCards(), showHosts()));
   live.bubble.hidden = !m.content;
   if (m.content && !m.finish) addCaret(live.bubble);
   live.state.replaceChildren(...liveStatus(live));
@@ -651,6 +864,15 @@ function liveStatus(live) {
   const llm = store.get('llm') || {};
   const spin = () => h('span', {class: 'spinner sm', 'aria-hidden': 'true'});
   if (live.stopping) return [spin(), 'Stopping'];
+  if (live.agent && live.asking) {
+    return [icon('lock', 'ic-sm'), h('span', null, h('b', null, 'Waiting for your answer above. '), 'Stop also works.')];
+  }
+  if (live.agent && !live.waiting && !m.finish) {
+    const last = live.segs[live.segs.length - 1];
+    if (last && last.kind === 'tool' && !last.result) return [spin(), 'Running ' + (last.call.label || last.call.name)];
+    if (last && last.kind === 'text' && (last.msg.content || last.msg.reasoning)) return [];
+    if (live.step > 1) return [spin(), 'Reading the tool results'];
+  }
   if (live.waiting) {
     const job = store.runningJob();
     const left = job && job.progress ? fmtLeft(job.progress.eta_s) : '';
@@ -663,6 +885,420 @@ function liveStatus(live) {
     return [spin(), 'Loading ' + modelName() + ' into memory (about ' + Math.round(llm.peak_gb || 18) + ' GB). The first answer takes longer.'];
   }
   return [spin(), 'Reading your message'];
+}
+
+// ---------- agent answers ----------
+
+// The agent events (docs/API.md): step, tool_call, approval, approval_done, tool_result, and the text deltas of the
+// current step. Returns false for the events the plain path handles (waiting, done, error).
+function onAgentEvent(live, ev) {
+  const textSeg = () => {
+    const last = live.segs[live.segs.length - 1];
+    if (last && last.kind === 'text') return last;
+    return addSeg(live, newTextSeg());
+  };
+  const toolSeg = (id) => live.segs.find((x) => x.kind === 'tool' && x.call.id === id);
+  if (ev.event === 'step') {
+    live.waiting = null;
+    live.step = ev.n;
+    live.segs.filter((x) => x.kind === 'text').forEach((x) => (x.dirty = true)); // drop the caret of the step before
+    addSeg(live, newTextSeg());
+  } else if (ev.event === 'reasoning' || ev.event === 'content') {
+    live.waiting = null;
+    const seg = textSeg();
+    seg.msg[ev.event] += ev.text || '';
+    seg.dirty = true;
+  } else if (ev.event === 'tool_call') {
+    addSeg(live, {kind: 'tool', call: ev, result: null, approval: null, decision: null, dirty: true, open: false, node: h('div')});
+  } else if (ev.event === 'approval') {
+    const seg = toolSeg(ev.id);
+    if (!seg) return true;
+    Object.assign(seg, {approval: ev, decision: null, dirty: true});
+    live.asking = seg;
+    live.focusAsk = true;
+    announce('Approval needed: ' + (ev.label || ev.name) + '. ' + (ev.describe || ''));
+  } else if (ev.event === 'approval_done') {
+    const seg = toolSeg(ev.id);
+    if (seg) Object.assign(seg, {decision: ev.decision, answering: null, dirty: true});
+    if (live.asking === seg) live.asking = null;
+  } else if (ev.event === 'tool_result') {
+    const seg = toolSeg(ev.id);
+    if (seg) Object.assign(seg, {result: ev, dirty: true});
+  } else if (ev.event === 'done') {
+    live.waiting = null;
+    Object.assign(live.msg, {finish: ev.finish, stats: ev.stats, note: ev.note, content: ev.content || ''});
+    const last = live.segs[live.segs.length - 1];
+    if (last && last.kind === 'text') {
+      if (ev.content) last.msg.content = ev.content;
+      last.dirty = true;
+    }
+    live.asking = null;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+function newTextSeg() {
+  const seg = {kind: 'text', msg: {content: '', reasoning: ''}, dirty: true, touched: false};
+  seg.thinkLabel = h('span', {class: 'think-label'});
+  seg.thinkBody = h('div', {class: 'think-body'});
+  seg.think = h('details', {class: 'think', hidden: true},
+    h('summary', {onclick: () => (seg.touched = true)}, icon('chev', 'chev ic-sm'), seg.thinkLabel), seg.thinkBody);
+  seg.bubble = h('div', {class: 'bubble md', hidden: true});
+  seg.node = h('div', {class: 'agent-text'}, seg.think, seg.bubble);
+  return seg;
+}
+
+function addSeg(live, seg) {
+  live.segs.push(seg);
+  live.flow.append(seg.node);
+  return seg;
+}
+
+function paintAgent(live) {
+  const stick = nearBottom();
+  const m = live.msg;
+  const segs = live.segs;
+  segs.forEach((seg, i) => {
+    if (!seg.dirty) return;
+    seg.dirty = false;
+    if (seg.kind === 'text') {
+      const active = i === segs.length - 1 && !m.finish;
+      const t = seg.msg;
+      if (t.reasoning) {
+        const thinking = active && !t.content;
+        seg.think.hidden = false;
+        seg.thinkLabel.replaceChildren(...(thinking ? [h('span', {class: 'spinner sm', 'aria-hidden': 'true'}), 'Thinking'] : ['Thinking']));
+        seg.thinkBody.textContent = t.reasoning;
+        seg.thinkBody.classList.toggle('caret', thinking);
+        if (!seg.touched) seg.think.open = thinking;
+      }
+      seg.bubble.replaceChildren(renderMarkdown(t.content, active, showCards(), showHosts()));
+      seg.bubble.hidden = !t.content;
+      if (t.content && active) addCaret(seg.bubble);
+      seg.node.hidden = !t.content && !t.reasoning;
+      return;
+    }
+    const hadFocus = seg.node.contains(document.activeElement);
+    const node = toolSegNode(seg, live);
+    seg.node.replaceWith(node);
+    seg.node = node;
+    if (hadFocus) (node.querySelector('summary, button') || s.els.input).focus();
+  });
+  live.node.querySelector('.agent-end')?.remove();
+  if (m.note) live.node.insertBefore(h('p', {class: 'msg-end agent-end'}, icon('alert', 'ic-sm'), m.note), live.state);
+  live.state.replaceChildren(...liveStatus(live));
+  if (live.focusAsk && live.asking) {
+    live.focusAsk = false;
+    const card = live.asking.node.querySelector('.approval');
+    if (card) {
+      closeTools(); // the open Tools menu would cover the card
+      // the focus moves to the card itself, not to a button: a Return meant for the message box approves nothing
+      const typing = document.activeElement === s.els.input && s.els.input.value.trim();
+      if (!typing) card.focus({preventScroll: true});
+      card.scrollIntoView({block: 'nearest'});
+      return;
+    }
+  }
+  if (stick) scrollToEnd();
+}
+
+// A live tool call: the approval card while it waits for the user, else its card.
+function toolSegNode(seg, live) {
+  if (seg.approval && !seg.decision) return approvalCard(seg, live);
+  const r = seg.result || {};
+  const c = seg.call;
+  return toolBlock({
+    id: c.id, name: c.name, label: c.label, arguments: c.arguments, describe: c.describe, risk: c.risk,
+    status: r.status || (seg.decision && seg.decision !== 'once' && seg.decision !== 'chat' ? 'denied' : null),
+    content: r.content, truncated: r.truncated, files: r.files, seconds: r.seconds,
+    approval: r.approval || seg.decision,
+  }, seg);
+}
+
+// Characters that hide or reorder text (app/agent/registry.py HIDDEN): C0 and C1 controls, zero-width characters and
+// marks, bidi embeddings, overrides and isolates, and the byte order mark. The arguments show them as \uXXXX, so the
+// user approves what the call really sends. keepLines leaves line breaks and tabs (of code and of the JSON layout;
+// JSON.stringify writes those inside strings as \n and \t).
+const HIDDEN = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}]/gu;
+
+function visible(text, keepLines) {
+  return String(text).replace(HIDDEN, (c) => (keepLines && (c === '\n' || c === '\t') ? c
+    : '\\u' + c.codePointAt(0).toString(16).padStart(4, '0')));
+}
+
+function argsLine(args) {
+  const parts = Object.entries(args || {}).map(([k, v]) => k + ': ' + (typeof v === 'string' ? v : JSON.stringify(v)));
+  const text = visible(parts.join(', ').replace(/[ \n\r\t]+/g, ' '));
+  return text.length > 140 ? text.slice(0, 139) + '…' : text;
+}
+
+// The arguments as the user should read them: run_python's code as code, anything else as JSON.
+function argsBlock(t) {
+  const args = t.arguments || {};
+  if (!Object.keys(args).length) return null;
+  const code = t.name === 'run_python' && typeof args.code === 'string';
+  return h('div', {class: 'tool-sec'}, h('span', {class: 'eyebrow'}, code ? 'Code' : 'Arguments'),
+    h('pre', {class: 'tool-pre', tabindex: '0'}, h('code', null, visible(code ? args.code : JSON.stringify(args, null, 2), true))));
+}
+
+function filesBlock(t) {
+  const files = (t.files || []).filter((f) => s.api.safeFileUrl(f.url));
+  if (!files.length) return null;
+  const images = files.filter((f) => f.kind === 'image');
+  const items = images.map((f) => ({url: f.url, name: f.path}));
+  return h('div', {class: 'tool-files'},
+    images.map((f, k) => h('button', {
+      type: 'button', class: 'att', 'aria-label': 'Enlarge ' + f.path, onclick: () => lightbox(items, k),
+    }, h('img', {src: f.url, alt: f.path, loading: 'lazy'}))),
+    files.filter((f) => f.kind !== 'image').map((f) => h('a', {class: 'file-link', href: f.url, download: f.path.split('/').pop()},
+      icon('file', 'ic-sm'), f.path)));
+}
+
+// One tool call as a compact card: name, what it did, status and time; the arguments and the result inside. Files it
+// wrote show under the card. seg (live) keeps the open state across repaints.
+function toolBlock(t, seg) {
+  const st = t.status ? STATUS[t.status] || ['idle', t.status] : ['run', 'Running'];
+  const sum = t.describe ? visible(t.describe) : argsLine(t.arguments);
+  const risk = t.risk === null || t.risk === undefined ? null : RISK[t.risk];
+  const body = h('div', {class: 'tool-body'},
+    t.approval && DECISION[t.approval] ? h('p', {class: 'tool-note'}, icon('lock', 'ic-sm'), DECISION[t.approval]) : null,
+    argsBlock(t),
+    t.content ? h('div', {class: 'tool-sec'}, h('span', {class: 'eyebrow'}, 'Result'),
+      h('pre', {class: 'tool-pre tool-out', tabindex: '0'}, t.content),
+      t.truncated ? h('p', {class: 'tool-note'}, 'The start of the result. The saved chat has the rest.') : null) : null,
+    !t.status ? h('p', {class: 'tool-note'}, h('span', {class: 'spinner sm', 'aria-hidden': 'true'}), 'Running') : null);
+  const card = h('details', {class: 'tool-card is-' + (t.status || 'running'), open: !!(seg && seg.open)},
+    h('summary', null, icon('chev', 'chev ic-sm'),
+      h('span', {class: 'tool-name'}, t.label || t.name || 'Unknown tool'),
+      sum ? h('span', {class: 'tool-sum', title: sum}, sum) : null,
+      h('span', {class: 'tool-end'},
+        risk && t.risk >= 2 ? h('span', {class: 'tool-risk'}, risk.label) : null,
+        h('span', {class: 'pill pill-' + st[0]}, st[1]),
+        typeof t.seconds === 'number' ? h('span', {class: 'tool-time num'}, t.seconds.toFixed(1) + ' s') : null)),
+    body);
+  if (seg) card.addEventListener('toggle', () => (seg.open = card.open));
+  return h('div', {class: 'tool'}, card, filesBlock(t));
+}
+
+// The question for a call that needs the user's approval. Keyboard: the focus moves to the card, Tab reaches the
+// buttons, Escape denies.
+function approvalCard(seg, live) {
+  const ap = seg.approval;
+  const label = ap.label || ap.name;
+  const risk = RISK[ap.risk] || RISK[3];
+  const id = 'ap-' + ap.id;
+  const err = h('p', {class: 'field-err', role: 'alert', hidden: true});
+  const buttons = [];
+  const answer = async (decision) => {
+    if (seg.answering) return;
+    seg.answering = decision;
+    buttons.forEach((b) => (b.disabled = true));
+    err.hidden = true;
+    try {
+      await s.api.approve(live.chatId, ap.id, decision);
+      announce(decision === 'deny' ? 'Denied.' : 'Allowed.');
+    } catch (e) {
+      seg.answering = null;
+      buttons.forEach((b) => (b.disabled = false));
+      err.textContent = errText(e);
+      err.hidden = false;
+    }
+  };
+  buttons.push(h('button', {type: 'button', class: 'btn btn-primary btn-sm', onclick: () => answer('once')},
+    icon('check', 'ic-sm'), 'Allow once'));
+  if (ap.chat_scope) {
+    buttons.push(h('button', {type: 'button', class: 'btn btn-sm', onclick: () => answer('chat'),
+      title: 'Runs this tool without asking for the rest of this chat, until web pages or files are in it. Revoke it in the Tools menu.'},
+    'Allow in this chat'));
+  }
+  buttons.push(h('button', {type: 'button', class: 'btn btn-sm btn-danger', onclick: () => answer('deny')},
+    icon('x', 'ic-sm'), 'Deny'));
+  if (seg.answering) buttons.forEach((b) => (b.disabled = true));
+  const minutes = Math.max(1, Math.round((ap.timeout_s || 600) / 60));
+  const card = h('section', {
+    class: 'approval risk-' + ap.risk, role: 'group', tabindex: '-1', 'aria-labelledby': id + '-t', 'aria-describedby': id + '-d',
+    onkeydown: (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      answer('deny');
+    },
+  },
+  h('div', {class: 'approval-head'}, icon('lock'), h('b', {id: id + '-t'}, 'Allow ' + label + '?'),
+    h('span', {class: 'pill pill-' + risk.pill}, risk.label)),
+  h('p', {class: 'approval-what', id: id + '-d'}, ap.describe ? visible(ap.describe) : argsLine(ap.arguments)),
+  ap.host ? h('p', {class: 'approval-host'}, 'Host: ', h('code', null, ap.host)) : null,
+  ap.reason ? h('p', {class: 'approval-why'}, ap.reason) : null,
+  argsBlock(ap),
+  h('div', {class: 'approval-actions'}, buttons),
+  err,
+  h('p', {class: 'approval-help'}, 'No answer in ' + minutes + (minutes === 1 ? ' minute' : ' minutes') + ' denies it. Escape denies.'));
+  return h('div', {class: 'tool'}, card);
+}
+
+// A saved agent answer: every step's text and tool cards, then the end note, the actions and the stats.
+function agentTurn(run, isLast) {
+  const results = new Map(run.filter((m) => m.role === 'tool').map((m) => [m.tool_call_id, m]));
+  const steps = run.filter((m) => m.role === 'assistant');
+  const final = steps[steps.length - 1] || {};
+  const body = [];
+  for (const m of steps) {
+    if (m.reasoning) body.push(thinkBlock(m.reasoning));
+    if (m.content) body.push(h('div', {class: 'bubble md'}, renderMarkdown(m.content, false, showCards(), showHosts())));
+    for (const c of m.tool_calls || []) {
+      const r = results.get(c.id) || {};
+      body.push(toolBlock({
+        id: c.id, name: c.name, label: r.label || c.name, arguments: c.arguments, describe: r.describe, risk: r.risk,
+        status: r.status || 'skipped', content: r.content, files: r.files, seconds: r.seconds, approval: r.approval,
+      }));
+    }
+  }
+  return h('article', {class: 'msg msg-ai', 'aria-label': 'Answer from ' + modelName()},
+    h('span', {class: 'who', title: fmtTime(final.time)}, modelName()),
+    h('div', {class: 'agent-flow'}, body),
+    finishNote(final),
+    msgTools(final, isLast));
+}
+
+// ---------- the Tools menu (agent chats) ----------
+
+async function openTools() {
+  if (s.tools || chatMode() !== 'agent') return;
+  const me = s;
+  let id = memo.activeId;
+  me.tools = {state: null, busy: false, error: '', folderError: ''};
+  me.els.toolsBtn.setAttribute('aria-expanded', 'true');
+  me.els.toolsPop.hidden = false;
+  renderTools();
+  try {
+    if (!id || !me.chat) id = await createChatNow(); // the menu changes the chat on the server
+    if (s !== me || !me.tools) return;
+    me.tools.state = await me.api.agentState(id);
+  } catch (e) {
+    if (s !== me || !me.tools) return;
+    me.tools.error = errText(e);
+  }
+  if (s !== me || !me.tools) return;
+  renderTools();
+  const first = me.els.toolsPop.querySelector('input, button');
+  if (first) first.focus();
+  me.toolsOutside = (e) => {
+    if (!me.els.toolsPop.contains(e.target) && !me.els.toolsBtn.contains(e.target)) closeTools();
+  };
+  document.addEventListener('mousedown', me.toolsOutside, true);
+}
+
+function closeTools(focusBack) {
+  if (!s || !s.tools) return;
+  s.tools = null;
+  s.els.toolsPop.hidden = true;
+  s.els.toolsPop.replaceChildren();
+  s.els.toolsBtn.setAttribute('aria-expanded', 'false');
+  if (s.toolsOutside) document.removeEventListener('mousedown', s.toolsOutside, true);
+  s.toolsOutside = null;
+  if (focusBack) s.els.toolsBtn.focus();
+}
+
+async function changeTools(body, focusKey) {
+  const me = s;
+  const t = me.tools;
+  if (!t || t.busy || !memo.activeId) return;
+  t.busy = true;
+  t.error = '';
+  if ('folder' in body) t.folderError = '';
+  renderTools(focusKey);
+  try {
+    t.state = await me.api.changeAgent(memo.activeId, body);
+    if (s === me && me.chat) me.chat.agent = {tools: t.state.enabled, folder: t.state.folder, grants: t.state.grants, tainted: t.state.tainted};
+  } catch (e) {
+    if ('folder' in body) t.folderError = errText(e);
+    else t.error = errText(e);
+  } finally {
+    t.busy = false;
+  }
+  if (s === me && me.tools === t) renderTools(focusKey);
+}
+
+function renderTools(focusKey) {
+  const t = s.tools;
+  const pop = s.els.toolsPop;
+  if (!t) return;
+  const active = document.activeElement;
+  const key = focusKey || (pop.contains(active) && active.dataset ? active.dataset.key : null);
+  const st = t.state;
+  const close = h('button', {type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': 'Close the Tools menu', onclick: () => closeTools(true)}, icon('x', 'ic-sm'));
+  const head = h('div', {class: 'tools-head'}, h('h3', null, 'Tools for this chat'), close);
+  if (!st) {
+    pop.replaceChildren(head, t.error ? h('p', {class: 'field-err', role: 'alert'}, t.error)
+      : h('p', {class: 'muted'}, h('span', {class: 'spinner sm', 'aria-hidden': 'true'}), 'Loading...'));
+    return;
+  }
+  const rows = st.tools.map((tool) => {
+    const risk = RISK[tool.risk] || RISK[3];
+    const riskLabel = tool.risk === 2 && !tool.network ? 'Uses this Mac' : risk.label;
+    const sw = h('input', {
+      type: 'checkbox', role: 'switch', id: 'tool-' + tool.name, 'data-key': 'tool-' + tool.name, checked: tool.enabled, disabled: t.busy,
+      'aria-describedby': 'tool-' + tool.name + '-help',
+      onchange: () => {
+        const on = st.tools.filter((x) => (x.name === tool.name ? sw.checked : x.enabled)).map((x) => x.name);
+        changeTools({tools: on}, 'tool-' + tool.name);
+      },
+    });
+    return h('li', {class: 'tool-row'},
+      h('label', {class: 'switch', for: 'tool-' + tool.name}, sw, h('span', {class: 'track'}), h('span', {class: 'sr-only'}, tool.label)),
+      h('div', {class: 'tool-row-text'},
+        h('div', {class: 'tool-row-head'}, h('b', null, tool.label), h('span', {class: 'pill pill-' + risk.pill}, riskLabel)),
+        h('p', {class: 'help', id: 'tool-' + tool.name + '-help'}, tool.risk_text),
+        tool.granted ? h('div', {class: 'tool-grant'}, h('span', {class: 'chip'}, icon('check', 'ic-sm'), 'Allowed in this chat'),
+          h('button', {type: 'button', class: 'btn btn-ghost btn-sm', 'data-key': 'revoke-' + tool.name, disabled: t.busy,
+            onclick: () => changeTools({revoke: [tool.name]}, 'tool-' + tool.name)}, 'Revoke')) : null));
+  });
+  const input = h('input', {
+    class: 'input', id: 'tools-folder', 'data-key': 'folder', type: 'text', placeholder: '/Users/you/Documents/notes',
+    autocomplete: 'off', spellcheck: 'false', disabled: t.busy, 'aria-invalid': t.folderError ? 'true' : null,
+    'aria-describedby': 'tools-folder-help' + (t.folderError ? ' tools-folder-err' : ''),
+    onkeydown: (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        grant();
+      }
+    },
+  });
+  if (t.folderDraft) input.value = t.folderDraft;
+  input.addEventListener('input', () => (t.folderDraft = input.value));
+  const grant = () => {
+    if (input.value.trim()) changeTools({folder: input.value.trim()}, 'folder');
+  };
+  const folder = st.folder
+    ? h('div', {class: 'tools-folder-set'}, icon('folder', 'ic-sm'), h('code', {title: st.folder}, st.folder),
+      h('button', {type: 'button', class: 'btn btn-sm', 'data-key': 'folder', disabled: t.busy, onclick: () => {
+        t.folderDraft = '';
+        changeTools({folder: null}, 'folder');
+      }}, 'Revoke'))
+    : h('div', {class: 'tools-folder-row'}, input,
+      h('button', {type: 'button', class: 'btn btn-sm', disabled: t.busy, onclick: grant}, 'Grant'));
+  pop.replaceChildren(...[head,
+    h('p', {class: 'tools-intro'}, 'The model uses a tool only when it needs one. Calls marked "Leaves this Mac", "Uses this Mac" or "Runs code" ask you first.'),
+    st.tainted ? h('p', {class: 'tools-taint'}, icon('info', 'ic-sm'),
+      'Web pages, files or program output are in this chat, so tools that send data off this Mac ask before every call.') : null,
+    t.error ? h('p', {class: 'field-err', role: 'alert'}, t.error) : null,
+    h('ul', {class: 'tool-list', role: 'list'}, rows),
+    h('div', {class: 'field tools-folder'},
+      h('label', {class: 'label', for: 'tools-folder'}, 'Folder the file tools may read'),
+      folder,
+      t.folderError ? h('p', {class: 'field-err', id: 'tools-folder-err', role: 'alert'}, t.folderError) : null,
+      h('p', {class: 'help', id: 'tools-folder-help'}, 'Text files in this folder and its subfolders only. Hidden files and key files are never read. Not your home folder itself or a system folder.'))].filter(Boolean));
+  if (key) {
+    const el = pop.querySelector('[data-key="' + CSS.escape(key) + '"]');
+    if (el && !el.disabled) el.focus();
+    else if (el) t.refocus = key;
+  } else if (t.refocus) {
+    const el = pop.querySelector('[data-key="' + CSS.escape(t.refocus) + '"]');
+    t.refocus = null;
+    if (el) el.focus();
+  }
 }
 
 function addCaret(bubble) {
@@ -688,9 +1324,21 @@ function renderThread(toEnd) {
     return;
   }
   const last = msgs.length - 1;
-  msgs.forEach((m, i) => {
-    box.append(m.role === 'user' ? userMessage(m) : aiMessage(m, i === last && !s.live && !s.chat.running));
-  });
+  const idle = !s.live && !s.chat.running;
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    if (m.role === 'user') {
+      box.append(userMessage(m));
+      continue;
+    }
+    // an answer: the messages up to the next user message; an agent answer has steps and tool messages
+    let j = i;
+    while (j < last && msgs[j + 1].role !== 'user') j++;
+    const run = msgs.slice(i, j + 1);
+    if (run.some((x) => x.role === 'tool' || x.tool_calls)) box.append(agentTurn(run, j === last && idle));
+    else run.forEach((x, k) => box.append(aiMessage(x, i + k === last && idle)));
+    i = j;
+  }
   if (s.live) {
     box.append(s.live.node);
     paintLive(s.live);
@@ -700,11 +1348,13 @@ function renderThread(toEnd) {
 
 function emptyChat() {
   const blocked = modelFacts().blocked;
+  const info = MODE_INFO[chatMode()] || MODE_INFO.workstation;
   return h('div', {class: 'chat-empty'},
-    h('div', {class: 'empty'}, icon('chat'),
-      h('h3', null, 'Ask about a prompt, a shot list or lyrics'),
-      h('p', null, 'The model runs on this Mac and nothing is uploaded. Attach an image to ask about it. A text written for a tool gets a "Use in" button.')),
-    h('div', {class: 'examples', role: 'list', 'aria-label': 'Examples'}, EXAMPLES.map((ex) => h('button', {
+    modePicker(),
+    h('div', {class: 'empty'}, icon(info.icon),
+      h('h3', null, info.title),
+      h('p', null, info.text)),
+    h('div', {class: 'examples', role: 'list', 'aria-label': 'Examples'}, info.examples.filter((ex) => !ex.full || s.ctx.store.profile() !== 'chat').map((ex) => h('button', {
       type: 'button', class: 'example', role: 'listitem', disabled: blocked, onclick: () => useExample(ex),
     }, h('b', null, ex.title), h('span', null, ex.text)))));
 }
@@ -730,24 +1380,33 @@ function userMessage(m) {
 }
 
 function aiMessage(m, isLast) {
-  const words = m.reasoning ? m.reasoning.trim().split(/\s+/).length : 0;
   return h('article', {class: 'msg msg-ai', 'aria-label': 'Answer from ' + modelName()},
     h('span', {class: 'who', title: fmtTime(m.time)}, modelName()),
-    m.reasoning ? h('details', {class: 'think'},
-      h('summary', null, icon('chev', 'chev ic-sm'), h('span', {class: 'think-label'}, 'Thinking', h('span', {class: 'think-n'}, words + ' words'))),
-      h('div', {class: 'think-body'}, m.reasoning)) : null,
-    m.content ? h('div', {class: 'bubble md'}, renderMarkdown(m.content, false)) : null,
+    m.reasoning ? thinkBlock(m.reasoning) : null,
+    m.content ? h('div', {class: 'bubble md'}, renderMarkdown(m.content, false, showCards(), showHosts())) : null,
     finishNote(m),
-    h('div', {class: 'msg-tools'},
-      m.content ? copyButton(m.content, 'Copy', 'Copy the answer') : null,
-      isLast ? h('button', {type: 'button', class: 'btn btn-ghost btn-sm', onclick: regenerate, disabled: modelFacts().blocked},
-        icon('refresh', 'ic-sm'), 'Regenerate') : null,
-      statsLine(m.stats)));
+    msgTools(m, isLast));
+}
+
+function thinkBlock(reasoning) {
+  const words = reasoning.trim().split(/\s+/).length;
+  return h('details', {class: 'think'},
+    h('summary', null, icon('chev', 'chev ic-sm'), h('span', {class: 'think-label'}, 'Thinking', h('span', {class: 'think-n'}, words + ' words'))),
+    h('div', {class: 'think-body'}, reasoning));
+}
+
+function msgTools(m, isLast) {
+  return h('div', {class: 'msg-tools'},
+    m.content ? copyButton(m.content, 'Copy', 'Copy the answer') : null,
+    isLast ? h('button', {type: 'button', class: 'btn btn-ghost btn-sm', onclick: regenerate, disabled: modelFacts().blocked},
+      icon('refresh', 'ic-sm'), 'Regenerate') : null,
+    statsLine(m.stats));
 }
 
 function finishNote(m) {
   if (m.finish === 'cancelled') return h('p', {class: 'msg-end'}, icon('stop', 'ic-sm fill'), 'Stopped. The answer above is incomplete.');
   if (m.finish === 'length') return h('p', {class: 'msg-end'}, icon('alert', 'ic-sm'), 'The answer reached the length limit and ends early. Ask it to continue.');
+  if (m.note) return h('p', {class: 'msg-end'}, icon('alert', 'ic-sm'), m.note); // an agent answer that hit a limit
   if (m.finish === 'error') {
     const text = m.error || 'The answer failed.';
     return h('div', {class: 'banner banner-err msg-err'}, icon('alert'), h('div', {class: 'banner-body'}, h('span', null, text),
@@ -760,6 +1419,7 @@ function finishNote(m) {
 function statsLine(st) {
   if (!st) return null;
   const parts = [];
+  if (st.steps > 1) parts.push(st.steps + ' steps');
   if (st.generation_tokens) parts.push(st.generation_tokens + ' tokens');
   if (st.generation_tps) parts.push(st.generation_tps.toFixed(1) + ' tokens/s');
   if (typeof st.seconds === 'number') parts.push(st.seconds.toFixed(1) + ' s');
@@ -790,6 +1450,10 @@ function renderComposer() {
     : 'Attach PNG, JPEG or WebP images (up to ' + MAX_IMAGES + ', 20 MB each). You can also drop or paste them.';
   els.think.checked = memo.thinking;
   els.think.disabled = f.blocked;
+  const agent = chatMode() === 'agent';
+  els.toolsBtn.hidden = !agent;
+  els.toolsBtn.disabled = !!(s.sending || s.loading);
+  if (!agent && s.tools) closeTools();
   const live = s.live;
   if (live) {
     els.send.className = 'btn btn-sm';
@@ -799,7 +1463,7 @@ function renderComposer() {
   } else {
     els.send.className = 'btn btn-primary btn-sm';
     els.send.removeAttribute('aria-disabled');
-    els.send.disabled = f.blocked || s.sending;
+    els.send.disabled = f.blocked || s.sending || !!s.modeBusy; // a mode change waits for the server
     els.send.replaceChildren(icon('send', 'ic-sm'), 'Send');
   }
   els.unload.disabled = !!live;
@@ -939,7 +1603,8 @@ async function copyText(text) {
 // A small renderer for model text: headings, paragraphs (single line breaks kept), bold, italic, strikethrough,
 // inline code, fenced code, nested lists, block quotes, rules, tables and links. It builds element and text nodes
 // only. Only http(s) links become links; they open in the system browser (target _blank, rel noopener).
-// A fence "```prompt <tool id> [field]" for a known tool becomes a card with "Use in <tool>".
+// With cards on (workstation chats), a fence "```prompt <tool id> [field]" for a known tool becomes a card with
+// "Use in <tool>"; otherwise it stays a code block.
 
 const RE = {
   fence: /^( {0,3})(`{3,}|~{3,})(.*)$/,
@@ -963,9 +1628,9 @@ const INLINE = new RegExp([
   '\\\\([!-\\/:-@\\[-`{-~])', // 11: escaped punctuation
 ].join('|'), 'gu');
 
-export function renderMarkdown(src, streaming) {
+export function renderMarkdown(src, streaming, cards = true, hosts = false) {
   const out = document.createDocumentFragment();
-  renderBlocks(String(src || '').replace(/\r\n?/g, '\n').replace(/\t/g, '    ').split('\n'), out, streaming);
+  renderBlocks(String(src || '').replace(/\r\n?/g, '\n').replace(/\t/g, '    ').split('\n'), out, {streaming, cards, hosts});
   return out;
 }
 
@@ -978,7 +1643,8 @@ function startsBlock(lines, i) {
   return RE.fence.test(l) || RE.heading.test(l) || RE.hr.test(l) || RE.quote.test(l) || RE.item.test(l) || isTableStart(lines, i);
 }
 
-function renderBlocks(lines, out, streaming) {
+// o: {streaming, cards, hosts}
+function renderBlocks(lines, out, o) {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
@@ -1001,7 +1667,7 @@ function renderBlocks(lines, out, streaming) {
         }
         body.push(lines[i].slice(Math.min(indent, indentOf(lines[i]))));
       }
-      out.append(fenced(m[3].trim(), body.join('\n'), closed || !streaming));
+      out.append(fenced(m[3].trim(), body.join('\n'), closed || !o.streaming, o.cards));
       continue;
     }
     if (RE.hr.test(line)) {
@@ -1010,7 +1676,7 @@ function renderBlocks(lines, out, streaming) {
       continue;
     }
     if ((m = RE.heading.exec(line))) {
-      out.append(inline(h('h' + Math.min(6, m[1].length + 2), {class: 'md-h' + m[1].length}), m[2] || ''));
+      out.append(inline(h('h' + Math.min(6, m[1].length + 2), {class: 'md-h' + m[1].length}), m[2] || '', o));
       i++;
       continue;
     }
@@ -1021,29 +1687,29 @@ function renderBlocks(lines, out, streaming) {
         i++;
       }
       const q = h('blockquote');
-      renderBlocks(body, q, streaming);
+      renderBlocks(body, q, o);
       out.append(q);
       continue;
     }
     if (RE.item.test(line)) {
-      i = renderMdList(lines, i, out, streaming);
+      i = renderMdList(lines, i, out, o);
       continue;
     }
     if (isTableStart(lines, i)) {
-      i = renderTable(lines, i, out);
+      i = renderTable(lines, i, out, o);
       continue;
     }
     const p = h('p');
-    inline(p, line.trim());
+    inline(p, line.trim(), o);
     for (i++; i < lines.length && lines[i].trim() && !startsBlock(lines, i); i++) {
       p.append(h('br'));
-      inline(p, lines[i].trim());
+      inline(p, lines[i].trim(), o);
     }
     out.append(p);
   }
 }
 
-function renderMdList(lines, start, out, streaming) {
+function renderMdList(lines, start, out, o) {
   const first = RE.item.exec(lines[start]);
   const base = first[1].length;
   const ordered = /\d/.test(first[2]);
@@ -1076,7 +1742,7 @@ function renderMdList(lines, start, out, streaming) {
       else body.push(l.trim()); // a lazy continuation line
     }
     const li = h('li');
-    renderBlocks(body, li, streaming);
+    renderBlocks(body, li, o);
     list.append(li);
     let j = i;
     while (j < lines.length && !lines[j].trim()) j++;
@@ -1086,7 +1752,7 @@ function renderMdList(lines, start, out, streaming) {
   return i;
 }
 
-function renderTable(lines, i, out) {
+function renderTable(lines, i, out, o) {
   const cells = (line) => {
     let t = line.trim();
     if (t.startsWith('|')) t = t.slice(1);
@@ -1095,7 +1761,7 @@ function renderTable(lines, i, out) {
   };
   const head = cells(lines[i]);
   const align = cells(lines[i + 1]).map((c) => (c.endsWith(':') ? (c.startsWith(':') ? 'center' : 'right') : null));
-  const cell = (tag, text, k) => inline(h(tag, align[k] ? {style: {textAlign: align[k]}} : null), text);
+  const cell = (tag, text, k) => inline(h(tag, align[k] ? {style: {textAlign: align[k]}} : null), text, o);
   const thead = h('thead', null, h('tr', null, head.map((c, k) => cell('th', c, k))));
   const tbody = h('tbody');
   for (i += 2; i < lines.length && lines[i].trim() && lines[i].includes('|'); i++) {
@@ -1106,39 +1772,61 @@ function renderTable(lines, i, out) {
   return i;
 }
 
-function inline(parent, text) {
+function inline(parent, text, o) {
   let pos = 0;
   for (const m of text.matchAll(INLINE)) {
     if (m.index > pos) parent.append(text.slice(pos, m.index));
     pos = m.index + m[0].length;
     if (m[1] !== undefined) parent.append(h('code', null, m[2].replace(/^ (.*[^ ].*) $/, '$1')));
-    else if (m[3] !== undefined || m[4] !== undefined) parent.append(inline(h('strong'), m[3] ?? m[4]));
-    else if (m[5] !== undefined || m[6] !== undefined) parent.append(inline(h('em'), m[5] ?? m[6]));
-    else if (m[7] !== undefined) parent.append(inline(h('del'), m[7]));
-    else if (m[8] !== undefined) link(parent, m[8], m[9]);
-    else if (m[10] !== undefined) link(parent, null, m[10]);
+    else if (m[3] !== undefined || m[4] !== undefined) parent.append(inline(h('strong'), m[3] ?? m[4], o));
+    else if (m[5] !== undefined || m[6] !== undefined) parent.append(inline(h('em'), m[5] ?? m[6], o));
+    else if (m[7] !== undefined) parent.append(inline(h('del'), m[7], o));
+    else if (m[8] !== undefined) link(parent, m[8], m[9], o);
+    else if (m[10] !== undefined) link(parent, null, m[10], o);
     else parent.append(m[11]);
   }
   if (pos < text.length) parent.append(text.slice(pos));
   return parent;
 }
 
-function link(parent, label, url) {
-  if (/^https?:\/\//i.test(url)) {
+const LINK_TEXT = 80; // characters of a bare URL shown in an agent chat; the title has all of it
+
+// The host a link opens, as the browser sends it (IDNA, so a look-alike letter shows as xn--); null when the URL does
+// not parse.
+function linkHost(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+}
+
+// o.hosts (agent chats): "label (host)", and a long bare URL is shortened with all of it in the title. A URL whose
+// host does not parse stays text there.
+function link(parent, label, url, o) {
+  const web = /^https?:\/\//i.test(url);
+  const host = web && o && o.hosts ? linkHost(url) : '';
+  if (web && host !== null) {
     const a = h('a', {href: url, target: '_blank', rel: 'noopener noreferrer', title: url});
-    if (label === null) a.append(url);
-    else inline(a, label);
+    const shown = label === null && host && url.length > LINK_TEXT ? url.slice(0, LINK_TEXT - 1) + '…' : url;
+    // in agent chats the label is isolated, so a bidi control in it cannot reorder the host after it
+    if (label === null) a.append(shown);
+    else if (host) a.append(inline(h('bdi'), label, o));
+    else inline(a, label, o);
+    // a bare URL names its host already, unless it hides it (user info, a non-ASCII name, a cut before its end)
+    const named = label === null && shown.toLowerCase().startsWith(url.split(':')[0].toLowerCase() + '://' + host);
+    if (host && !named) a.append(' ', h('bdi', {class: 'link-host', dir: 'ltr'}, '(' + host + ')'));
     parent.append(a);
   } else if (label === null) {
     parent.append(url);
   } else {
-    inline(parent, label);
+    inline(parent, label, o);
     parent.append(' (' + url + ')');
   }
 }
 
-function fenced(info, text, done) {
-  const m = /^prompt\s+([\w.-]+)(?:\s+([\w-]+))?\s*$/i.exec(info);
+function fenced(info, text, done, cards) {
+  const m = cards && /^prompt\s+([\w.-]+)(?:\s+([\w-]+))?\s*$/i.exec(info);
   const target = m && promptTarget(m[1], m[2]);
   return target ? promptCard(target, text, done) : codeBlock(info.split(/\s+/)[0], text, done);
 }

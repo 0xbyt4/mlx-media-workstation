@@ -1,9 +1,11 @@
 // Boots the app: theme, store, router, the sidebar (sections, job dock, memory meter), the toolbar and the views.
+// The profile (store.profile()) picks the sections: the chat profile shows Chat, Models and Settings, with no job dock,
+// no job toasts and no job part in the memory meter unless a job runs. The router starts once the profile is known.
 
 import {api} from './api.js';
 import {store} from './store.js';
 import {ui, h, append, icon, toolIcon, fmtLeft} from './ui.js';
-import {router, VIEWS} from './router.js';
+import {router} from './router.js';
 import {handoff} from './handoff.js';
 import create from './views/create.js';
 import jobs from './views/jobs.js';
@@ -15,6 +17,7 @@ import settings from './views/settings.js';
 const MODULES = {create, jobs, chat, library, models, settings};
 const THEME_ICON = {system: 'monitor', light: 'sun', dark: 'moon'};
 const NEXT_THEME = {system: 'light', light: 'dark', dark: 'system'};
+const BRAND_SUB = {full: 'Local media models on MLX', chat: 'Local chat on MLX'};
 const $ = (id) => document.getElementById(id);
 
 const shell = {
@@ -27,6 +30,9 @@ const shell = {
 };
 const ctx = {api, store, ui, router, handoff, shell};
 let active = null;
+let started = false; // the router runs once the profile is known
+
+const chatOnly = () => store.profile() === 'chat';
 
 // ---------- views ----------
 
@@ -72,9 +78,10 @@ function renderNav() {
   const jobsList = store.get('jobs');
   const activeJobs = jobsList.filter((j) => store.ACTIVE.has(j.status)).length;
   const modelsData = store.get('models');
-  const missing = !!(modelsData && modelsData.models.some((m) => !m.installed));
+  const missing = !!(modelsData && modelsData.models.some((m) => store.shownModel(m) && !m.installed));
   const focused = document.activeElement && nav.contains(document.activeElement) ? document.activeElement.getAttribute('data-view') : null;
-  nav.replaceChildren(...VIEWS.map((v, i) => {
+  const list = started ? router.views() : []; // no sections before the profile is known, so none flash
+  nav.replaceChildren(...list.map((v, i) => {
     let extra;
     if (v.id === 'jobs' && activeJobs) extra = h('span', {class: 'badge', 'aria-label': activeJobs + ' active'}, String(activeJobs));
     else if (v.id === 'models' && missing) extra = [h('span', {class: 'nav-dot', title: 'Some models are not installed'}), h('span', {class: 'sr-only'}, 'Some models are not installed')];
@@ -86,7 +93,8 @@ function renderNav() {
       onclick: () => router.go(v.id),
     }, icon(v.icon), h('span', {class: 'nav-label'}, v.title), extra);
   }));
-  if (focused) nav.querySelector('[data-view="' + focused + '"]').focus();
+  const again = focused && nav.querySelector('[data-view="' + focused + '"]');
+  if (again) again.focus();
 }
 
 // Arrow keys move between sections; Home and End jump to the first and last.
@@ -109,6 +117,12 @@ function navKeys(e) {
 function renderDock() {
   const dock = $('dock');
   const pillEl = $('run-pill');
+  dock.hidden = !started || chatOnly();
+  if (dock.hidden) {
+    dock.replaceChildren();
+    pillEl.hidden = true;
+    return;
+  }
   const run = store.runningJob();
   const queued = store.queuedJobs().length;
   if (!run) {
@@ -150,6 +164,7 @@ function renderMem() {
   const llm = store.get('llm');
   const qwen = llm && llm.state === 'ready' ? Math.min(llm.peak_gb, used) : 0;
   const run = store.runningJob();
+  const showJob = !chatOnly() || !!run; // the chat profile shows a job only while one runs (from a full window)
   const jobPeak = run ? (llm && llm.media_peak_gb) || store.toolPeak(run.tool) || 0 : 0;
   const job = Math.min(jobPeak, Math.max(0, used - qwen));
   const other = Math.max(0, used - job - qwen);
@@ -160,13 +175,14 @@ function renderMem() {
   append(box, [
     h('div', {class: 'mem-head'}, h('span', null, 'Memory'), h('span', {class: 'num'}, g(used) + ' of ' + Math.round(total) + ' GB')),
     h('div', {class: 'meter', role: 'img',
-      'aria-label': 'Memory: job ' + g(job) + ' GB, ' + (llm ? llm.model : 'local model') + ' ' + g(qwen) + ' GB, other apps ' + g(other) + ' GB of ' + Math.round(total) + ' GB'},
-    h('span', {class: 'seg-job', style: {width: w(job)}}), h('span', {class: 'seg-qwen', style: {width: w(qwen)}}), h('span', {class: 'seg-other', style: {width: w(other)}})),
+      'aria-label': 'Memory: ' + (showJob ? 'job ' + g(job) + ' GB, ' : '') + (llm ? llm.model : 'local model') + ' ' + g(qwen) + ' GB, other apps ' + g(other) + ' GB of ' + Math.round(total) + ' GB'},
+    showJob ? h('span', {class: 'seg-job', style: {width: w(job)}}) : null, h('span', {class: 'seg-qwen', style: {width: w(qwen)}}), h('span', {class: 'seg-other', style: {width: w(other)}})),
     h('div', {class: 'mem-legend'},
-      h('span', {title: 'The running job, at its expected peak'}, h('i', {class: 'seg-job'}), 'Job ' + g(job)),
+      showJob ? h('span', {title: 'The running job, at its expected peak'}, h('i', {class: 'seg-job'}), 'Job ' + g(job)) : null,
       h('span', {title: llm ? llm.model + ' (' + llm.state + ')' : ''}, h('i', {class: 'seg-qwen'}), llm && llm.state === 'loading' ? 'Qwen loading' : 'Qwen ' + g(qwen)),
       h('span', null, h('i', {class: 'seg-other'}), 'Other ' + g(other))),
-    swap >= 0.5 ? h('div', {class: 'mem-swap' + (swap >= 4 ? ' warn' : '')}, 'Swap ' + g(swap) + ' GB' + (swap >= 4 ? ': jobs run slower' : ' in use')) : null]);
+    swap >= 0.5 ? h('div', {class: 'mem-swap' + (swap >= 4 ? ' warn' : '')}, 'Swap ' + g(swap) + ' GB' +
+      (swap >= 4 ? (chatOnly() ? ': answers come slower' : ': jobs run slower') : ' in use')) : null]);
 }
 
 // ---------- toolbar ----------
@@ -186,8 +202,31 @@ function renderOffline(off) {
 }
 
 function renderTitle() {
+  if (chatOnly()) {
+    document.title = 'Workstation Chat';
+    return;
+  }
   const n = store.get('jobs').filter((j) => store.ACTIVE.has(j.status)).length;
   document.title = (n ? '(' + n + ') ' : '') + 'Workstation';
+}
+
+function renderBrand() {
+  document.querySelector('.brand-sub').textContent = BRAND_SUB[store.profile()];
+}
+
+// Shows the sections of the profile; starts the router the first time.
+function applyProfile() {
+  router.setProfile(store.profile());
+  if (!started) {
+    started = true;
+    router.start(show);
+  }
+  renderBrand();
+  renderNav();
+  renderDock();
+  renderMem();
+  renderTitle();
+  refreshSubtitle();
 }
 
 function refreshSubtitle() {
@@ -247,18 +286,26 @@ function boot() {
     renderMem();
   });
   store.on('job:finished', (job) => {
-    if (active && active.id === 'jobs') return;
+    if (chatOnly() || (active && active.id === 'jobs')) return;
     const label = job.tool_label || job.tool;
     const text = job.status === 'done' ? label + ' finished.' : job.status === 'failed' ? label + ' failed.' : label + ' was cancelled.';
     ui.toast(text, {kind: job.status === 'failed' ? 'err' : null, action: {label: 'Open Jobs', run: () => router.go('jobs')}});
   });
   setInterval(() => store.emit('tick'), 1000);
+  store.on('profile', applyProfile);
 
   renderNav();
   renderDock();
   renderMem();
   store.start();
-  router.start(show);
+  if (store.get('profile')) applyProfile(); // a window with ?profile= in its address
+  else {
+    // the profile comes with the first /api/system answer; while the server does not answer, the full profile shows
+    const off = store.on('offline', (isOff) => {
+      off();
+      if (isOff && !started) applyProfile();
+    });
+  }
 }
 
 boot();

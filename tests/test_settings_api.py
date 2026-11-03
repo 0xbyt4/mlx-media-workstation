@@ -2,12 +2,15 @@
 
 import os
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import config, llm, settings_api
+from app.agent import sandbox
+from app.agent import settings as agent_settings
 
 USER_FILE = """# My Mac's installs.
 # Keep this comment.
@@ -48,10 +51,16 @@ def cfg(tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(config, "PATHS", config.load(file))
     monkeypatch.setattr(config, "ASSIST", config.load_assist(file))
     monkeypatch.setattr(config, "APP", config.load_app(file))
+    monkeypatch.setattr(settings_api, "AGENT", agent_settings.load(file))
     return file
 
 
+ORIGIN = {"origin": "http://127.0.0.1:7870"}
+
+
 def put(client: TestClient, body: dict, **kw) -> object:
+    """A write from the app's own page (with its Origin), unless the test passes other headers."""
+    kw.setdefault("headers", ORIGIN)
     return client.put("/api/settings", json=body, **kw)
 
 
@@ -216,6 +225,12 @@ def test_put_needs_the_app_origin(client: TestClient, cfg: Path) -> None:
     )
     assert r.status_code == 403
     assert cfg.read_text() == USER_FILE
+    # no Origin at all (curl, a script on this Mac): refused too, unlike most writes
+    r = put(client, {"paths": {"ace_dir": "/ace"}}, headers={})
+    assert r.status_code == 403
+    r = put(client, {"agent": {"wikipedia_language": "de"}}, headers={})
+    assert r.status_code == 403
+    assert cfg.read_text() == USER_FILE
     ok = put(
         client,
         {"paths": {"ace_dir": "/ace"}},
@@ -261,8 +276,15 @@ def test_get_reports_the_switches(client: TestClient, cfg: Path) -> None:
         "keep_awake": True,
         "notify": True,
         "llm_idle_minutes": 10,
-        "defaults": {"keep_awake": True, "notify": True, "llm_idle_minutes": 10},
+        "profile": "full",
+        "defaults": {
+            "keep_awake": True,
+            "notify": True,
+            "llm_idle_minutes": 10,
+            "profile": "full",
+        },
         "idle_choices": [5, 10, 30, 60, 0],
+        "profiles": ["full", "chat"],
     }
     assert data["llm"] == {"idle_stop_s": 600.0}
 
@@ -327,6 +349,9 @@ def test_put_same_switch_applies_without_a_write(
         ("llm_idle_minutes", 24 * 60 + 1),
         ("llm_idle_minutes", True),
         ("llm_idle_minutes", "10"),
+        ("profile", "media"),
+        ("profile", "Chat"),
+        ("profile", True),
         ("theme", "dark"),
     ],
 )
@@ -340,9 +365,275 @@ def test_put_refuses_bad_switch_values(
     assert config.APP == config.App(**config.APP_DEFAULTS)
 
 
+def test_put_profile_applies_at_once(client: TestClient, cfg: Path) -> None:
+    r = put(client, {"app": {"profile": "chat"}})
+    assert r.status_code == 200
+    assert r.json()["changed"] == ["app.profile"]
+    assert r.json()["app"]["profile"] == "chat"
+    assert r.json()["restart_required"] is False
+    assert cfg.read_text() == USER_FILE + '\n[app]\nprofile = "chat"\n'
+    assert config.APP.profile == "chat"
+    assert config.load_app(cfg).profile == "chat"
+    assert client.get("/api/system").json()["profile"] == "chat"
+
+
+def test_put_switch_keeps_the_profile_of_this_run(
+    client: TestClient, cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # started with --chat: the file says nothing about the profile, and another switch does not change it
+    monkeypatch.setattr(config, "APP", replace(config.APP, profile="chat"))
+    assert client.get("/api/settings").json()["app"]["profile"] == "chat"
+    put(client, {"app": {"notify": False}})
+    assert config.APP.profile == "chat"
+    assert "profile" not in cfg.read_text()
+    # choosing "full" in Settings applies now and is saved for the next start
+    assert put(client, {"app": {"profile": "full"}}).json()["changed"] == [
+        "app.profile"
+    ]
+    assert config.APP.profile == "full"
+    assert config.load_app(cfg).profile == "full"
+
+
 def test_put_switch_over_an_int_that_means_true(client: TestClient, cfg: Path) -> None:
     # "keep_awake = 1" is not a TOML boolean (the app would not start with it), so it counts as a change
     cfg.write_text("[app]\nkeep_awake = 1\n")
     r = put(client, {"app": {"keep_awake": True}})
     assert r.json()["changed"] == ["app.keep_awake"]
     assert cfg.read_text() == "[app]\nkeep_awake = true\n"
+
+
+# The [agent] values: the registry reads them at start, so a change needs a restart
+
+AGENT_FILE = (
+    USER_FILE
+    + """
+[agent]
+# the sandbox interpreter
+python = ""   # empty: standard library only
+searxng_url = ""
+wikipedia_language = "en"  # the Wikipedia web_search asks
+marginalia = true
+"""
+)
+
+
+@pytest.fixture
+def exe(home: Path) -> Path:
+    """An executable file in the temp home folder, as a sandbox venv's python."""
+    path = home / "venv-sandbox" / "bin" / "python"
+    path.parent.mkdir(parents=True)
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_get_reports_the_agent_values(client: TestClient, cfg: Path) -> None:
+    agent = client.get("/api/settings").json()["agent"]
+    assert agent == {
+        **agent_settings.DEFAULTS,
+        "defaults": agent_settings.DEFAULTS,
+        "python_path": None,
+        "python_found": False,
+        "python_problem": None,
+        "default_python": sandbox.default_interpreter().argv[0],
+        "languages": ["en", "tr", "de", "fr", "es", "it", "ja", "zh"],
+        "restart_required": False,
+    }
+
+
+def test_put_agent_values_keep_the_comments(
+    client: TestClient, cfg: Path, exe: Path
+) -> None:
+    cfg.write_text(AGENT_FILE)
+    body = {
+        "agent": {
+            "python": "~/venv-sandbox/bin/python",
+            "searxng_url": "http://127.0.0.1:8888/",
+            "wikipedia_language": "tr",
+            "marginalia": False,
+        }
+    }
+    r = put(client, body)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["changed"] == [f"agent.{k}" for k in body["agent"]]
+    assert data["restart_required"] is True
+    assert data["agent"]["restart_required"] is True
+    assert data["agent"]["python"] == "~/venv-sandbox/bin/python"
+    assert data["agent"]["python_path"] == str(exe)
+    assert data["agent"]["python_found"] is True
+    assert cfg.read_text() == USER_FILE + (
+        "\n[agent]\n"
+        "# the sandbox interpreter\n"
+        'python = "~/venv-sandbox/bin/python"   # empty: standard library only\n'
+        'searxng_url = "http://127.0.0.1:8888/"\n'
+        'wikipedia_language = "tr"  # the Wikipedia web_search asks\n'
+        "marginalia = false\n"
+    )
+    assert agent_settings.load(cfg) == agent_settings.Settings(
+        python=exe,
+        searxng_url="http://127.0.0.1:8888",
+        wikipedia_language="tr",
+        marginalia=False,
+    )
+    # back to the values of the start: no restart needed any more
+    back = put(client, {"agent": agent_settings.DEFAULTS}).json()
+    assert back["agent"]["restart_required"] is False
+    assert back["restart_required"] is False
+    assert cfg.read_text() == AGENT_FILE
+
+
+def test_put_agent_adds_the_section(client: TestClient, cfg: Path) -> None:
+    r = put(client, {"agent": {"marginalia": False, "wikipedia_language": "pt-br"}})
+    assert r.status_code == 200
+    assert cfg.read_text() == USER_FILE + (
+        '\n[agent]\nmarginalia = false\nwikipedia_language = "pt-br"\n'
+    )
+    assert agent_settings.load(cfg).wikipedia_language == "pt-br"
+
+
+def test_put_agent_same_value_writes_nothing(client: TestClient, cfg: Path) -> None:
+    cfg.write_text(AGENT_FILE)
+    r = put(client, {"agent": {"python": "  ", "marginalia": True}})
+    assert r.json()["changed"] == []
+    assert cfg.read_text() == AGENT_FILE
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["", "https://search.example/searx/", "http://[::1]:8080", "http://searx.local"],
+)
+def test_put_agent_takes_good_urls(client: TestClient, cfg: Path, url: str) -> None:
+    assert put(client, {"agent": {"searxng_url": url}}).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("python", "relative/bin/python"),
+        ("python", "~/missing/bin/python"),
+        ("python", "~"),  # a folder
+        ("python", "~/venv-sandbox/bin/notes.txt"),  # not executable
+        ("python", 'a"b'),
+        ("python", "a\\b"),
+        ("python", "/usr/bin\n/python3"),
+        ("python", True),
+        ("searxng_url", "ftp://x"),
+        ("searxng_url", "localhost:8888"),
+        ("searxng_url", "http://"),
+        ("searxng_url", "http://user:pw@127.0.0.1:8888"),
+        ("searxng_url", "http://user@127.0.0.1:8888"),
+        ("searxng_url", "http://127.0.0.1:8888/?format=json"),
+        ("searxng_url", "http://127.0.0.1:8888/?"),
+        ("searxng_url", "http://127.0.0.1:8888/#top"),
+        ("searxng_url", "http://127.0.0.1:99999"),
+        ("searxng_url", 'http://a"b'),
+        ("searxng_url", "http://h/" + "x" * 1100),
+        ("wikipedia_language", "EN"),
+        ("wikipedia_language", "english"),
+        ("wikipedia_language", "en_US"),
+        ("wikipedia_language", "e"),
+        ("wikipedia_language", ""),
+        ("wikipedia_language", "en/../x"),
+        ("marginalia", "true"),
+        ("marginalia", 1),
+        ("marginalia", None),
+        ("shell", True),
+    ],
+)
+def test_put_refuses_bad_agent_values(
+    client: TestClient, cfg: Path, exe: Path, key: str, value: object
+) -> None:
+    (exe.parent / "notes.txt").write_text("x")
+    r = put(client, {"agent": {key: value}, "app": {"notify": False}})
+    assert r.status_code == 400
+    assert list(r.json()["detail"]["fields"]) == [f"agent.{key}"]
+    assert cfg.read_text() == USER_FILE
+    assert config.APP.notify is True  # nothing of a refused request applies
+
+
+def test_put_agent_python_must_be_there_now(
+    client: TestClient, cfg: Path, exe: Path
+) -> None:
+    r = put(client, {"agent": {"python": str(exe)}})
+    assert r.status_code == 200
+    exe.unlink()  # the environment was removed after the save
+    agent = client.get("/api/settings").json()["agent"]
+    assert agent["python"] == str(exe)
+    assert agent["python_found"] is False
+
+
+def test_bad_agent_value_in_the_file_shows_the_default(
+    client: TestClient, cfg: Path
+) -> None:
+    cfg.write_text('[agent]\nwikipedia_language = "EN"\nmarginalia = false\n')
+    agent = client.get("/api/settings").json()["agent"]
+    assert agent["wikipedia_language"] == "en"
+    assert agent["marginalia"] is False
+
+
+@pytest.mark.parametrize(
+    "url", ["http://user:pw@127.0.0.1:8888", "http://127.0.0.1:8888/?q=x"]
+)
+def test_a_url_the_screen_refuses_also_stops_the_start(
+    tmp_path: Path, url: str
+) -> None:
+    file = tmp_path / "config.toml"
+    file.write_text(f'[agent]\nsearxng_url = "{url}"\n')
+    with pytest.raises(SystemExit, match="searxng_url"):
+        agent_settings.load(file)
+
+
+def test_put_agent_python_that_others_can_change_is_refused(
+    client: TestClient,
+    cfg: Path,
+    exe: Path,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The app runs [agent] python outside the sandbox: the file and its folders must be the user's (or root's) and
+    not writable by others, up to a folder only the user can open or one root owns."""
+
+    def refused(reason: str) -> None:
+        r = put(client, {"agent": {"python": str(exe)}})
+        assert r.status_code == 400, r.text
+        assert reason in r.json()["detail"]["fields"]["agent.python"]
+        assert cfg.read_text() == USER_FILE
+
+    exe.chmod(0o775)  # the file is group-writable
+    refused("can be changed by other users")
+    exe.chmod(0o757)  # world-writable
+    refused("can be changed by other users")
+    exe.chmod(0o755)
+    exe.parent.chmod(0o777)  # its folder
+    refused(str(exe.parent))
+    exe.parent.chmod(0o755)
+    home.chmod(0o775)  # a folder further up
+    refused(str(home))
+    home.chmod(0o755)
+    other = os.getuid() + 1000
+    with monkeypatch.context() as m:  # the files belong to another user
+        m.setattr(sandbox.os, "getuid", lambda: other)
+        refused("belongs to another user")
+    assert put(client, {"agent": {"python": str(exe)}}).status_code == 200
+
+
+def test_unsafe_python_after_the_save_is_refused_at_start(
+    client: TestClient, cfg: Path, exe: Path
+) -> None:
+    """A python that became group-writable after the save: the Settings screen says why, and the sandbox refuses it
+    (no run_python tool, and it is never run)."""
+    assert put(client, {"agent": {"python": str(exe)}}).status_code == 200
+    assert client.get("/api/settings").json()["agent"]["python_problem"] is None
+    exe.chmod(0o775)
+    agent = client.get("/api/settings").json()["agent"]
+    assert agent["python_found"] is True
+    assert "can be changed by other users" in agent["python_problem"]
+    box = sandbox.SeatbeltSandbox(exe)
+    assert "refused" in (box.unavailable() or "")
+    with pytest.raises(ValueError, match="refused"):
+        sandbox.configured_interpreter(exe)
+    from app.agent import Settings, build_registry
+
+    reg = build_registry(None, Settings(python=exe))
+    assert "run_python" not in reg.names()

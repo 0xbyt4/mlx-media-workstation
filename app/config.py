@@ -5,8 +5,10 @@ The code holds no machine-specific paths. Any path left out of config.toml takes
 README's install steps make). A tool whose files are missing is refused when a job is submitted, with the path it
 looked for; the other tools keep working. The [assist] section picks the prompt help provider (app/assist.py).
 
-The [app] section holds the Settings > Jobs switches. Unlike the paths, they apply while the app runs: a change through
-PUT /api/settings replaces APP at once (app/settings_api.py).
+The [app] section holds the switches of the Settings screen. Unlike the paths, they apply while the app runs: a change
+through PUT /api/settings replaces APP at once (app/settings_api.py). `profile` picks what the UI shows: "full" (every
+section) or "chat" (Chat, Models and Settings only). `start.py --chat` sets it to "chat" in APP for that run, without
+writing the file.
 """
 
 import tomllib
@@ -28,13 +30,15 @@ DEFAULTS = {
     "qwen_model": "~/mlx-media/models/qwen3.8-27b-4bit",
 }
 ASSIST_DEFAULTS = {"provider": "local"}
-APP_DEFAULTS: dict[str, bool | int] = {
+APP_DEFAULTS: dict[str, bool | int | str] = {
     "keep_awake": True,
     "notify": True,
     "llm_idle_minutes": 10,
+    "profile": "full",
 }
 IDLE_CHOICES = (5, 10, 30, 60, 0)  # the minutes the Settings screen offers; 0 = never
 MAX_IDLE = 24 * 60
+PROFILES = ("full", "chat")  # every section; Chat, Models and Settings only
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,7 @@ class App:
     )
     notify: bool  # a macOS notification when a job is done or failed
     llm_idle_minutes: int  # minutes without use before the local LLM unloads; 0 = never
+    profile: str = "full"  # what the UI shows: "full" or "chat" (PROFILES)
 
 
 def section(file: Path, name: str, known: Mapping[str, object]) -> dict[str, object]:
@@ -95,6 +100,9 @@ def check_app(key: str, value: object) -> str | None:
     if key == "llm_idle_minutes":
         if type(value) is not int or not 0 <= value <= MAX_IDLE:
             return f"Enter whole minutes from 0 (never) to {MAX_IDLE}."
+    elif key == "profile":
+        if value not in PROFILES:
+            return f"Use one of: {', '.join(PROFILES)}."
     elif type(value) is not bool:
         return "Use true or false."
     return None

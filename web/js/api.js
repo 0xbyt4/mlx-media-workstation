@@ -163,7 +163,10 @@ export const api = {
   llm: () => request('/api/llm'),
   unloadLlm: () => post('/api/llm/unload'),
   chats: () => request('/api/chats'),
-  createChat: () => post('/api/chats'),
+  // mode: 'workstation', 'general' or 'agent'; setChatMode works only while the chat has no messages (else HTTP 409).
+  createChat: (mode) => post('/api/chats', JSON.stringify({mode}), {headers: {'Content-Type': 'application/json'}}),
+  setChatMode: (id, mode) => request('/api/chats/' + enc(id),
+    {method: 'PATCH', body: JSON.stringify({mode}), headers: {'Content-Type': 'application/json'}}),
   chat: (id) => request('/api/chats/' + enc(id)),
   deleteChat: (id) => del('/api/chats/' + enc(id)),
   chatFileUrl: (id, name) => '/api/chats/' + enc(id) + '/files/' + enc(name),
@@ -172,6 +175,13 @@ export const api = {
     stream('/api/chats/' + enc(id) + '/messages', {method: 'POST', body: formData, signal}, onEvent),
   resumeStream: (id, onEvent, signal) => stream('/api/chats/' + enc(id) + '/stream', {signal}, onEvent),
   stopChat: (id) => post('/api/chats/' + enc(id) + '/stop'),
+  // agent chats: the Tools menu state, changes to it ({tools}, {folder} with null to revoke, {revoke: [names]}),
+  // and the answer to the call that waits for approval ('once', 'chat' or 'deny'; HTTP 409 when it waits no more).
+  agentState: (id) => request('/api/chats/' + enc(id) + '/agent'),
+  changeAgent: (id, body) => request('/api/chats/' + enc(id) + '/agent',
+    {method: 'PATCH', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}}),
+  approve: (id, callId, decision) => post('/api/chats/' + enc(id) + '/approve',
+    JSON.stringify({call_id: callId, decision}), {headers: {'Content-Type': 'application/json'}}),
 };
 
 export default api;

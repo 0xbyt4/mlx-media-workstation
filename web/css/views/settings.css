@@ -213,3 +213,37 @@
   width: auto;
   min-width: 150px;
 }
+
+/* agent: the sandbox commands */
+.v-settings .cmd {
+  position: relative;
+  min-width: 0;
+}
+.v-settings .cmd-text {
+  margin: 0;
+  padding: 8px 40px 8px 12px;
+  border-radius: var(--r-md);
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  font: var(--fs-xs) / 1.6 var(--mono);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.v-settings .cmd-text code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+.v-settings .cmd-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+.v-settings .set-row.stack > .input {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+}
+.v-settings .input[aria-invalid="true"] {
+  border-color: var(--err);
+}

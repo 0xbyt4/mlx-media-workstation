@@ -603,12 +603,83 @@ def test_model_input_keeps_the_newest_turns_that_fit(monkeypatch):
 
 
 def test_system_prompt_names_every_tool_with_prompt_help():
+    system = chat.system_prompt({"mode": "workstation"})
     for tool in tools.TOOLS:
         names = [f["name"] for f in tool["fields"] if f.get("assist")]
         if names:
-            assert f"- {tool['id']}: {tool['label']}" in chat.SYSTEM
-            assert ", ".join(names) in chat.SYSTEM
-    assert "edit.mix" not in chat.SYSTEM  # nothing to write for it
+            assert f"- {tool['id']}: {tool['label']}" in system
+            assert ", ".join(names) in system
+    assert "edit.mix" not in system  # nothing to write for it
+    assert "emoji" in system
+
+
+def test_system_prompt_follows_the_mode(monkeypatch):
+    monkeypatch.setattr(chat, "today", lambda: "Tuesday 3 November 2026")
+    workstation = chat.system_prompt({"mode": "workstation"})
+    assert chat.system_prompt({}) == workstation  # a chat saved before modes
+    general = chat.system_prompt({"mode": "general"})
+    assert "Tuesday 3 November 2026" in general and "emoji" in general
+    assert "video.t2v" not in general and chat.PROMPT_FENCE + " " not in general
+    assert "Workstation" not in general
+    # agent mode: the general prompt, with internet only through the tools, plus the tool rules
+    agent = chat.system_prompt({"mode": "agent", "agent": {"tools": []}})
+    assert agent.startswith(general.removesuffix(" You have no internet access."))
+    assert "no internet access" not in agent and "untrusted data" in agent
+    assert "No folder is granted" in agent
+    folder = {"mode": "agent", "agent": {"tools": [], "folder": "/Users/me/notes"}}
+    assert "granted this chat the folder /Users/me/notes" in chat.system_prompt(folder)
+
+
+def test_model_input_counts_the_chat_s_own_system_prompt(monkeypatch):
+    monkeypatch.setattr(chat, "today", lambda: "Tuesday 3 November 2026")
+    monkeypatch.setattr(chat, "CONTEXT_TOKENS", 1500)
+    msgs = [{"role": "user", "content": "x" * 92, "images": []} for _ in range(40)]
+    kept = {}
+    for mode in ("workstation", "general"):
+        c = {"id": "c", "mode": mode, "messages": msgs}
+        messages, _ = chat.model_input(c, 256)
+        assert messages[0] == {"role": "system", "content": chat.system_prompt(c)}
+        budget = 1500 - 256 - len(chat.system_prompt(c)) // 3
+        kept[mode] = len(messages) - 1
+        assert kept[mode] == budget // 38  # 92 // 3 + 8 tokens a message
+    assert kept["general"] > kept["workstation"]
+
+
+def test_chat_modes(client):
+    old = new_chat(client)  # a chat saved before modes: no "mode" key
+    path = chat.CHATS / old / "chat.json"
+    data = json.loads(path.read_text())
+    del data["mode"]
+    path.write_text(json.dumps(data))
+    assert client.get(f"/api/chats/{old}").json()["mode"] == "workstation"
+    assert client.get("/api/chats").json()[0]["mode"] == "workstation"
+
+    assert client.post("/api/chats").json()["mode"] == "workstation"
+    cid = client.post("/api/chats", json={"mode": "general"}).json()["id"]
+    assert client.get(f"/api/chats/{cid}").json()["mode"] == "general"
+    assert client.post("/api/chats", json={"mode": "agent"}).json()["mode"] == "agent"
+    assert client.post("/api/chats", json={"mode": "x"}).status_code == 400
+
+    r = client.patch(f"/api/chats/{cid}", json={"mode": "workstation"})
+    assert r.status_code == 200 and r.json()["mode"] == "workstation"
+    assert client.patch(f"/api/chats/{cid}", json={"mode": "x"}).status_code == 400
+    assert client.patch("/api/chats/nope", json={"mode": "general"}).status_code == 404
+    client.patch(f"/api/chats/{cid}", json={"mode": "general"})
+    client.post(f"/api/chats/{cid}/messages", data={"text": "hi"})
+    r = client.patch(f"/api/chats/{cid}", json={"mode": "workstation"})
+    assert r.status_code == 409
+    assert client.get(f"/api/chats/{cid}").json()["mode"] == "general"
+
+
+def test_mode_changes_only_from_the_app_s_page(client):
+    cid = new_chat(client)
+    r = client.patch(
+        f"/api/chats/{cid}",
+        json={"mode": "general"},
+        headers={"Origin": "http://evil.example"},
+    )
+    assert r.status_code == 403
+    assert client.get(f"/api/chats/{cid}").json()["mode"] == "workstation"
 
 
 def test_closing_at_started_frees_the_request():

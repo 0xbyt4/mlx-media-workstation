@@ -1,6 +1,8 @@
-// Settings: theme, prompt help provider, the local LLM, the Jobs switches, the model paths in config.toml, and where
-// things live. Every change goes to config.toml through PUT /api/settings. The app reads paths and the provider only
-// when it starts, so such a change shows a restart note. The Jobs switches ([app]) apply at once and save on change.
+// Settings: theme, profile, prompt help provider, the local LLM, the Jobs switches, the agent's sandbox and web search,
+// the model paths in config.toml, and where things live. Every change goes to config.toml through PUT /api/settings.
+// The app reads paths, the provider and [agent] only when it starts, so such a change shows a restart note. The
+// profile and the Jobs switches ([app]) apply at once and save on change. The chat profile leaves out prompt help, the
+// job switches and the paths Chat does not use.
 
 import {h, icon, toast, confirm, errorBox, getTheme, setTheme, onTheme} from '../ui.js';
 
@@ -11,22 +13,38 @@ const README = [
   ['how-it-works', 'How it works'],
   ['model-licences', 'Model licences'],
   ['security', 'Security'],
+  ['chat-only', 'Chat only'],
 ];
+const PROFILE_TEXT = {full: 'Full: every section', chat: 'Chat only: Chat, Models and Settings'};
 // the same rules as app/settings_api.py: a TOML basic string cannot hold these as they are
 const BAD_CHARS = /["\\\u0000-\u001f\u007f]/;
 const MAX_PATH = 1024;
+// Settings > Agent: a separate environment for run_python. Versions checked on PyPI (2026-11-03), wheels for Python 3.12
+// on Apple Silicon.
+const SANDBOX_DIR = '~/mlx-media/venv-sandbox';
+const SANDBOX_CMD = 'uv venv --python 3.12 ' + SANDBOX_DIR + '\n' +
+  'uv pip install --python ' + SANDBOX_DIR + '/bin/python numpy==2.5.4 pandas==3.1.0 matplotlib==3.11.2';
+const AGENT_KEYS = ['python', 'searxng_url', 'wikipedia_language', 'marginalia'];
+const LANGUAGE_NAMES = {en: 'English', tr: 'Turkish', de: 'German', fr: 'French', es: 'Spanish', it: 'Italian',
+  ja: 'Japanese', zh: 'Chinese'};
 
 let s = null;
 
 function mount(root, ctx) {
   root.classList.add('v-settings');
   s = {root, ctx, data: null, draft: {}, errors: {}, rows: {}, llm: {}, offs: [], abort: new AbortController(), saving: false,
-    appErrors: {}, appSaving: null};
+    appErrors: {}, appSaving: null, agentDraft: {}, agentErrors: {}, agentSaving: false};
   s.notice = h('div', {class: 'set-notice', role: 'status'});
   s.body = h('div', {class: 'set-body'}, h('p', {class: 'muted'}, 'Loading the settings...'));
   root.append(h('div', {class: 'settings'}, s.notice, appearance(), s.body));
-  s.offs.push(onTheme(renderTheme), ctx.store.on('llm', renderLlm));
+  s.offs.push(onTheme(renderTheme), ctx.store.on('llm', renderLlm), ctx.store.on('profile', () => {
+    if (s.data) build();
+  }));
   load();
+}
+
+function chatOnly() {
+  return s.ctx.store.profile() === 'chat';
 }
 
 function unmount() {
@@ -43,6 +61,8 @@ async function load() {
     s.data = data;
     s.draft = Object.fromEntries(data.paths.map((r) => [r.key, r.value]));
     s.errors = {};
+    s.agentDraft = agentValues(data.agent);
+    s.agentErrors = {};
     build();
   } catch (e) {
     if (!s || e.name === 'AbortError') return;
@@ -63,7 +83,9 @@ function section(id, title, intro, ...body) {
 }
 
 function build() {
-  s.body.replaceChildren(promptHelp(), localLlm(), jobs(), modelPaths(), about());
+  s.appCtl = {};
+  s.body.replaceChildren(...[profile(), chatOnly() ? null : promptHelp(), localLlm(), jobs(), agent(), modelPaths(),
+    about()].filter(Boolean));
   renderNotice();
   renderLlm();
 }
@@ -160,11 +182,13 @@ function localLlm() {
 
 function llmState(l) {
   const gb = Math.round(l.peak_gb);
-  if (!l.installed) return ['Not installed', 'idle', 'Install it on the Models screen to use prompt help and chat.'];
+  const uses = chatOnly() ? 'chat' : 'prompt help and chat';
+  if (!l.installed) return ['Not installed', 'idle', 'Install it on the Models screen to use ' + uses + '.'];
   if (l.state === 'loading') return ['Loading', 'run', 'It is loading the weights from disk.'];
   if (l.state === 'ready' && l.busy) return ['Answering', 'run', 'It is writing an answer now.'];
   if (l.state === 'ready') return ['Loaded', 'ok', 'It uses about ' + gb + ' GB of memory while it is loaded.'];
-  return ['Not loaded', 'idle', 'It loads when you press Improve or send a chat message. Now it uses no memory.'];
+  return ['Not loaded', 'idle', 'It loads when you ' + (chatOnly() ? '' : 'press Improve or ') +
+    'send a chat message. Now it uses no memory.'];
 }
 
 function renderLlm() {
@@ -187,9 +211,11 @@ function renderLlm() {
   L.text.textContent = text + waits;
   // the saved setting: the llm poll may still show the value from before a change
   const idle = s.data.app.llm_idle_minutes;
+  const chat = chatOnly();
   L.idle.textContent = idle > 0
-    ? 'It unloads after ' + minutes(idle * 60) + ' without use (Jobs, below), and before a job that needs its memory.'
-    : 'It stays loaded until you press Unload, or until a job needs its memory.';
+    ? 'It unloads after ' + minutes(idle * 60) + ' without use (' + (chat ? 'Memory' : 'Jobs') + ', below)' +
+      (chat ? '.' : ', and before a job that needs its memory.')
+    : 'It stays loaded until you press Unload' + (chat ? '.' : ', or until a job needs its memory.');
   L.unload.disabled = l.state === 'off' || !l.installed;
   L.models.hidden = Boolean(l.installed);
 }
@@ -234,23 +260,41 @@ function idleText(m) {
   return 'After ' + m + (m === 1 ? ' minute' : ' minutes');
 }
 
+// One [app] value: label, help, error line and its control (a switch or a select).
+function rowFor(key, label, help, control) {
+  const id = 'set-app-' + key;
+  const err = h('p', {class: 'field-err', id: id + '-err', role: 'alert', hidden: true});
+  s.appCtl[key] = {control, err};
+  control.id = id;
+  control.setAttribute('aria-labelledby', id + '-label');
+  control.setAttribute('aria-describedby', id + '-help ' + id + '-err');
+  renderAppErr(key);
+  return h('div', {class: 'set-row'},
+    h('div', null, h('span', {class: 'label', id: id + '-label'}, label), h('p', {class: 'help', id: id + '-help'}, help), err),
+    control.type === 'checkbox' ? h('label', {class: 'switch', for: id}, control, h('span', {class: 'track'})) : control);
+}
+
+// The profile: what the sidebar shows. A window opened with ?profile= keeps its own, so it cannot change it here.
+function profile() {
+  const a = s.data.app;
+  const pinned = s.ctx.store.profilePinned();
+  const shown = s.ctx.store.profile();
+  const select = h('select', {class: 'select set-select', disabled: pinned || Boolean(s.data.config.error) || s.appSaving === 'profile',
+    onchange: (e) => saveApp('profile', e.target.value)},
+  a.profiles.map((p) => h('option', {value: p, selected: p === (pinned ? shown : a.profile)}, PROFILE_TEXT[p] || p)));
+  const help = pinned
+    ? 'This window opened next to the running app and always shows ' + (shown === 'chat' ? 'Chat only' : 'every section') +
+      '. Change the profile in the app\'s own window.'
+    : 'Chat only hides Create, Jobs and Library, for a Mac with only the local LLM. It applies at once and is the ' +
+      'profile for the next start. start.py --chat and Workstation Chat.app always start in Chat only.';
+  return section('set-pf', 'Profile', null, h('div', {class: 'card set-card'}, rowFor('profile', 'Sections', help, select)));
+}
+
 function jobs() {
   const a = s.data.app;
   const locked = Boolean(s.data.config.error);
-  s.appCtl = {};
-  const rowFor = (key, label, help, control) => {
-    const id = 'set-app-' + key;
-    const err = h('p', {class: 'field-err', id: id + '-err', role: 'alert', hidden: true});
-    s.appCtl[key] = {control, err};
-    control.id = id;
-    control.setAttribute('aria-labelledby', id + '-label');
-    control.setAttribute('aria-describedby', id + '-help ' + id + '-err');
-    renderAppErr(key);
-    return h('div', {class: 'set-row'},
-      h('div', null, h('span', {class: 'label', id: id + '-label'}, label), h('p', {class: 'help', id: id + '-help'}, help), err),
-      control.type === 'checkbox' ? h('label', {class: 'switch', for: id}, control, h('span', {class: 'track'})) : control);
-  };
-  const rows = SWITCHES.map(([key, label, help]) => rowFor(key, label, help,
+  const chat = chatOnly();
+  const rows = chat ? [] : SWITCHES.map(([key, label, help]) => rowFor(key, label, help,
     h('input', {type: 'checkbox', role: 'switch', checked: a[key], disabled: locked || s.appSaving === key,
       onchange: (e) => saveApp(key, e.target.checked)})));
   const choices = a.idle_choices.includes(a.llm_idle_minutes) ? a.idle_choices : [...a.idle_choices, a.llm_idle_minutes];
@@ -258,8 +302,10 @@ function jobs() {
     onchange: (e) => saveApp('llm_idle_minutes', Number(e.target.value))},
   choices.map((m) => h('option', {value: String(m), selected: m === a.llm_idle_minutes}, idleText(m))));
   rows.push(rowFor('llm_idle_minutes', 'Unload the chat model when idle',
-    'Frees its memory after this long without a prompt help or chat request. It loads again on the next one.', select));
-  return section('set-jobs', 'Jobs', 'These apply at once, without a restart.', h('div', {class: 'card set-card'}, rows));
+    'Frees its memory after this long without a ' + (chat ? '' : 'prompt help or ') + 'chat request. ' +
+      'It loads again on the next one.', select));
+  return section('set-jobs', chat ? 'Memory' : 'Jobs', chat ? 'This applies at once, without a restart.' : 'These apply at once, without a restart.',
+    h('div', {class: 'card set-card'}, rows));
 }
 
 function renderAppErr(key) {
@@ -288,6 +334,7 @@ async function saveApp(key, value) {
   renderAppErr(key);
   try {
     await put({app: {[key]: value}});  // rebuilds the screen with the saved value
+    if (key === 'profile') await s.ctx.store.refresh('system');  // the sidebar changes now, not at the next poll
     toast('Saved. The app uses it now.');
   } catch (e) {
     if (!s || e.name === 'AbortError') return;
@@ -305,12 +352,249 @@ async function saveApp(key, value) {
   }
 }
 
+// ---------- Agent ([agent] in config.toml; read at start) ----------
+
+function agentValues(a) {
+  return Object.fromEntries(AGENT_KEYS.map((k) => [k, a[k]]));
+}
+
+function agentChanges() {
+  const out = {};
+  for (const k of AGENT_KEYS) {
+    const v = typeof s.agentDraft[k] === 'string' ? s.agentDraft[k].trim() : s.agentDraft[k];
+    if (v !== s.data.agent[k]) out[k] = v;
+  }
+  return out;
+}
+
+function agentField(key, label, control, ...below) {
+  const id = 'set-ag-' + key;
+  const err = h('p', {class: 'field-err', id: id + '-err', role: 'alert', hidden: true});
+  s.agentEl[key] = {control, err};
+  control.id = id;
+  control.setAttribute('aria-describedby', [id + '-err', ...below.map((el) => el.id).filter(Boolean)].join(' '));
+  return {id, err, label: h('label', {class: 'label set-path-label', for: id}, label,
+    h('span', {class: 'mono faint'}, key))};
+}
+
+function agentInput(key, attrs) {
+  return h('input', {class: 'input', value: s.agentDraft[key], spellcheck: 'false', autocomplete: 'off',
+    autocapitalize: 'off', disabled: Boolean(s.data.config.error), ...attrs,
+    oninput: (e) => setAgent(key, e.target.value),
+    onkeydown: (e) => {
+      if (e.key === 'Enter') saveAgent();
+    }});
+}
+
+function agent() {
+  const a = s.data.agent;
+  const locked = Boolean(s.data.config.error);
+  s.agentEl = {};
+
+  const pyInput = agentInput('python', {placeholder: 'Empty: the app\'s Python, standard library only'});
+  const pyStatus = h('p', {class: 'help', id: 'set-ag-python-st'});
+  const py = agentField('python', 'Sandbox Python', pyInput, pyStatus);
+  const pyDefault = h('button', {type: 'button', class: 'btn btn-sm btn-ghost', onclick: () => {
+    pyInput.value = '';
+    setAgent('python', '');
+    pyInput.focus();
+  }}, 'Use default');
+  Object.assign(s.agentEl.python, {status: pyStatus, def: pyDefault, mark: h('span', {class: 'set-mark'})});
+
+  const urlInput = agentInput('searxng_url', {type: 'url', inputmode: 'url', placeholder: 'http://127.0.0.1:8888'});
+  const urlHelp = h('p', {class: 'help', id: 'set-ag-searxng_url-help'}, 'Optional. A SearXNG instance you run ' +
+    'yourself, with the JSON format on. Web search asks it first. Leave it empty to not use one.');
+  const url = agentField('searxng_url', 'SearXNG URL', urlInput, urlHelp);
+
+  const langs = a.languages.includes(s.agentDraft.wikipedia_language)
+    ? a.languages : [...a.languages, s.agentDraft.wikipedia_language];
+  const langSelect = h('select', {class: 'select set-select', disabled: locked,
+    onchange: (e) => setAgent('wikipedia_language', e.target.value)},
+  langs.map((c) => h('option', {value: c, selected: c === s.agentDraft.wikipedia_language},
+    LANGUAGE_NAMES[c] ? LANGUAGE_NAMES[c] + ' (' + c + ')' : c)));
+  const langHelp = h('p', {class: 'help', id: 'set-ag-wikipedia_language-help'}, 'The Wikipedia that web search asks.');
+  const lang = agentField('wikipedia_language', 'Wikipedia language', langSelect, langHelp);
+
+  const mgSwitch = h('input', {type: 'checkbox', role: 'switch', checked: s.agentDraft.marginalia, disabled: locked,
+    onchange: (e) => setAgent('marginalia', e.target.checked)});
+  const mgHelp = h('p', {class: 'help', id: 'set-ag-marginalia-help'}, 'Web search also asks Marginalia Search, a ' +
+    'search engine for small independent sites. The app uses its shared key "public", which is often rate limited: ' +
+    'then web search uses the other sources only.');
+  const mg = agentField('marginalia', 'Marginalia Search', mgSwitch, mgHelp);
+
+  s.agentSaveBtn = h('button', {type: 'button', class: 'btn btn-primary', onclick: saveAgent}, 'Save');
+  s.agentResetBtn = h('button', {type: 'button', class: 'btn', onclick: resetAgent}, 'Undo changes');
+  s.agentMsg = h('p', {class: 'help', 'aria-live': 'polite'});
+  s.agentFormErr = h('p', {class: 'field-err', role: 'alert', hidden: true});
+
+  const intro = h('p', null, 'The tools of the Chat\'s agent mode: the sandbox where run_python runs code, and the ' +
+    'sources of web search. The ', h('code', null, '[agent]'), ' in ', h('code', null, s.data.config.path),
+  '. The app reads it when it starts, so a change applies after a restart.');
+  const sec = section('set-ag', 'Agent', null, intro, h('div', {class: 'card set-card'},
+    h('div', {class: 'set-row stack'}, py.label,
+      h('div', {class: 'path-row'}, pyInput, s.agentEl.python.mark, pyDefault), py.err, pyStatus,
+      h('p', {class: 'help'}, 'The default is the app\'s own Python with the standard library only. For numpy, ' +
+        'pandas or matplotlib, make a separate environment for the sandbox and enter the absolute path of its ' +
+        'python. With uv, in Terminal:'),
+      commandBlock(SANDBOX_CMD, 'Copy the commands'),
+      h('p', {class: 'help'}, 'Then enter ', h('span', {class: 'mono'}, SANDBOX_DIR + '/bin/python'), ' and save.')),
+    h('div', {class: 'set-row stack'}, url.label, urlInput, url.err, urlHelp),
+    h('div', {class: 'set-row'}, h('div', null, lang.label, langHelp, lang.err), langSelect),
+    h('div', {class: 'set-row'}, h('div', null, mg.label, mgHelp, mg.err),
+      h('label', {class: 'switch', for: mg.id}, mgSwitch, h('span', {class: 'track'})))),
+  h('div', {class: 'set-save'}, s.agentMsg, h('div', {class: 'set-actions'}, s.agentResetBtn, s.agentSaveBtn)),
+  s.agentFormErr);
+  renderAgent();
+  return sec;
+}
+
+function setAgent(key, value) {
+  s.agentDraft[key] = value;
+  delete s.agentErrors[key];
+  s.agentFormErr.hidden = true;
+  renderAgent();
+}
+
+function renderAgent() {
+  const a = s.data.agent;
+  for (const [key, el] of Object.entries(s.agentEl)) {
+    const err = s.agentErrors[key];
+    el.err.replaceChildren(...(err ? [icon('alert', 'ic-sm'), err] : []));
+    el.err.hidden = !err;
+    el.control.setAttribute('aria-invalid', String(Boolean(err)));
+  }
+  const el = s.agentEl.python;
+  const draft = s.agentDraft.python.trim();
+  el.def.hidden = draft === '';
+  const parts = [];
+  if (draft !== a.python) {
+    setMark(el, 'info', 'is-edit', 'Not saved');
+    parts.push(draft ? 'Not saved yet. Save to check this path.' : 'Not saved yet. Save to use the default.');
+  } else if (!a.python) {
+    el.mark.replaceChildren();
+    el.mark.className = 'set-mark';
+    el.mark.title = '';
+    parts.push('Default: ', h('span', {class: 'mono'}, a.default_python + ' -I -S'), ', the standard library only.');
+  } else if (a.python_found && a.python_problem) {
+    setMark(el, 'x', 'is-miss', 'Refused');
+    parts.push(h('span', {class: 'set-missing'}, 'Refused: '), a.python_problem,
+      ' The agent has no Python tool until you fix it or press Use default.');
+  } else if (a.python_found) {
+    setMark(el, 'check', 'is-ok', 'Found');
+    parts.push(h('span', {class: 'set-found'}, 'Found: '), h('span', {class: 'mono'}, a.python_path));
+  } else {
+    setMark(el, 'x', 'is-miss', 'Not found');
+    parts.push(h('span', {class: 'set-missing'}, 'Not found: '), h('span', {class: 'mono'}, a.python_path),
+      '. Make the environment again, or press Use default.');
+  }
+  el.status.replaceChildren(...parts);
+
+  const n = Object.keys(agentChanges()).length;
+  s.agentSaveBtn.disabled = s.agentSaving || !n || Boolean(s.data.config.error);
+  s.agentResetBtn.hidden = !n;
+  if (s.agentSaving) s.agentMsg.textContent = 'Saving...';
+  else if (n) s.agentMsg.textContent = n === 1 ? '1 value changed.' : n + ' values changed.';
+  else if (a.restart_required) s.agentMsg.textContent = 'Saved. Until the restart the agent uses the values from the start.';
+  else s.agentMsg.textContent = 'No changes.';
+}
+
+function resetAgent() {
+  s.agentDraft = agentValues(s.data.agent);
+  s.agentErrors = {};
+  s.agentFormErr.hidden = true;
+  const focus = document.activeElement && document.activeElement.id;
+  build();
+  const again = focus && document.getElementById(focus);
+  if (again && s.root.contains(again)) again.focus();
+}
+
+function checkAgent(key, v) {
+  if (typeof v !== 'string' || !v) return null;
+  if (v.length > MAX_PATH) return 'The value is longer than ' + MAX_PATH + ' characters.';
+  if (BAD_CHARS.test(v)) return 'The value cannot contain a double quote, a backslash or a line break.';
+  if (key === 'python' && !(v.startsWith('/') || v === '~' || v.startsWith('~/'))) {
+    return 'Use an absolute path, for example ~/env/bin/python.';
+  }
+  if (key === 'searxng_url' && !/^https?:\/\/[^\s/?#]/i.test(v)) return 'Use an http:// or https:// URL.';
+  return null;
+}
+
+function showAgentErrors(errors) {
+  s.agentErrors = errors;
+  renderAgent();
+  const first = AGENT_KEYS.find((k) => errors[k]);
+  if (first) s.agentEl[first].control.focus();
+}
+
+async function saveAgent() {
+  const todo = agentChanges();
+  if (!Object.keys(todo).length || s.agentSaving) return;
+  s.agentFormErr.hidden = true;
+  const errors = {};
+  for (const [k, v] of Object.entries(todo)) {
+    const msg = checkAgent(k, v);
+    if (msg) errors[k] = msg;
+  }
+  if (Object.keys(errors).length) return showAgentErrors(errors);
+  s.agentSaving = true;
+  renderAgent();
+  try {
+    await put({agent: todo});
+    toast('Agent settings saved to config.toml. Restart the app to use them.');
+  } catch (e) {
+    if (!s || e.name === 'AbortError') return;
+    const fields = (e.detail && e.detail.fields) || {};
+    const byKey = {};
+    for (const [k, msg] of Object.entries(fields)) if (k.startsWith('agent.')) byKey[k.slice(6)] = msg;
+    if (Object.keys(byKey).length) showAgentErrors(byKey);
+    else {
+      s.agentFormErr.replaceChildren(icon('alert', 'ic-sm'), e.message);
+      s.agentFormErr.hidden = false;
+    }
+  } finally {
+    if (s) {
+      s.agentSaving = false;
+      renderAgent();
+    }
+  }
+}
+
+function commandBlock(text, label) {
+  return h('div', {class: 'cmd'},
+    h('pre', {class: 'cmd-text', tabindex: '0', 'aria-label': label.replace(/^Copy the /, '')}, h('code', null, text)),
+    h('button', {type: 'button', class: 'btn btn-sm btn-ghost btn-icon cmd-copy', title: label, 'aria-label': label,
+      onclick: () => copy(text)}, icon('copy', 'ic-sm')));
+}
+
+async function copy(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Copied.');
+    return;
+  } catch {
+    // no clipboard API in this window: fall back to a selection copy
+  }
+  const ta = h('textarea', {class: 'sr-only', readonly: true, 'aria-hidden': 'true'});
+  ta.value = text;
+  document.body.append(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  ta.remove();
+  toast(ok ? 'Copied.' : 'Copy did not work here. Select the text and press Cmd-C.', {kind: ok ? null : 'err'});
+}
+
 // ---------- Model paths ----------
 
 function modelPaths() {
   const d = s.data;
   s.rows = {};
-  const rows = d.paths.map(pathRow);
+  // the chat profile shows only the paths Chat uses; the other drafts stay as they are
+  const rows = d.paths.filter((r) => !chatOnly() || r.used_by.features.includes('Chat')).map(pathRow);
   s.saveBtn = h('button', {type: 'button', class: 'btn btn-primary', onclick: savePaths}, 'Save');
   s.resetBtn = h('button', {type: 'button', class: 'btn', onclick: resetDraft}, 'Undo changes');
   s.saveMsg = h('p', {class: 'help', 'aria-live': 'polite'});
@@ -420,7 +704,7 @@ function renderSave() {
 function resetDraft() {
   for (const r of s.data.paths) {
     s.draft[r.key] = r.value;
-    s.rows[r.key].input.value = r.value;
+    if (s.rows[r.key]) s.rows[r.key].input.value = r.value;
   }
   s.errors = {};
   s.formErr.hidden = true;
@@ -486,6 +770,10 @@ async function put(body) {
   s.data = data;
   s.draft = Object.fromEntries(data.paths.map((r) => [r.key, r.key in keep ? keep[r.key] : r.value]));
   s.errors = {};
+  if (body.agent) {  // every changed agent value went in this request
+    s.agentDraft = agentValues(data.agent);
+    s.agentErrors = {};
+  }
   const focus = document.activeElement && document.activeElement.id;
   build();
   const again = focus && document.getElementById(focus);
@@ -506,9 +794,10 @@ function about() {
     h('div', {class: 'set-row stack'}, h('dl', {class: 'kv'},
       version ? row('Version', version) : null,
       row('Settings file', mono(c.path), c.exists ? null : faint(' (not made yet: every path uses its default)')),
-      row('Outputs', mono(a.outputs), h('br'), faint('Each job writes to outputs/<job id>/. Chats are in outputs/chats/.')),
+      row('Outputs', mono(a.outputs), h('br'),
+        faint((chatOnly() ? '' : 'Each job writes to outputs/<job id>/. ') + 'Chats are in outputs/chats/.')),
       row('Logs', mono('outputs/llm.log'), faint(' (local LLM)'), h('br'), mono('outputs/app.log'),
-        faint(' (when started from Workstation.app)')),
+        faint(' (when started from Workstation.app or Workstation Chat.app)')),
       row('Server', mono(location.host), faint(' on this Mac only. The app sends no data anywhere.')),
     )),
     h('div', {class: 'set-row stack'},
@@ -521,7 +810,8 @@ function about() {
 export default {
   id: 'settings',
   title: 'Settings',
-  subtitle: 'Jobs, paths, prompt help and appearance',
+  subtitle: (ctx) => (ctx.store.profile() === 'chat' ? 'Profile, the local LLM, agent, paths and appearance' :
+    'Profile, jobs, agent, paths, prompt help and appearance'),
   mount,
   unmount,
 };

@@ -21,10 +21,28 @@ qwen_model = "~/mlx-media/models/qwen3.8-27b-4bit"
 provider = "local"
 
 [app]
-# Settings > Jobs. A change in the app applies at once; a change here by hand applies at the next start.
+# Settings > Profile and Settings > Jobs. A change in the app applies at once; a change here by hand applies at the
+# next start.
 # keep the Mac from going to sleep while a job is queued or running (the display may still sleep): true or false
 keep_awake = true
 # a macOS notification when a job is done or failed: true or false
 notify = true
 # minutes without use before the local LLM is unloaded to free its memory; 0 = never
 llm_idle_minutes = 10
+# what the app shows: "full" (every section) or "chat" (Chat, Models and Settings only). start.py --chat always
+# starts with "chat".
+profile = "full"
+
+[agent]
+# Chat agent mode (docs/AGENT.md), also in Settings > Agent. Read at start: a change applies after a restart.
+# the Python that run_python uses in the sandbox; "" = the app's own Python with the standard library only. For
+# numpy, pandas or matplotlib, make a separate environment for the sandbox and give the absolute path of its python
+# here, for example "~/mlx-media/venv-sandbox/bin/python" (docs/AGENT.md, "Settings", has the commands)
+python = ""
+# a SearXNG instance you run yourself (JSON format on), used first by web_search: the base URL, for example
+# "http://127.0.0.1:8888"; "" = none
+searxng_url = ""
+# the Wikipedia that web_search asks: a language code such as en, de or tr
+wikipedia_language = "en"
+# also ask Marginalia Search with its shared key "public" (often rate limited): true or false
+marginalia = true

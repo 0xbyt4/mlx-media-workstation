@@ -5,6 +5,10 @@ It stops after the [app] llm_idle_minutes of no use (app/config.py; 0 = never), 
 calls claim before each job and release after it. A request sent while such a job holds the memory waits (a "waiting"
 event) and runs when the job ends, before the next job starts, so a chat never pushes a video job into swap. Stopping
 kills the process: only an exit returns all of its memory.
+
+A multi-step turn (model, tool, model, ...) holds the memory between its requests with session(): a lease that a media
+job's claim waits for like a running answer, so the model is not unloaded between the steps. Requests may carry tools
+(OpenAI-style function schemas); the worker then holds the tool-call text back and returns the parsed calls in "done".
 """
 
 import itertools
@@ -16,6 +20,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 from app import config, models
@@ -26,6 +31,9 @@ LOG = ROOT / "outputs" / "llm.log"
 LOAD_TIMEOUT = 300.0  # seconds to load the weights (about 16 GB from disk)
 STOP_WAIT = 5.0  # seconds for a clean exit before SIGKILL
 JOB_WAIT = 600.0  # seconds a media job waits for the answers before it; then it stops the model
+SESSION_MAX = JOB_WAIT  # seconds a session holds the memory at most, so a stuck turn cannot block jobs for ever
+# the reasoning efforts of the Qwen3.8 chat template (xhigh is its default)
+EFFORTS = ("low", "medium", "xhigh")
 CRASHED = "The model stopped unexpectedly. See outputs/llm.log."
 WAITING = "Waiting for memory: a media job needs it. This continues when the job ends."
 CLOSED = "The app was closed."
@@ -140,6 +148,114 @@ cancels: dict[
 ] = {}  # request id -> its cancel flag, from "started" to the end
 waiting: set[str] = set()  # the requests waiting for memory
 closed = False  # set when the app closes: no new worker starts
+leases: set["Session"] = set()  # the sessions that hold the memory
+local = threading.local()  # .session: the session of the thread's with-block
+
+
+class Session:
+    """A memory lease for a multi-step turn; see session()."""
+
+    def __init__(self, abort: Callable[[], bool], limit: float) -> None:
+        self.abort = abort
+        self.limit = limit
+        # limit seconds after the lease is first held: time spent waiting for a media job before does not count
+        self.end: float | None = None
+        self.held = False  # counted in leases: its requests skip the memory check
+        self.closed = False  # the with-block ended
+
+    def alive(self) -> bool:
+        return (
+            not self.closed
+            and (self.end is None or time.time() < self.end)
+            and not self.abort()
+        )
+
+
+def holding() -> bool:
+    """True when a live session holds the memory; drops the ones that ended (call with room held)."""
+    for s in list(leases):
+        if not s.alive():
+            s.held = False
+            leases.discard(s)
+    return bool(leases)
+
+
+def hold(s: Session | None) -> None:
+    """A request of session s got the memory: the session holds it from now on (call with room held)."""
+    if s is not None and not s.held and s.alive():
+        s.held = True
+        if s.end is None:  # the limit counts from here
+            s.end = time.time() + s.limit
+        leases.add(s)
+
+
+@contextmanager
+def session(
+    abort: Callable[[], bool] = lambda: False, limit: float = SESSION_MAX
+) -> Iterator[Session]:
+    """Hold the model's memory for a whole multi-step turn, so a queued media job does not unload it between steps.
+
+    The lease starts at once when the memory is free, or else with the first request of the session that gets it. A
+    media job's claim then waits for the lease as for a running answer, and the session's requests skip the memory
+    check, so they never wait for that job. The lease ends when the with-block ends, when abort() returns True or
+    limit seconds after it was first held (a wait for memory before that does not count); requests after that behave
+    like any other request. The block never waits here.
+
+    Requests made in the with-block's thread use the session; pass session= to generate to use it from another
+    thread. abort is called with the module lock held: it must be fast and must not call this module.
+    """
+    s = Session(abort, limit)
+    with room:
+        if not closed and fits_with(job_peak):
+            hold(s)
+    outer = getattr(local, "session", None)
+    local.session = s
+    try:
+        yield s
+    finally:
+        local.session = outer
+        with room:
+            s.closed, s.held = True, False
+            leases.discard(s)
+            room.notify_all()
+
+
+def model_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The messages as the chat template needs them; the input is not changed.
+
+    Assistant tool_calls may be {"id", "name", "arguments"} (as in a "done" event) or OpenAI's {"id", "type",
+    "function": {"name", "arguments"}}; arguments may be a dict or a JSON string. The template renders the arguments
+    with |items, so they become a dict ({} when the string is not a JSON object). An assistant message with calls and
+    no content gets "". Tool results are {"role": "tool", "content": str} plus any "tool_call_id" and "name" (the
+    Qwen3.8 template uses only the content and the order); content that is not text becomes JSON.
+    """
+    out = []
+    for m in messages:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            m = {
+                **m,
+                "content": m.get("content") or "",
+                "tool_calls": [tool_call(c) for c in m["tool_calls"]],
+            }
+        elif m.get("role") == "tool" and not isinstance(m.get("content"), (str, list)):
+            m = {**m, "content": json.dumps(m.get("content"), ensure_ascii=False)}
+        out.append(m)
+    return out
+
+
+def tool_call(call: dict[str, Any]) -> dict[str, Any]:
+    fn = call.get("function") or call
+    args = fn.get("arguments")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args) if args.strip() else {}
+        except json.JSONDecodeError:
+            args = {}
+    out = {k: v for k, v in call.items() if k != "function"}
+    out.update(
+        name=fn.get("name", ""), arguments=args if isinstance(args, dict) else {}
+    )
+    return out
 
 
 def installed() -> bool:
@@ -216,47 +332,83 @@ def generate(
     schema: dict[str, Any] | None = None,
     max_tokens: int = 4096,
     chat: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    reasoning_effort: str | None = None,
+    session: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Run one request and yield its events: "started" (with the request id), "waiting" when a media job holds the
     memory, reasoning and content deltas, then done or error.
 
+    tools: OpenAI-style function schemas ({"type": "function", "function": {"name", "description", "parameters"}}),
+    given to the chat template. The content deltas then never contain tool-call markup, and "done" has "tool_calls":
+    [{"id", "name", "arguments" (a dict, typed by the schema)}], with "error" (and "raw") on a call that did not
+    parse; "finish" is "tool_calls" when the list is not empty. messages may hold assistant messages with tool_calls
+    and {"role": "tool", "content"} results (see model_messages). reasoning_effort ("low", "medium" or "xhigh")
+    applies with thinking. session: the lease the request runs under; by default the one of this thread's
+    session() block.
+
     Closing the iterator early (a client that went away) cancels the request in the worker.
     """
     global active
+    if reasoning_effort is not None and reasoning_effort not in EFFORTS:
+        raise ValueError(f"reasoning_effort must be one of {EFFORTS}")
     check_installed()
+    lease = session if session is not None else getattr(local, "session", None)
     rid = f"r{next(ids)}"
     cancelled = threading.Event()
     counted = False  # counted in active
+
+    def free() -> bool:  # with room held
+        return (lease is not None and lease.held and lease.alive()) or fits_with(
+            job_peak
+        )
+
     try:
         with room:
             cancels[rid] = cancelled
-            if fits_with(job_peak):
+            if free():
                 active += 1
                 counted = True
+                hold(lease)
             else:
                 waiting.add(rid)
         yield {"event": "started", "id": rid}
         if not counted:
             yield {"event": "waiting", "message": WAITING}
             with room:
-                room.wait_for(lambda: fits_with(job_peak) or cancelled.is_set())
+                room.wait_for(lambda: free() or cancelled.is_set())
                 waiting.discard(rid)
                 if not cancelled.is_set():
                     active += 1
                     counted = True
+                    hold(lease)
                 room.notify_all()
         if cancelled.is_set():  # before the model loads for it
-            yield {
+            done = {
                 "event": "done",
                 "finish": "cancelled",
                 "reasoning": "",
                 "content": "",
                 "stats": {},
             }
+            yield {**done, "tool_calls": []} if tools else done
             return
-        yield from run(
-            rid, cancelled, messages, images, thinking, schema, max_tokens, chat
-        )
+        req = {
+            "op": "generate",
+            "id": rid,
+            "messages": model_messages(messages),
+            "images": list(images),
+            "thinking": thinking,
+            "schema": schema,
+            "max_tokens": max_tokens,
+            "chat": chat,
+            "tools": tools or None,
+            "reasoning_effort": reasoning_effort,
+        }
+        for ev in run(rid, cancelled, req):
+            if tools and ev["event"] == "done":
+                ev.setdefault("tool_calls", [])
+            yield ev
     finally:  # also when the iterator is closed at any yield
         with room:
             cancels.pop(rid, None)
@@ -267,14 +419,7 @@ def generate(
 
 
 def run(
-    rid: str,
-    cancelled: threading.Event,
-    messages: list[dict[str, Any]],
-    images: Sequence[str],
-    thinking: bool,
-    schema: dict[str, Any] | None,
-    max_tokens: int,
-    chat: str | None,
+    rid: str, cancelled: threading.Event, req: dict[str, Any]
 ) -> Iterator[dict[str, Any]]:
     """The worker part of generate: send the request and yield its events."""
     global last_used
@@ -285,18 +430,7 @@ def run(
         last_used = time.time()
     finished = False
     try:
-        w.send(
-            {
-                "op": "generate",
-                "id": rid,
-                "messages": messages,
-                "images": list(images),
-                "thinking": thinking,
-                "schema": schema,
-                "max_tokens": max_tokens,
-                "chat": chat,
-            }
-        )
+        w.send(req)
         if cancelled.is_set():  # the cancel came before the worker knew the request
             w.send({"op": "cancel", "id": rid})
         while True:
@@ -364,12 +498,16 @@ def stop(reason: str = "The model was unloaded.") -> None:
 
 
 def close(reason: str = CLOSED) -> None:
-    """The app closes: cancel every request, also the waiting ones, stop the worker and start none again."""
+    """The app closes: cancel every request, also the waiting ones, end the leases, stop the worker and start none
+    again."""
     global closed
     with room:
         closed = True
         for flag in cancels.values():
             flag.set()
+        for s in leases:
+            s.held = False
+        leases.clear()
         room.notify_all()
     stop(reason)
 
@@ -390,8 +528,9 @@ def wait_room(
 
 def claim(peak: float, abort: Callable[[], bool] = lambda: False) -> bool:
     """Hold the memory for a media job (before it starts): the requests waiting since the last job run first, then
-    the model unloads if the job does not fit next to it. New requests wait until release. Returns False when abort
-    (the job was cancelled, or the app closes) ended the wait; the memory is then free again."""
+    the model unloads if the job does not fit next to it, once the running requests and sessions end. New requests
+    wait until release (a held session's requests do not). Returns False when abort (the job was cancelled, or the
+    app closes) ended the wait; the memory is then free again."""
     global job_peak
     end = time.time() + JOB_WAIT
     with room:
@@ -400,11 +539,14 @@ def claim(peak: float, abort: Callable[[], bool] = lambda: False) -> bool:
         job_peak = peak
         if fits_with(peak):
             return True
-        drained = wait_room(lambda: active == 0, abort, end)
+        drained = wait_room(lambda: active == 0 and not holding(), abort, end)
         if drained is None:
             job_peak = 0.0
             room.notify_all()
             return False
+        for s in leases:  # after JOB_WAIT: a session's next request waits for the job
+            s.held = False
+        leases.clear()
     stop(
         "Unloaded to free the memory for a media job."
         if drained
@@ -431,6 +573,7 @@ def stop_if_idle() -> bool:
             limit is not None
             and w is not None
             and not w.pending
+            and not holding()  # a turn between its steps
             and time.time() - last_used > limit
         )
         if idle:
