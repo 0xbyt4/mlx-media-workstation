@@ -1,7 +1,7 @@
 // Settings: theme, profile, prompt help provider, the local LLM, the Jobs switches, the agent's sandbox and web search,
 // the model paths in config.toml, and where things live. Every change goes to config.toml through PUT /api/settings.
 // The app reads paths, the provider and [agent] only when it starts, so such a change shows a restart note. The
-// profile and the Jobs switches ([app]) apply at once and save on change. The chat profile leaves out prompt help, the
+// profile, the Jobs switches and the thinking level of a new chat ([app]) apply at once and save on change. The chat profile leaves out prompt help, the
 // job switches and the paths Chat does not use.
 
 import {h, icon, toast, confirm, errorBox, getTheme, setTheme, onTheme} from '../ui.js';
@@ -16,6 +16,9 @@ const README = [
   ['chat-only', 'Chat only'],
 ];
 const PROFILE_TEXT = {full: 'Full: every section', chat: 'Chat only: Chat, Models and Settings'};
+// the thinking levels of app/effort.py, with the upper limit of the thinking at about 17 tokens a second
+const EFFORT_TEXT = {off: 'Off: no thinking', low: 'Low: about 1 minute', medium: 'Medium: about 3 minutes',
+  high: 'High: about 6 minutes', xhigh: 'XHigh: about 8 minutes', max: 'Max: no limit'};
 // the same rules as app/settings_api.py: a TOML basic string cannot hold these as they are
 const BAD_CHARS = /["\\\u0000-\u001f\u007f]/;
 const MAX_PATH = 1024;
@@ -178,7 +181,19 @@ function localLlm() {
   return section('set-llm', 'Local LLM', null, h('div', {class: 'card set-card'},
     h('div', {class: 'set-row'},
       h('div', {class: 'set-llm-info'}, h('div', {class: 'set-llm-head'}, L.name, L.pill), L.text, L.idle, L.err),
-      h('div', {class: 'set-actions'}, L.models, L.unload))));
+      h('div', {class: 'set-actions'}, L.models, L.unload)),
+    chatEffort()));
+}
+
+// The thinking level of a new chat ([app] chat_effort); a chat keeps the last level used in it.
+function chatEffort() {
+  const a = s.data.app;
+  const select = h('select', {class: 'select set-select', disabled: Boolean(s.data.config.error) || s.appSaving === 'chat_effort',
+    onchange: (e) => saveApp('chat_effort', e.target.value)},
+  a.efforts.map((v) => h('option', {value: v, selected: v === a.chat_effort}, EFFORT_TEXT[v] || v)));
+  return rowFor('chat_effort', 'Thinking in a new chat',
+    'How long the model may think before it answers, at the start of a new chat. Change it per chat under the ' +
+    'message box; each chat keeps its last level. Higher levels answer better and slower.', select);
 }
 
 function llmState(l) {
@@ -338,6 +353,7 @@ async function saveApp(key, value) {
   try {
     await put({app: {[key]: value}});  // rebuilds the screen with the saved value
     if (key === 'profile') await s.ctx.store.refresh('system');  // the sidebar changes now, not at the next poll
+    if (key === 'chat_effort') s.ctx.store.refresh('llm');  // the chat's default for a new chat
     toast('Saved. The app uses it now.');
   } catch (e) {
     if (!s || e.name === 'AbortError') return;

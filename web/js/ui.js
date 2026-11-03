@@ -293,19 +293,25 @@ export function closeMenu() {
   anchor.setAttribute('aria-expanded', 'false');
 }
 
-// Opens a menu under anchor; items: [{label, sub, icon, run}]. A second call on the same anchor closes it.
+// Opens a menu under anchor; items: [{label, sub, icon, run, checked}]. Items with a boolean `checked` are a choice
+// of one (menuitemradio, a check mark on the chosen one, which gets the focus). A second call on the same anchor
+// closes it.
 export function menu(anchor, items) {
   const again = openMenu && openMenu.anchor === anchor;
   closeMenu();
   if (again || !items.length) return;
-  const buttons = items.map((it) => h('button', {
-    type: 'button', role: 'menuitem',
-    onclick: () => {
-      closeMenu();
-      anchor.focus();
-      it.run();
-    },
-  }, it.icon ? icon(it.icon, 'ic-sm') : null, h('span', null, it.label), it.sub ? h('span', {class: 'menu-sub'}, it.sub) : null));
+  const buttons = items.map((it) => {
+    const radio = typeof it.checked === 'boolean';
+    const mark = radio ? icon('check', 'ic-sm' + (it.checked ? '' : ' menu-blank')) : it.icon ? icon(it.icon, 'ic-sm') : null;
+    return h('button', {
+      type: 'button', role: radio ? 'menuitemradio' : 'menuitem', 'aria-checked': radio ? String(it.checked) : null,
+      onclick: () => {
+        closeMenu();
+        anchor.focus();
+        it.run();
+      },
+    }, mark, h('span', null, it.label), it.sub ? h('span', {class: 'menu-sub'}, it.sub) : null);
+  });
   const el = h('div', {class: 'menu-pop', role: 'menu'}, buttons);
   document.body.appendChild(el);
   const r = anchor.getBoundingClientRect();
@@ -350,7 +356,7 @@ export function menu(anchor, items) {
       window.removeEventListener('resize', closeMenu);
     },
   };
-  buttons[0].focus();
+  (buttons[items.findIndex((it) => it.checked === true)] || buttons[0]).focus();
 }
 
 // ---------- media ----------

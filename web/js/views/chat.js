@@ -52,6 +52,16 @@ const MODE_INFO = {
 };
 const MODES = ['workstation', 'general', 'agent']; // the picker and the New chat menu offer these
 const MODE_KEY = 'ws.chatMode'; // the mode of the last new chat, per browser
+// Thinking levels (app/effort.py): id, label, hint. The times are the upper limits at about 17 tokens a second; in an
+// agent answer they apply to each step, and steps after the first get less.
+const EFFORTS = [
+  ['off', 'Off', 'No thinking: fastest'],
+  ['low', 'Low', 'Thinks up to about 1 minute'],
+  ['medium', 'Medium', 'Thinks up to about 3 minutes'],
+  ['high', 'High', 'Thinks up to about 6 minutes'],
+  ['xhigh', 'XHigh', 'Thinks up to about 8 minutes'],
+  ['max', 'Max', 'Slowest: no thinking limit'],
+];
 // Agent tools: the risk levels of app/agent/policy.py in plain words, the states of a call, and the user's answers.
 const RISK = [
   {label: 'App only', pill: 'idle'},
@@ -89,9 +99,9 @@ function showHosts() {
   return chatMode() === 'agent';
 }
 
-// Kept across mounts for this session: the open chat, the composer draft, the chosen images, the Thinking switch and
-// the mode for the next new chat.
-const memo = {activeId: null, draft: '', attach: [], thinking: false, mode: null};
+// Kept across mounts for this session: the open chat, the composer draft, the chosen images, the thinking level picked
+// per chat ('' = the chat the first message creates) and the mode for the next new chat.
+const memo = {activeId: null, draft: '', attach: [], efforts: {}, mode: null};
 
 let s = null; // the mounted view
 
@@ -245,11 +255,11 @@ function build() {
       closeTools(true);
     }
   });
-  els.think = h('input', {
-    type: 'checkbox', id: 'chat-think', role: 'switch',
-    onchange: () => {
-      memo.thinking = els.think.checked;
-    },
+  els.effort = h('button', {
+    type: 'button', class: 'btn btn-ghost btn-sm effort-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    onclick: () => menu(els.effort, EFFORTS.map(([id, label, hint]) => ({
+      label, sub: hint, checked: id === effortLevel(), run: () => pickEffort(id),
+    }))),
   });
   els.send = h('button', {type: 'button', class: 'btn btn-primary btn-sm', onclick: () => (s.live ? stop() : send())});
   const composer = h('div', {class: 'composer'},
@@ -258,8 +268,7 @@ function build() {
     els.input,
     h('div', {class: 'composer-bar'},
       els.attachBtn, els.file, els.toolsBtn,
-      h('label', {class: 'switch think-switch', for: 'chat-think', title: 'The model reasons before it answers: slower, better for hard questions.'},
-        els.think, h('span', {class: 'track'}), icon('bulb', 'ic-sm'), 'Thinking'),
+      els.effort,
       h('span', {class: 'spacer'}),
       h('span', {class: 'composer-hint', id: 'chat-hint'},
         h('span', {class: 'kbd'}, 'Return'), ' sends, ', h('span', {class: 'kbd'}, 'Shift'), ' ', h('span', {class: 'kbd'}, 'Return'), ' new line'),
@@ -658,7 +667,7 @@ async function send() {
   }
   const fd = new FormData();
   fd.append('text', text);
-  fd.append('thinking', String(memo.thinking));
+  fd.append('effort', effortLevel());
   for (const a of files) fd.append('images', a.file, a.name);
   const local = files.map((a) => ({url: a.url, name: a.name}));
   s.chat.messages.push({role: 'user', content: text, images: [], local, time: new Date().toISOString()});
@@ -691,6 +700,10 @@ async function send() {
 async function createChatNow() {
   const me = s;
   const c = await me.api.createChat(nextMode());
+  if (memo.efforts[''] !== undefined) { // the level picked before the chat existed is now this chat's
+    memo.efforts[c.id] = memo.efforts[''];
+    delete memo.efforts[''];
+  }
   if (s !== me) return c.id;
   memo.activeId = c.id;
   s.openSeq++;
@@ -713,7 +726,7 @@ async function regenerate() {
   s.els.input.focus();
   const fd = new FormData();
   fd.append('regenerate', 'true');
-  fd.append('thinking', String(memo.thinking));
+  fd.append('effort', effortLevel());
   const res = await runStream(id, (onEvent, signal) => me.api.sendMessage(id, fd, onEvent, signal));
   if (res.aborted) return;
   if (res.rejected && s === me) showNote(errText(res.error));
@@ -1448,6 +1461,33 @@ function scrollToEnd() {
 
 // ---------- composer ----------
 
+// The thinking level the composer sends: the one picked in this session for this chat, else the chat's saved level,
+// else the Settings default for a new chat.
+function effortLevel() {
+  const known = (id) => EFFORTS.some((e) => e[0] === id);
+  const picked = memo.efforts[memo.activeId || ''];
+  if (known(picked)) return picked;
+  if (s.chat && known(s.chat.effort)) return s.chat.effort;
+  const llm = store.get('llm');
+  return llm && known(llm.default_effort) ? llm.default_effort : 'off';
+}
+
+function pickEffort(id) {
+  memo.efforts[memo.activeId || ''] = id;
+  renderComposer();
+  announce('Thinking: ' + EFFORTS.find((e) => e[0] === id)[1] + '.');
+}
+
+function renderEffort(blocked) {
+  const [id, label, hint] = EFFORTS.find((e) => e[0] === effortLevel());
+  const el = s.els.effort;
+  el.disabled = blocked;
+  el.classList.toggle('on', id !== 'off');
+  el.title = 'How long the model may think before it answers. Now ' + label + '. ' + hint + '.';
+  el.setAttribute('aria-label', 'Thinking level: ' + label);
+  el.replaceChildren(icon('bulb', 'ic-sm'), 'Thinking', h('span', {class: 'effort-level'}, label), icon('chev-down', 'ic-sm'));
+}
+
 function renderComposer() {
   const els = s.els;
   const f = modelFacts();
@@ -1458,8 +1498,7 @@ function renderComposer() {
   els.attachBtn.title = memo.attach.length >= MAX_IMAGES
     ? 'At most ' + MAX_IMAGES + ' images per message.'
     : 'Attach PNG, JPEG or WebP images (up to ' + MAX_IMAGES + ', 20 MB each). You can also drop or paste them.';
-  els.think.checked = memo.thinking;
-  els.think.disabled = f.blocked;
+  renderEffort(f.blocked);
   const agent = chatMode() === 'agent';
   els.toolsBtn.hidden = !agent;
   els.toolsBtn.disabled = !!(s.sending || s.loading);

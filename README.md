@@ -22,7 +22,9 @@ The sidebar has six sections. Cmd-1 to Cmd-6 open them. The chat profile shows o
   LLM to rewrite your draft for that tool. Undo brings your own text back.
 - **Jobs**: the running job with its progress, the queue, and the finished jobs with their results. You can move a
   queued job up or down. "Use these settings" fills the form again. "Send to" puts an output into a file field of another tool.
-- **Chat**: talk with the local LLM. You can attach up to 4 images to a message and turn on thinking. A new chat is in
+- **Chat**: talk with the local LLM. You can attach up to 4 images to a message and pick a thinking level: Off, Low,
+  Medium, High, XHigh or Max. A higher level thinks longer before it answers. Settings > Local LLM sets the level of
+  a new chat; a chat keeps the last level you used in it. A new chat is in
   Workstation, General or Agent mode (the chat profile has no Workstation mode). In Workstation mode the model knows
   the app's tools, and when it writes a prompt for a tool, the answer shows a "Use in" card that copies the text into
   that tool's form. General mode is a plain assistant. In Agent mode the model can call tools: search the web, read a

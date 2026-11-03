@@ -316,7 +316,7 @@ running requests cannot use the same `request_id` (HTTP 400).
 
 ```json
 {"installed": true, "state": "ready", "busy": false, "waiting": 0, "media_peak_gb": 0.0,
- "model": "Qwen3.8 27B (4-bit)", "peak_gb": 18.0, "idle_stop_s": 600.0}
+ "model": "Qwen3.8 27B (4-bit)", "peak_gb": 18.0, "idle_stop_s": 600.0, "default_effort": "off"}
 ```
 
 - `state` is `off`, `loading` or `ready`. The model loads on the first request and unloads after `idle_stop_s`
@@ -324,6 +324,8 @@ running requests cannot use the same `request_id` (HTTP 400).
 - `waiting` counts requests that wait for such a job to end. They run before the next job starts; that job waits
   for them at most 10 minutes, then it stops the model and the answer ends with an error.
 - `media_peak_gb` is the peak memory of the job that holds the memory now (0 when none).
+- `default_effort` is the thinking level of a new chat (`[app] chat_effort`, Settings > Local LLM). See
+  [Thinking levels](#thinking-levels).
 
 `POST /api/llm/unload` stops the model and returns `{"status": "off"}`.
 
@@ -333,7 +335,7 @@ Chat and prompt help call the model through these functions; no HTTP endpoint ex
 
 ```python
 llm.generate(messages, images=(), *, thinking=False, schema=None, max_tokens=4096, chat=None,
-             tools=None, reasoning_effort=None, session=None) -> Iterator[dict]
+             tools=None, reasoning_effort=None, thinking_budget=None, session=None) -> Iterator[dict]
 llm.complete(messages, images=(), on_start=None, **same_keywords) -> dict   # the "done" event; LLMError on error
 llm.cancel(request_id) -> bool
 with llm.session(abort=lambda: False, limit=600.0) as s: ...
@@ -347,7 +349,11 @@ with llm.session(abort=lambda: False, limit=600.0) as s: ...
 - `chat` keeps the prompt cache of that chat in the worker, so a request that extends the previous prompt reads only
   the new tokens. Use the same `chat` for every step of a tool turn.
 - `reasoning_effort` is `"low"`, `"medium"` or `"xhigh"` (the Qwen3.8 template's default). It applies only with
-  `thinking=True`. Another value raises `ValueError`.
+  `thinking=True`. Another value raises `ValueError`: the template itself fails on any other value.
+- `thinking_budget` (a positive whole number, or `None` for no limit) applies only with `thinking=True`. After that
+  many thinking tokens the worker makes the model end its thinking (mlx-vlm forces `</think>`), so it must answer.
+  Keep `max_tokens` larger than the budget, or the answer has no room. The `done` stats then have
+  `thinking_tokens`. `app/effort.py` picks these values for a chat answer.
 
 **Tools.** `tools` is a list of OpenAI-style function schemas:
 
@@ -418,9 +424,13 @@ return HTTP 404 for an unknown chat.
   and returns its summary. HTTP 409 after the first message, HTTP 400 for an unknown mode.
 - `DELETE /api/chats/{id}` deletes it (HTTP 409 while it answers).
 - `GET /api/chats/{id}/files/{name}` serves an image of the chat (`img_N.png`, `.jpg` or `.webp`).
-- `POST /api/chats/{id}/messages` takes `multipart/form-data`: `text`, `thinking` (`true`/`false`), up to 4
-  `images` (PNG, JPEG or WebP, 20 MB each), or `regenerate=true` to answer the last user message again. It returns
-  server-sent events (`data: {...}` lines):
+- `POST /api/chats/{id}/messages` takes `multipart/form-data`: `text`, `effort` (a thinking level: `off`, `low`,
+  `medium`, `high`, `xhigh` or `max`; see [Thinking levels](#thinking-levels)), up to 4 `images` (PNG, JPEG or
+  WebP, 20 MB each), or `regenerate=true` to answer the last user message again. The older field `thinking` still
+  works: `true` is the level `high`, any other value is `off`; `effort` wins when both are sent. Without both, the
+  chat's last level applies, or `[app] chat_effort` for a chat that has none. The chat saves the level it used as
+  `effort` (`GET /api/chats/{id}`), so Regenerate and the page use it again. It returns server-sent events
+  (`data: {...}` lines):
   - `{"event": "waiting", "message": "..."}` while a media job holds the memory;
   - `{"event": "reasoning", "text": "..."}` and `{"event": "content", "text": "..."}` deltas;
   - `{"event": "done", "finish": "stop" | "length" | "cancelled", "content": "...", "reasoning": "...", "stats": {...}}`
@@ -428,10 +438,11 @@ return HTTP 404 for an unknown chat.
   - An agent chat has more events: see [Agent mode](#agent-mode).
   - `stats` has `seconds`, and when the model ran, `prompt_tokens`, `generation_tokens`, `cached_tokens`,
     `prompt_tps`, `generation_tps` and `peak_gb`.
-  - `text` is at most 20,000 characters. An answer is at most 4,096 tokens, or 8,192 with thinking on.
+  - `text` is at most 20,000 characters. An answer is at most 4,096 tokens after its thinking (see
+    [Thinking levels](#thinking-levels)).
   - Errors before the stream starts: HTTP 400 with `{"detail": "message"}` (an empty message, a text that is too
-    long, too many images, an image of another type or over 20 MB, nothing to answer again), HTTP 409 while the chat
-    still answers.
+    long, too many images, an image of another type or over 20 MB, nothing to answer again, an unknown `effort`),
+    HTTP 409 while the chat still answers.
 - `GET /api/chats/{id}/stream` replays the running answer's events from the start (for a page that came back); HTTP
   404 when nothing runs.
 - `POST /api/chats/{id}/stop` stops the answer between tokens, also while it waits. It returns
@@ -456,6 +467,32 @@ field.
 
 The answer runs on the server whether or not a page listens, and it is saved when it ends. The model sees the newest
 turns that fit in 32K tokens.
+
+### Thinking levels
+
+A chat message has a thinking level: how long the model may think before it answers. `app/effort.py` holds the
+table. The model writes about 17 tokens a second on an M5 Pro, so 1,000 tokens are about 1 minute. An answer may
+take at most 10 minutes (an agent answer's limit; a waiting media job also stops a chat answer after 10 minutes).
+
+| Level | Template effort | Thinking budget (tokens) | `max_tokens` | Thinking time, at most |
+| --- | --- | --- | --- | --- |
+| `off` | thinking off | none | 4,096 | none |
+| `low` | `low` | 1,024 | 5,120 | about 1 minute |
+| `medium` | `medium` | 3,072 | 7,168 | about 3 minutes |
+| `high` | `xhigh` | 6,144 | 10,240 | about 6 minutes |
+| `xhigh` | `xhigh` | 8,192 | 12,288 | about 8 minutes |
+| `max` | `xhigh` | no limit | the free context, at least 12,288 | until the answer's time limit |
+
+- The template effort goes to the Qwen3.8 chat template, which knows only `low`, `medium` and `xhigh`. The levels
+  `high`, `xhigh` and `max` differ only in the budget.
+- When the thinking reaches the budget, the model must stop thinking and answer. `max_tokens` is the budget plus
+  4,096, so the answer always has room.
+- `max` has no budget. Its `max_tokens` is the context (32,768 tokens) less the prompt, at least 12,288. The chat
+  history that the model sees is the same as with `xhigh`.
+- In an agent answer, the budget applies to each step. The first step gets the full budget. Each later step gets 40%
+  of it (`high`: 6,144, then 2,457 a step). The template effort is the same in every step: it is part of the system
+  prompt, and a change would make the model read the whole chat again.
+- `thinking=true` of the older API is the level `high`.
 
 ### Agent mode
 
@@ -578,9 +615,11 @@ oldest turns are dropped. The budget counts the system prompt and the tool schem
     "providers": [{"id": "local", "label": "Local LLM", "description": "...", "available": true,
                    "model": "Qwen3.8 27B (4-bit)", "llm": {}}]
   },
-  "app": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full",
-          "defaults": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full"},
-          "idle_choices": [5, 10, 30, 60, 0], "profiles": ["full", "chat"], "saved_profile": "full"},
+  "app": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full", "chat_effort": "off",
+          "defaults": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full",
+                       "chat_effort": "off"},
+          "idle_choices": [5, 10, 30, 60, 0], "profiles": ["full", "chat"],
+          "efforts": ["off", "low", "medium", "high", "xhigh", "max"], "saved_profile": "full"},
   "llm": {"idle_stop_s": 600.0},
   "agent": {"python": "", "searxng_url": "", "wikipedia_language": "en", "marginalia": true,
             "defaults": {"python": "", "searxng_url": "", "wikipedia_language": "en", "marginalia": true},
@@ -604,10 +643,11 @@ oldest turns are dropped. The budget counts the system prompt and the tool schem
 - `about.commit` is `null` when git or the git checkout is not there.
 - `restart_required` is true when `config.toml` holds other `[paths]`, `[assist]` or `[agent]` values than the ones
   the app read at start.
-- `app` holds the `[app]` values the app uses now (Settings > Profile and Settings > Jobs): `keep_awake` (no system
-  sleep while a job is queued or running), `notify` (a macOS notification when a job is done or failed; none for a
-  cancelled job), `llm_idle_minutes` (minutes without use before the local LLM unloads; 0 = never) and `profile`
-  (one of `profiles`; see [System](#system)). `idle_choices` are the minutes the screen offers. After
+- `app` holds the `[app]` values the app uses now (Settings > Profile, Settings > Jobs and Settings > Local LLM):
+  `keep_awake` (no system sleep while a job is queued or running), `notify` (a macOS notification when a job is done
+  or failed; none for a cancelled job), `llm_idle_minutes` (minutes without use before the local LLM unloads; 0 =
+  never), `profile` (one of `profiles`; see [System](#system)) and `chat_effort` (the thinking level of a new chat,
+  one of `efforts`; see [Thinking levels](#thinking-levels)). `idle_choices` are the minutes the screen offers. After
   `start.py --chat`, `profile` is `"chat"` although `config.toml` may say `"full"`. `saved_profile` is the profile
   in `config.toml` (the default when the file does not set a valid one): the profile of the next start without
   `--chat`.
@@ -637,7 +677,7 @@ name programs that the app runs.
 - Errors: HTTP 400 with `{"detail": {"message": "...", "fields": {"paths.ltx_model": "message"}}}` for an unknown
   key, an unknown provider, an empty path, a path with a double quote, a backslash or a line break, an `[app]` switch
   that is not `true` or `false`, `llm_idle_minutes` that is not a whole number from 0 to 1440, a `profile` that
-  is not `"full"` or `"chat"`, or a bad `[agent]` value (the rules are in
+  is not `"full"` or `"chat"`, a `chat_effort` that is not a thinking level, or a bad `[agent]` value (the rules are in
   [AGENT.md](AGENT.md#settings)). HTTP 409
   when `config.toml` is not valid TOML or sets the key in a form this endpoint cannot edit (for example an inline
   table); the file is then not changed.
@@ -664,6 +704,9 @@ views.
 - Jobs: the running job with progress, the queue with start estimates and move buttons, and finished jobs with their media, settings,
   "Use these settings", "Send to" (an output into another tool's file field), download and delete.
 - Chat, Library, Models and Settings use the endpoints of their sections above.
+- Chat: the Thinking button under the message box opens a menu of the thinking levels, each with a short hint (arrow
+  keys, Return and Escape work). A chat opens with its saved `effort`, a new chat with `default_effort` of
+  `GET /api/llm`. A level picked in a chat stays for this session, also before a message is sent.
 - Polling: `/api/jobs` every 2 s while a job is queued or running, else 10 s; `/api/system` and `/api/llm` every 5 s;
   `/api/models` every 60 s (2 s during a download); `/api/assist` every 60 s; `/api/chats` every 30 s (3 s while an
   answer runs).

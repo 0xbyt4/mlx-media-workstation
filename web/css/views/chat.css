@@ -644,13 +644,20 @@
 .v-chat .composer-bar .spacer {
   flex: 1;
 }
-.v-chat .think-switch {
-  font-size: var(--fs-sm);
+.v-chat .effort-btn {
   gap: 6px;
 }
-.v-chat .think-switch:has(input:disabled) {
-  opacity: 0.55;
-  cursor: default;
+.v-chat .effort-btn .effort-level {
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--sunken);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.v-chat .effort-btn.on .effort-level {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 .v-chat .composer-hint {
   font-size: var(--fs-xs);

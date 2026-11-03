@@ -6,7 +6,8 @@ containing SLOW streams tokens until cancelled (also with a schema); any other r
 With tools, the fake streams scripted tool-call text through the real worker's hold-back and parsing (ToolText,
 finish_tools), with a small stand-in for mlx-vlm's qwen3_coder parser. The last message picks the script (see
 SCRIPTS); a tool result as the last message gets the answer "Result: <content>". The done stats then echo what the
-request carried ("seen"), so a test can check what reached the worker.
+request carried ("seen"), so a test can check what reached the worker; a request without tools echoes its thinking
+settings (LIMITS) the same way.
 
 An agent test scripts a whole answer: the last user message holds "STEPS:" and a JSON list, one item per model step
 (the number of assistant messages after that user message picks the item; past the end the answer is "Done."). An
@@ -56,6 +57,8 @@ SCRIPTS = {
     # text after the call, which the template asks the model not to write
     "AFTER": [CALL.format(city="Ankara"), "\nDone."],
 }
+# the request's thinking settings, echoed in the done stats as "seen" (app/effort.py)
+LIMITS = ("thinking", "reasoning_effort", "thinking_budget", "max_tokens")
 PARAM = re.compile(r"<parameter=(.*?)>\n?(.*?)\n?</parameter>", re.DOTALL)
 STEPS = "STEPS:"
 
@@ -161,7 +164,7 @@ def tool_answer(req, cancel):
             emit({"id": rid, "event": "content", "text": shown})
         if slow:
             time.sleep(0.02)
-    seen = {k: req.get(k) for k in ("messages", "tools", "reasoning_effort", "chat")}
+    seen = {k: req.get(k) for k in ("messages", "tools", "chat", *LIMITS)}
     done = {
         "id": rid,
         "event": "done",
@@ -243,7 +246,11 @@ def main():
                 "finish": finish,
                 "reasoning": reasoning,
                 "content": "".join(parts),
-                "stats": {"turns": len(req["messages"]), "images": len(req["images"])},
+                "stats": {
+                    "turns": len(req["messages"]),
+                    "images": len(req["images"]),
+                    "seen": {k: req.get(k) for k in LIMITS},
+                },
             }
         )
 

@@ -700,6 +700,9 @@ details.tech[open] > summary {
   background: var(--accent-soft);
   outline: none;
 }
+.menu-pop .menu-blank {
+  visibility: hidden;
+}
 .menu-pop .menu-sub {
   color: var(--text-3);
   font-size: var(--fs-xs);

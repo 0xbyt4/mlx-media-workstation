@@ -35,7 +35,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from app import config, llm, tools
+from app import config, effort, llm, tools
 from app.agent import (
     Action,
     Context,
@@ -470,19 +470,30 @@ def model_input(
     return messages, images
 
 
-def answer(chat_id: str, thinking: bool, run: Live) -> None:
-    """The answer thread: run the model, collect the events, save the reply."""
-    max_tokens = 8192 if thinking else 4096  # thinking counts against the limit
+def room(
+    messages: list[dict[str, Any]],
+    images: list[str],
+    tool_schemas: list[dict[str, Any]] | None = None,
+) -> int:
+    """The context tokens a model input leaves free (a rough count, like tokens())."""
+    used = len(json.dumps(messages, ensure_ascii=False)) // 3
+    used += IMAGE_TOKENS * len(images)
+    if tool_schemas:
+        used += len(json.dumps(tool_schemas, ensure_ascii=False)) // 3
+    return CONTEXT_TOKENS - used
+
+
+def answer(chat_id: str, level: str, run: Live) -> None:
+    """The answer thread: run the model at a thinking level (app/effort.py), collect the events, save the reply."""
     reply: dict[str, Any] = {"role": "assistant", "content": "", "reasoning": ""}
     try:
         with lock:
             chat = load(chat_id)
-        messages, images = model_input(chat, max_tokens)
+        messages, images = model_input(chat, effort.reserve(level))
         for ev in llm.generate(
             messages,
             images,
-            thinking=thinking,
-            max_tokens=max_tokens,
+            **effort.options(level, room=room(messages, images)),
             chat=chat_id,
         ):
             if ev["event"] == "started":
@@ -545,10 +556,11 @@ class Turn:
     answer ends before it runs, so the saved history always has the shape the chat template needs.
     """
 
-    def __init__(self, chat_id: str, thinking: bool, run: Live) -> None:
-        self.chat_id, self.thinking, self.run = chat_id, thinking, run
-        # thinking counts against the limit
-        self.max_tokens = 8192 if thinking else 4096
+    def __init__(self, chat_id: str, level: str, run: Live) -> None:
+        self.chat_id, self.level, self.run = chat_id, level, run
+        self.thinking = level != "off"
+        # the room the input leaves for a step's thinking and answer; each step's own limits: generate()
+        self.max_tokens = effort.reserve(level)
         self.started = time.monotonic()
         # moved later by the time a request waits for memory (generate): a media job's run does not count
         self.deadline = self.started + TURN_SECONDS
@@ -636,15 +648,14 @@ class Turn:
         images: list[str],
         schemas: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """One model request: its deltas go to the page; returns its done event. The time the request waits for
-        memory (a media job runs) is added to the deadline: the answer's limit counts its own time only. Stop ends
-        the wait (llm.cancel)."""
+        """One model request: its deltas go to the page; returns its done event. The thinking budget is the one of
+        this step (effort.options). The time the request waits for memory (a media job runs) is added to the
+        deadline: the answer's limit counts its own time only. Stop ends the wait (llm.cancel)."""
         waiting_since: float | None = None
         for ev in llm.generate(
             messages,
             images,
-            thinking=self.thinking,
-            max_tokens=self.max_tokens,
+            **effort.options(self.level, self.steps, room(messages, images, schemas)),
             chat=self.chat_id,
             tools=schemas or None,
         ):
@@ -901,13 +912,13 @@ class Turn:
         }
 
 
-def agent_answer(chat_id: str, thinking: bool, run: Live) -> None:
+def agent_answer(chat_id: str, level: str, run: Live) -> None:
     """The answer thread of an agent chat: the Turn in one memory lease, then the save."""
     turn: Turn | None = None
     started = time.monotonic()
     reply: dict[str, Any] = {"role": "assistant", "content": "", "reasoning": ""}
     try:
-        turn = Turn(chat_id, thinking, run)
+        turn = Turn(chat_id, level, run)
         # one lease for every step: a queued media job does not unload the model between them
         with llm.session(lambda: run.stop, TURN_SECONDS):
             reply = turn.answer()
@@ -952,7 +963,8 @@ async def stream(request: Request, run: Live) -> Any:
 
 @router.get("/llm")
 def llm_status() -> dict[str, Any]:
-    return llm.status()
+    """The model's state, and the thinking level of a new chat (Settings, [app] chat_effort)."""
+    return {**llm.status(), "default_effort": config.APP.chat_effort}
 
 
 @router.post("/llm/unload")
@@ -1054,10 +1066,16 @@ def chat_file(chat_id: str, name: str) -> FileResponse:
 
 @router.post("/chats/{chat_id}/messages")
 async def send_message(chat_id: str, request: Request) -> StreamingResponse:
-    """A new user message (text, optional images, thinking on/off), or regenerate=true to answer the last one again."""
+    """A new user message (text, optional images, a thinking level), or regenerate=true to answer the last one again.
+
+    The level is the form field effort (app/effort.py LEVELS), or the older thinking=true/false; without either, the
+    chat's last level, else the Settings default. The chosen level is saved with the chat for the next message."""
     form = await request.form()
     text = str(form.get("text") or "").replace("\r\n", "\n").strip()
-    thinking = str(form.get("thinking", "false")).lower() == "true"
+    try:
+        level = effort.parse(form.get("effort"), form.get("thinking"))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
     regenerate = str(form.get("regenerate", "false")).lower() == "true"
     uploads = [u for u in form.getlist("images") if getattr(u, "filename", None)]
     if len(text) > MAX_TEXT:
@@ -1102,11 +1120,15 @@ async def send_message(chat_id: str, request: Request) -> StreamingResponse:
             )
             if chat["title"] == "New chat" and text:
                 chat["title"] = text.splitlines()[0][:60]
+        if level is None:
+            level = chat.get("effort")
+            level = level if level in effort.LEVELS else config.APP.chat_effort
+        chat["effort"] = level
         chat["updated"] = now()
         save(chat)
         run = live[chat_id] = Live()
         target = agent_answer if mode_of(chat) == "agent" else answer
-    threading.Thread(target=target, args=(chat_id, thinking, run), daemon=True).start()
+    threading.Thread(target=target, args=(chat_id, level, run), daemon=True).start()
     return StreamingResponse(stream(request, run), media_type="text/event-stream")
 
 

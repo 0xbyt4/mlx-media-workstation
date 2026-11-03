@@ -26,7 +26,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from app import assist, chat, config, llm, models, tools
+from app import assist, chat, config, effort, llm, models, tools
 from app.agent import sandbox
 from app.agent import settings as agent_settings
 
@@ -192,6 +192,7 @@ def snapshot() -> dict[str, Any]:
             "defaults": config.APP_DEFAULTS,
             "idle_choices": list(config.IDLE_CHOICES),
             "profiles": list(config.PROFILES),
+            "efforts": list(effort.LEVELS),
             "saved_profile": saved_profile,
         },
         "llm": {"idle_stop_s": llm.idle_stop()},

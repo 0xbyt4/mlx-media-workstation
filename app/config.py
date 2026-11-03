@@ -8,13 +8,16 @@ looked for; the other tools keep working. The [assist] section picks the prompt 
 The [app] section holds the switches of the Settings screen. Unlike the paths, they apply while the app runs: a change
 through PUT /api/settings replaces APP at once (app/settings_api.py). `profile` picks what the UI shows: "full" (every
 section) or "chat" (Chat, Models and Settings only). `start.py --chat` sets it to "chat" in APP for that run, without
-writing the file.
+writing the file. `chat_effort` is the thinking level of a new chat (app/effort.py).
 """
 
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from app.effort import DEFAULT as DEFAULT_EFFORT
+from app.effort import LEVELS
 
 ROOT = Path(__file__).resolve().parent.parent
 FILE = ROOT / "config.toml"
@@ -35,6 +38,7 @@ APP_DEFAULTS: dict[str, bool | int | str] = {
     "notify": True,
     "llm_idle_minutes": 10,
     "profile": "full",
+    "chat_effort": DEFAULT_EFFORT,
 }
 IDLE_CHOICES = (5, 10, 30, 60, 0)  # the minutes the Settings screen offers; 0 = never
 MAX_IDLE = 24 * 60
@@ -66,6 +70,8 @@ class App:
     notify: bool  # a macOS notification when a job is done or failed
     llm_idle_minutes: int  # minutes without use before the local LLM unloads; 0 = never
     profile: str = "full"  # what the UI shows: "full" or "chat" (PROFILES)
+    # the thinking level of a new chat (app/effort.py LEVELS)
+    chat_effort: str = DEFAULT_EFFORT
 
 
 def section(file: Path, name: str, known: Mapping[str, object]) -> dict[str, object]:
@@ -103,6 +109,9 @@ def check_app(key: str, value: object) -> str | None:
     elif key == "profile":
         if value not in PROFILES:
             return f"Use one of: {', '.join(PROFILES)}."
+    elif key == "chat_effort":
+        if value not in LEVELS:
+            return f"Use one of: {', '.join(LEVELS)}."
     elif type(value) is not bool:
         return "Use true or false."
     return None

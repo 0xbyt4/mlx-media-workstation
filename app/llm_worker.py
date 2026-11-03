@@ -6,8 +6,13 @@ free the memory, which only a process exit releases in full. Everything mlx-vlm 
 carries only the protocol.
 
 Requests: {"op": "generate", "id", "messages", "images", "thinking", "schema", "max_tokens", "chat", "tools",
-"reasoning_effort"}, {"op": "cancel", "id"} and {"op": "shutdown"}. Events: {"event": "ready"}, then per request
-"reasoning" and "content" deltas, and one "done" (with the full answer and its stats) or "error".
+"reasoning_effort", "thinking_budget"}, {"op": "cancel", "id"} and {"op": "shutdown"}. Events: {"event": "ready"},
+then per request "reasoning" and "content" deltas, and one "done" (with the full answer and its stats) or "error".
+
+thinking_budget uses mlx-vlm's ThinkingBudgetCriteria: after that many thinking tokens it forces "\n</think>", so the
+model must answer. It counts from the "<think>" that the template's generation prompt opens; mlx-vlm looks for that
+token in the prompt part it still reads, which always holds the new generation prompt here (Qwen3.8's cache cannot be
+cut back, so a reused cache is always a whole earlier prompt and answer). The done stats give "thinking_tokens".
 
 With "tools" (OpenAI-style function schemas), the content deltas stop at the first tool-call marker: the call text is
 held back, parsed with mlx-vlm's parser for the model at the end, and the "done" event carries it as "tool_calls"
@@ -272,6 +277,11 @@ class Engine:
             **options,
         )
         kwargs: dict[str, Any] = dict(THINKING if thinking else NO_THINKING)
+        if thinking and req.get("thinking_budget"):
+            # enable_thinking here is mlx-vlm's switch for the budget, not the template's
+            kwargs.update(
+                thinking_budget=int(req["thinking_budget"]), enable_thinking=True
+            )
         if req.get("schema") is not None:  # thinking is off for JSON answers
             kwargs["logits_processors"] = [
                 self.json_processor(self.processor.tokenizer, req["schema"])
@@ -308,6 +318,7 @@ class Engine:
             **kwargs,
         )
         in_think, reasoning, answer, last, cancelled = thinking, [], [], None, False
+        thought = 0  # tokens inside the thinking block
         try:
             for r in gen:
                 if cancel.is_set():
@@ -319,6 +330,7 @@ class Engine:
                 if in_think and r.token == THINK_END:
                     in_think = False
                     continue
+                thought += in_think
                 part = "reasoning" if in_think else "content"
                 (reasoning if in_think else answer).append(r.text)
                 text = r.text if in_think or not tools else calls.feed(r.text)
@@ -340,6 +352,8 @@ class Engine:
                 generation_tps=round(last.generation_tps, 1),
                 peak_gb=round(last.peak_memory, 1),
             )
+        if thinking:
+            stats["thinking_tokens"] = thought
         done = {
             "id": rid,
             "event": "done",

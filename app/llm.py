@@ -366,6 +366,7 @@ def generate(
     chat: str | None = None,
     tools: list[dict[str, Any]] | None = None,
     reasoning_effort: str | None = None,
+    thinking_budget: int | None = None,
     session: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Run one request and yield its events: "started" (with the request id), "waiting" when a media job holds the
@@ -376,14 +377,19 @@ def generate(
     [{"id", "name", "arguments" (a dict, typed by the schema)}], with "error" (and "raw") on a call that did not
     parse; "finish" is "tool_calls" when the list is not empty. messages may hold assistant messages with tool_calls
     and {"role": "tool", "content"} results (see model_messages). reasoning_effort ("low", "medium" or "xhigh")
-    applies with thinking. session: the lease the request runs under; by default the one of this thread's
-    session() block.
+    applies with thinking. thinking_budget: with thinking, the thinking tokens after which the worker forces the end
+    of the thinking, so the model must answer (app/effort.py); None: no limit. session: the lease the request runs
+    under; by default the one of this thread's session() block.
 
     Closing the iterator early (a client that went away) cancels the request in the worker.
     """
     global active
     if reasoning_effort is not None and reasoning_effort not in EFFORTS:
         raise ValueError(f"reasoning_effort must be one of {EFFORTS}")
+    if thinking_budget is not None and (
+        type(thinking_budget) is not int or thinking_budget < 1
+    ):
+        raise ValueError("thinking_budget must be a positive whole number")
     check_installed()
     lease = session if session is not None else getattr(local, "session", None)
     rid = f"r{next(ids)}"
@@ -436,6 +442,7 @@ def generate(
             "chat": chat,
             "tools": tools or None,
             "reasoning_effort": reasoning_effort,
+            "thinking_budget": thinking_budget,
         }
         for ev in run(rid, cancelled, req):
             if tools and ev["event"] == "done":

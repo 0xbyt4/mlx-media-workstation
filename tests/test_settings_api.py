@@ -277,14 +277,17 @@ def test_get_reports_the_switches(client: TestClient, cfg: Path) -> None:
         "notify": True,
         "llm_idle_minutes": 10,
         "profile": "full",
+        "chat_effort": "off",
         "defaults": {
             "keep_awake": True,
             "notify": True,
             "llm_idle_minutes": 10,
             "profile": "full",
+            "chat_effort": "off",
         },
         "idle_choices": [5, 10, 30, 60, 0],
         "profiles": ["full", "chat"],
+        "efforts": ["off", "low", "medium", "high", "xhigh", "max"],
         "saved_profile": "full",
     }
     assert data["llm"] == {"idle_stop_s": 600.0}
@@ -353,6 +356,9 @@ def test_put_same_switch_applies_without_a_write(
         ("profile", "media"),
         ("profile", "Chat"),
         ("profile", True),
+        ("chat_effort", "high "),
+        ("chat_effort", "on"),
+        ("chat_effort", True),
         ("theme", "dark"),
     ],
 )
@@ -376,6 +382,17 @@ def test_put_profile_applies_at_once(client: TestClient, cfg: Path) -> None:
     assert config.APP.profile == "chat"
     assert config.load_app(cfg).profile == "chat"
     assert client.get("/api/system").json()["profile"] == "chat"
+
+
+def test_put_chat_effort_applies_at_once(client: TestClient, cfg: Path) -> None:
+    r = put(client, {"app": {"chat_effort": "medium"}})
+    assert r.status_code == 200
+    assert r.json()["changed"] == ["app.chat_effort"]
+    assert r.json()["restart_required"] is False
+    assert cfg.read_text() == USER_FILE + '\n[app]\nchat_effort = "medium"\n'
+    assert config.APP.chat_effort == "medium"
+    assert config.load_app(cfg).chat_effort == "medium"
+    assert client.get("/api/llm").json()["default_effort"] == "medium"
 
 
 def test_put_switch_keeps_the_profile_of_this_run(
