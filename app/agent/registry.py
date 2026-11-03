@@ -33,6 +33,14 @@ def visible(text: str) -> str:
     return HIDDEN.sub(lambda m: f"\\u{ord(m.group()):04x}", text)
 
 
+def visible_lines(text: str) -> str:
+    """visible() for each line of a text, with its line breaks and tabs kept: for the approval card's preview."""
+    return "\n".join(
+        "\t".join(visible(part) for part in line.split("\t"))
+        for line in text.split("\n")
+    )
+
+
 class ToolError(Exception):
     """A failure the model should read ("No such file: notes.txt")."""
 
@@ -49,6 +57,9 @@ class Context:
     folder: Path | None  # the folder the user granted to this chat, or None
     abort: threading.Event  # set by Stop: a tool checks it and ends early
     work_dir: Path  # the chat's workspace (outputs/chats/<id>/ws): run_python reads and writes only here
+    # the preview the user approved on the approval card (Tool.preview), or None when the call did not ask: a tool
+    # that writes refuses to run when its preview is different now (the file changed after the user looked)
+    preview: str | None = None
 
     def check_abort(self) -> None:
         if self.abort.is_set():
@@ -71,6 +82,15 @@ class Tool:
     explain: Callable[[dict[str, Any]], str] | None = None
     # the host the call contacts, as the network sees it (IDNA), for its own line on the approval card
     host: Callable[[dict[str, Any]], str | None] | None = None
+    # several lines for the approval card (a diff of the change), from the files as they are now; a ToolError here
+    # goes back to the model at once, without a question to the user
+    preview: Callable[[dict[str, Any], Context], str] | None = None
+    # changes the user's files (the approval card and the Tools menu say so)
+    writes: bool = False
+    # whether the chat must have a granted folder; None = only the R1 tools need one
+    needs_folder: bool | None = None
+    # what the tool does and when it asks, in plain words, for the Tools menu; "" = the text of its risk level
+    effect: str = ""
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -90,13 +110,31 @@ class Tool:
         """The host the call contacts (ASCII, IDNA), or None for a tool without one or a URL with no valid host."""
         return self.host(args) if self.host else None
 
+    def folder_needed(self) -> bool:
+        return self.risk == Risk.R1 if self.needs_folder is None else self.needs_folder
+
+    def show(self, args: Any, ctx: Context) -> str | None:
+        """The approval card's preview (visible_lines), or None for a tool without one. Raises ToolError when the
+        call cannot run: invalid arguments, or a change that cannot be made."""
+        if self.preview is None:
+            return None
+        try:
+            checked = schema.check(self.parameters, args)
+        except schema.ArgumentError as e:
+            raise ToolError(f"Invalid arguments for {self.name}: {e}") from None
+        return visible_lines(self.preview(checked, ctx))
+
 
 @dataclass
 class Output:
-    """A tool's result when it has more than text: files it made (paths relative to the work dir)."""
+    """A tool's result when it has more than text: files it made (paths relative to the work dir), images for the
+    model's next request (names in the chat's folder, outputs/chats/<id>) and files it wrote in the granted folder
+    (paths relative to it)."""
 
     text: str
     files: list[str] = field(default_factory=list)
+    images: list[str] = field(default_factory=list)
+    saved: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -110,6 +148,8 @@ class Result:
     args: (
         dict[str, Any] | None
     )  # the checked arguments (defaults filled in); None when they were invalid
+    images: list[str] = field(default_factory=list)
+    saved: list[str] = field(default_factory=list)
 
 
 def cap(text: str, limit: int = MAX_RESULT) -> tuple[str, bool]:
@@ -145,7 +185,7 @@ class Registry:
         t0 = time.monotonic()
         tool = self.tools.get(name)
 
-        def done(status, text, checked=None, files=None) -> Result:
+        def done(status, text, checked=None, files=None, out=None) -> Result:
             content, truncated = cap(text)
             return Result(
                 status,
@@ -155,6 +195,8 @@ class Registry:
                 files or [],
                 round(time.monotonic() - t0, 2),
                 checked,
+                out.images if out else [],
+                out.saved if out else [],
             )
 
         if tool is None:
@@ -176,5 +218,5 @@ class Registry:
         except Exception as e:  # noqa: BLE001 - a broken tool must not end the turn
             return done("error", f"The tool failed: {type(e).__name__}: {e}", checked)
         if isinstance(out, Output):
-            return done("ok", out.text, checked, out.files)
+            return done("ok", out.text, checked, out.files, out)
         return done("ok", out, checked)

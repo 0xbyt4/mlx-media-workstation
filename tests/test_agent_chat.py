@@ -255,10 +255,12 @@ def test_the_next_turn_sends_the_history_as_the_template_needs_it(client, reg):
     assert tool["tool_call_id"] == step["tool_calls"][0]["id"]
     assert "status: running" in tool["content"]
     assert llm.model_messages(sent) == sent  # already in the template's shape
-    # the tools of the request: the enabled ones, without run_python (off) and the file tools (no folder)
+    # the tools of the request: the enabled ones, without run_python (off) and the file tools (no folder); the media
+    # tools need no folder (they also read the work folder and the Library)
     names = [t["function"]["name"] for t in seen["tools"]]
     assert names == [
-        "list_workstation_tools", "job_status", "search_library", "create_job", "web_search", "fetch_url"
+        "list_workstation_tools", "job_status", "search_library", "create_job", "media_info", "view_image",
+        "web_search", "fetch_url",
     ]  # fmt: skip
     system = sent[0]["content"]
     assert "untrusted data" in system and "emoji" in system

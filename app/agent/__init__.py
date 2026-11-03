@@ -8,7 +8,9 @@ The chat loop uses this interface:
     tool = registry.get(call.name)
     verdict = decide(tool, grants, tainted, enabled)    # run, ask (approval card) or refuse
     explain = tool.describe(args) if tool else ""       # one line for the approval card
-    result = registry.call(call.name, call.arguments, Context(chat_id, grants.folder, abort, work_dir))
+    ctx = Context(chat_id, grants.folder, abort, work_dir)
+    ctx.preview = tool.show(args, ctx)                  # on "ask": the card's diff; ToolError = do not ask
+    result = registry.call(call.name, call.arguments, ctx)  # result.images: pictures for the next request
     tainted = taints(tool, tainted)                     # after the call ran
 
 Nothing here imports app.server: the server's functions come in through WorkstationPort (app/agent/ports.py).
@@ -16,7 +18,14 @@ Nothing here imports app.server: the server's functions come in through Workstat
 
 from pathlib import Path
 
-from app.agent import file_tools, python_tool, web_tools, ws_tools
+from app.agent import (
+    file_tools,
+    media_tools,
+    python_tool,
+    web_tools,
+    write_tools,
+    ws_tools,
+)
 from app.agent.policy import Action, Grants, Risk, Verdict, decide, taints
 from app.agent.ports import WorkstationPort
 from app.agent.registry import (
@@ -79,6 +88,8 @@ def build_registry(
     if port is not None:
         tools += ws_tools.build(port)
     tools += file_tools.build()
+    tools += write_tools.build((limits or Limits()).disk_mb)
+    tools += media_tools.build(port)
     tools += web_tools.build(settings, net or Net())
     box = sandbox if sandbox is not None else SeatbeltSandbox(settings.python)
     if box.unavailable() is None:

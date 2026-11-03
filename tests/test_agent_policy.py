@@ -17,6 +17,9 @@ R1 = tool("read_file", Risk.R1, untrusted_output=True)
 SEARCH = tool("web_search", Risk.R2, network=True, untrusted_output=True)
 JOB = tool("create_job", Risk.R2)
 R3 = tool("run_python", Risk.R3)
+WRITE = tool("write_file", Risk.R2, writes=True, needs_folder=True)
+EDIT = tool("edit_file", Risk.R3, writes=True, needs_folder=True)
+VIEW = tool("view_image", Risk.R1, untrusted_output=True, needs_folder=False)
 FOLDER = Path("/Users/someone/Documents/project")
 
 
@@ -41,6 +44,18 @@ FOLDER = Path("/Users/someone/Documents/project")
         (R3, Grants(), False, Action.ASK, False),
         (R3, Grants(FOLDER).allow("run_python"), False, Action.ASK, False),
         (R3, Grants(), True, Action.ASK, False),
+        # writing a new file: asks first, may be allowed for the chat, asks every time once the chat is tainted
+        (WRITE, Grants(), False, Action.REFUSE, False),
+        (WRITE, Grants(FOLDER), False, Action.ASK, True),
+        (WRITE, Grants(FOLDER).allow("write_file"), False, Action.RUN, False),
+        (WRITE, Grants(FOLDER).allow("write_file"), True, Action.ASK, False),
+        # changing a file asks every time
+        (EDIT, Grants(), False, Action.REFUSE, False),
+        (EDIT, Grants(FOLDER), False, Action.ASK, False),
+        (EDIT, Grants(FOLDER).allow("edit_file"), False, Action.ASK, False),
+        # an R1 tool that also reads the work folder and the Library runs without a folder
+        (VIEW, Grants(), False, Action.RUN, False),
+        (VIEW, Grants(FOLDER), True, Action.RUN, False),
     ],
 )
 def test_decide(
@@ -63,6 +78,8 @@ def test_unknown_and_disabled_tools_are_refused() -> None:
 
 def test_tainted_reason_names_the_data_risk() -> None:
     assert "off this Mac" in decide(SEARCH, Grants(), True).reason
+    assert "writes to your files" in decide(WRITE, Grants(FOLDER), True).reason
+    assert "No folder" in decide(WRITE, Grants(), False).reason
 
 
 def test_taint_sticks() -> None:

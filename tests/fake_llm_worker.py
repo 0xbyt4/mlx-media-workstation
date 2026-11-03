@@ -96,7 +96,7 @@ def scripted(messages):
     step = steps[n] if n < len(steps) else "Done."
     if step == "RESULT":
         tool = [m for m in messages if m["role"] == "tool"]
-        return ["Result: ", tool[-1]["content"] if tool else "none"]
+        return ["Result: ", text_of(tool[-1]) if tool else "none"]
     if step == "SLOW":
         return iter(lambda: "tick ", None)
     if isinstance(step, str):
@@ -146,7 +146,7 @@ def tool_answer(req, cancel):
     if script is not None:
         chunks = script
     elif messages[-1]["role"] == "tool":
-        chunks = ["Result: ", messages[-1]["content"]]
+        chunks = ["Result: ", text_of(messages[-1])]
     elif "SLOW" in text:
         chunks = iter(lambda: "tick ", None)
     else:
@@ -161,7 +161,10 @@ def tool_answer(req, cancel):
             emit({"id": rid, "event": "content", "text": shown})
         if slow:
             time.sleep(0.02)
-    seen = {k: req.get(k) for k in ("messages", "tools", "reasoning_effort", "chat")}
+    seen = {
+        k: req.get(k)
+        for k in ("messages", "images", "tools", "reasoning_effort", "chat")
+    }
     done = {
         "id": rid,
         "event": "done",

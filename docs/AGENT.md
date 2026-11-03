@@ -1,7 +1,8 @@
 # Agent mode
 
-In an agent chat the local model can call tools. It can read the Workstation's state, queue media jobs, read files in
-one folder, search the web, read web pages and run Python in a sandbox. The code is in `app/agent/`. The chat loop
+In an agent chat the local model can call tools. It can read the Workstation's state, queue media jobs, read and
+write files in one folder, read media facts, look at images, search the web, read web pages and run Python in a
+sandbox. The code is in `app/agent/`. The chat loop
 that uses it is in `app/chat.py`. The endpoints and events are in `docs/API.md` under "Agent mode".
 
 ## Tools and risk levels
@@ -11,9 +12,9 @@ Each tool has a risk level. `app/agent/policy.py` decides from that level whethe
 | Level | Meaning | Rule |
 |---|---|---|
 | R0 | Reads app state only. | Runs. |
-| R1 | Reads the user's files in the granted folder. | Runs when the chat has a granted folder. Refused without one. The grant is the consent. |
-| R2 | Sends text off this Mac, or queues minutes of compute. | Asks on the first use in a chat. The user can answer "Allow in this chat", except for a tool whose result taints the chat (web_search, fetch_url): after its first result it asks every time, so a chat-wide grant would do nothing. When the chat is tainted, every R2 call asks, also with that grant. |
-| R3 | Runs code, or has effects the app cannot check. | Asks every time. "Allow in this chat" is not offered. |
+| R1 | Reads the user's files in the granted folder, or copies one into the chat's work folder. | Runs when the chat has a granted folder. Refused without one. The grant is the consent. `media_info` and `view_image` also run without a folder: they read the chat's work folder and the Library too. |
+| R2 | Sends text off this Mac, queues minutes of compute, or writes a new file in the granted folder. | Asks on the first use in a chat. The user can answer "Allow in this chat", except for a tool whose result taints the chat (web_search, fetch_url): after its first result it asks every time, so a chat-wide grant would do nothing. When the chat is tainted, every R2 call asks, also with that grant. |
+| R3 | Runs code, changes an existing file, or has effects the app cannot check. | Asks every time. "Allow in this chat" is not offered. |
 
 A tool that is off in the chat's Tools menu is refused. An unknown tool name is refused. The model gets the reason as
 the tool's result, so it can answer the user.
@@ -25,8 +26,14 @@ the tool's result, so it can answer the user.
 | `search_library` | R0 | Finds finished outputs by text, tool or file name. Its result is untrusted. |
 | `create_job` | R2 | Queues a media job with text fields and returns the job id at once. A tool that needs an uploaded file is refused. |
 | `list_files` | R1 | Lists a folder inside the granted folder (at most 500 lines). |
-| `read_file` | R1 | Reads a text file inside the granted folder (at most 1 MB). |
+| `read_file` | R1 | Reads a text file inside the granted folder (the first 1 MB), by line range (`start_line`, `end_line`). The result gives the line count and where to read on. It stops before the 12,000-character cap of a result. |
 | `search_files` | R1 | Searches the text files of the granted folder (at most 5,000 files and 15 s). |
+| `write_file` | R2 | Creates a new text file in the granted folder. Never overwrites. |
+| `edit_file` | R3 | Changes an existing text file in the granted folder: an exact replacement or the whole text. The approval card shows the diff. A copy of the old file goes to the work folder first. |
+| `copy_to_workspace` | R1 | Copies a file of any type (at most 500 MB) from the granted folder into the chat's work folder, for `run_python`. |
+| `export_from_workspace` | R2 | Copies a file from the work folder into the granted folder, under a new name. |
+| `media_info` | R1 | Duration, size, resolution, frame rate, codecs, channels and sample rate of an image, audio or video file (ffprobe). |
+| `view_image` | R1 | Lets the model see an image: a copy of at most 1280 pixels on its long side goes into the next model request. |
 | `web_search` | R2 | Searches the web. Sends the query off this Mac. |
 | `fetch_url` | R2 | Reads one public web page as text. Sends the URL off this Mac. |
 | `run_python` | R3 | Runs Python code in the sandbox. Present only when the sandbox works on this Mac. |
@@ -35,7 +42,11 @@ The Workstation tools exist only in the full profile. The chat profile has no Wo
 of them.
 
 A new agent chat has every tool on except `run_python`. The model writes that code, and the code can carry text from
-earlier untrusted content. So the user turns it on in the Tools menu when the chat needs it.
+earlier untrusted content. So the user turns it on in the Tools menu when the chat needs it. The tools that write
+files are on: `write_file` and `export_from_workspace` ask first, `edit_file` asks every time.
+
+The tools that read or write the user's files are offered to the model only while a folder is granted. `media_info`
+and `view_image` are offered without one.
 
 The file tools never list, search or read hidden names (any path part that starts with `.`) or secret files (keys,
 certificates, keychains, password databases, `credentials`, `secrets.*` and similar). They resolve every path and
@@ -55,16 +66,84 @@ inside them:
 - the app's own folder (its settings, outputs and the other chats), and the folders that hold it;
 - paths with a hidden part.
 
+## Writing files
+
+`write_file`, `edit_file` and `export_from_workspace` write in the granted folder. `copy_to_workspace` and the backups
+of `edit_file` write in the chat's work folder (`outputs/chats/<id>/ws`). The rules are in `app/agent/safe_fs.py`:
+
+- **No links.** A path in the granted folder must have no link in any part, also not one to a place inside the
+  folder. A folder of the path is opened with `O_NOFOLLOW` and its real path is checked again. In the work folder,
+  each part is opened with `O_NOFOLLOW` from the folder before it, because the sandboxed code can make links there.
+  A work folder that is a link is refused.
+- **Names.** No hidden or secret name (the read rules above), no control character, no name that ends with a space
+  or a dot, at most 255 bytes.
+- **No executable types.** These are refused, also as a folder on the way (`Thing.app/Contents/x.txt`): `.app`,
+  `.command`, `.tool`, shell scripts (`.sh`, `.bash`, `.zsh`, `.csh`, `.tcsh`, `.ksh`, `.fish`), `.py`, `.pyw`,
+  `.pyz`, `.pyc`, `.rb`, `.pl`, `.php`, `.lua`, `.tcl`, AppleScript and Automator files, `.terminal`, `.plist`,
+  `.mobileconfig`, libraries and bundles (`.dylib`, `.so`, `.bundle`, `.framework`, `.kext`, `.plugin`...), Windows
+  programs and scripts, `.jar`, `.pkg`, `.dmg` and link files (`.webloc`, `.url`, `.desktop`...). Python is refused
+  because a double-clicked `.py` file runs in Python Launcher when python.org's Python is installed. A file with an
+  executable bit is not changed or exported.
+- **Text.** `write_file` and `edit_file` write UTF-8 text of at most 1 MB, without NUL characters. `edit_file` changes
+  only a file that is UTF-8 now (a change would damage text in another encoding), at most 1 MB, with one hard link.
+  A file with Windows line ends keeps them when `old_text` has plain ones.
+- **Atomic.** The tool writes a temp file in the same folder, then links it in under the new name (`link()` fails
+  when the name exists, so nothing is overwritten) or, for a change, renames it over the old file. The rename happens
+  only while the old file is still the one that was read (inode, size and time). A failed write leaves no file.
+- **Modes.** A new file gets the default mode (0644 less the umask). A changed file keeps its mode. The tools never
+  change a mode.
+- **No overwrite.** `write_file` and `export_from_workspace` refuse a name that exists. `write_file` points the model
+  to `edit_file`.
+
+`edit_file` takes `old_text` and `new_text` (`old_text` must be found exactly once, or set `replace_all`), or
+`content` for the whole new text. These steps run:
+
+1. Before the approval card, the loop reads the file and makes the change as a unified diff (at most 400 lines). A
+   change that cannot be made (text not found, found twice, no change, a refused file) goes back to the model at
+   once. The user is not asked.
+2. The card shows the diff, with hiding characters written as `\uXXXX`.
+3. After "Allow once", the tool makes the diff again. When the file changed and the diff is different, it writes
+   nothing.
+4. It copies the old file to `backups/<date>-<time>-<name>` in the work folder and names that copy in its result.
+   The page links it.
+5. It writes the new text atomically.
+
+`export_from_workspace` copies images, audio, video, PDF, CSV, TSV, XLSX, DOCX, PPTX and Parquet files up to 500 MB.
+Every other file must be UTF-8 text up to 1 MB. `copy_to_workspace` copies any type up to 500 MB. Both check that
+1 GB of disk stays free. `copy_to_workspace` also checks that the work folder stays under the sandbox's limit
+(500 MB), so `run_python` still runs.
+
+The page shows a written file of the granted folder with a "Show in Finder" button (`POST /api/chats/{id}/reveal`).
+
+## Media files
+
+`media_info` and `view_image` take a `path` and a `location`: `folder` (the granted folder, the default), `work` (the
+chat's work folder) or `library` (`<job id>/<file name>`, as `search_library` shows it). The app opens the file with
+the same checks as the other tools. It gives the open file to `ffprobe` or `ffmpeg` as `/dev/fd/N`, so a link swapped
+in after the check cannot redirect them.
+
+- They run with an argument list (no shell) and a time limit (20 s for ffprobe, 30 s for ffmpeg).
+- They may use the `file` protocol only. `ffprobe` may use only the demuxers of the media types (MP4/MOV, Matroska,
+  AVI, WAV, MP3, AAC, FLAC, Ogg, AIFF and the image formats). `ffmpeg` in `view_image` gets a fixed demuxer from the
+  file's extension. So a playlist or a concat list cannot make them read other files or the network.
+- They find `ffprobe` and `ffmpeg` on the `PATH`, as the rest of the app does.
+
+`view_image` reads PNG, JPEG, WebP, GIF, BMP and TIFF images up to 50 MB. It writes a PNG copy of at most 1280 pixels
+on its long side into the chat's folder (`view_<hex>.png`), where the sandbox cannot write. The tool message keeps
+the copy's name. The next model requests get it as an image part of that tool message. Only the newest 2 tool images
+go to the model, so the context stays small.
+
 ## Taint
 
 Taint is a flag per chat. It is stored in `chat.json` with the grants.
 
-- These tools set it when they run: `search_library`, `list_files`, `read_file`, `search_files`, `web_search`,
-  `fetch_url` and `run_python`. Their results can hold text from outside the app.
+- These tools set it when they run: `search_library`, `list_files`, `read_file`, `search_files`,
+  `copy_to_workspace`, `media_info`, `view_image`, `web_search`, `fetch_url` and `run_python`. Their results can hold
+  text from outside the app (an image can hold written text too).
 - Once set, it stays set for the rest of the chat. A new answer does not clear it, because the text is still in the
   model's context.
 - While it is set, every R2 call asks, and "Allow in this chat" is not offered. A web page could tell the model to
-  put private text into a query or a URL, or to queue jobs. The user sees such a call before it runs.
+  put private text into a query or a URL, to queue jobs or to write files. The user sees such a call before it runs.
 
 The prompt also tells the model that tool output is untrusted data and never instructions.
 
@@ -156,7 +235,13 @@ search fails only when every source fails.
 - A DNS lookup and the HTML parsing of `fetch_url` cannot be interrupted. Stop takes effect after they end.
 - The SearXNG URL is trusted. Its address is not checked, so it can be on this Mac or the local network.
 - The granted folder is not mounted in the sandbox. `run_python` cannot read the user's files. Only the file tools
-  can, and only as text for the model.
+  can: as text for the model, or as a copy in the work folder (`copy_to_workspace`).
+- `ffprobe` and `ffmpeg` parse the user's media files outside the sandbox, as the media jobs do. A file made to
+  attack a decoder could reach them.
+- A change by `edit_file` is a new file renamed over the old one. The mode stays, but extended attributes, ACLs and
+  the owner of the old file do not carry over.
+- The backups of `edit_file` are in the work folder, where later `run_python` code can change or delete them.
+- `view_image` does not read HEIC. Convert the image first (for example with `run_python` or Preview).
 - A local program can send any `Origin` header. The same-origin check stops other web pages. Programs on this Mac
   need the session cookie, which only the token file of this user gives (docs/API.md). A program that runs as this
   user can read that file.
@@ -170,19 +255,20 @@ registry per media flag, so at most one per profile: with the media tools (the f
 `Workstation` object from `app/server.py`) and without them (the chat profile; the port is `None`). One answer
 (`Turn`) runs these steps:
 
-1. Take the schemas of the tools the chat offers. The R1 tools are offered only when a folder is granted.
+1. Take the schemas of the tools the chat offers. The tools that need a folder are offered only when one is granted.
 2. Build the model input. The budget counts the system prompt, the tool schemas and the tool messages. Old tool
    results are shortened first, then old turns are dropped.
 3. Run one model request with the schemas. With no calls, the answer ends.
 4. For each call: check Stop and the time, check the format, check for a repeat, then call
    `decide(tool, grants, tainted, enabled)`.
-5. On "ask", show the approval card and wait, at most 10 minutes. No answer counts as a denial. "Allow in this chat"
+5. On "ask", make the tool's preview (`edit_file`'s diff); a call that cannot run goes back to the model unasked.
+   Then show the approval card and wait, at most 10 minutes. No answer counts as a denial. "Allow in this chat"
    adds the tool to the chat's grants. An answer that the server accepted (HTTP 200) counts, also when it came in the
    moment the wait timed out. The card shows `describe` and the arguments with bidi, zero-width, tag and control
    characters written as `\uXXXX`, and for `fetch_url` the host as the network sees it (IDNA, `xn--...`) on its own
    line.
-6. Run the call with `registry.call(name, args, Context(chat_id, folder, abort, work_dir))`. Then update the taint
-   flag with `taints(tool, tainted)`.
+6. Run the call with `registry.call(name, args, Context(chat_id, folder, abort, work_dir, preview))`. Then update
+   the taint flag with `taints(tool, tainted)`. The images of a result (`view_image`) go into its tool message.
 7. Add a tool message with the result and go to the next step. An answer has at most 8 steps and 10 minutes. The
    time a step waits for memory (a media job runs) does not count against the 10 minutes, and Stop ends that wait.
 

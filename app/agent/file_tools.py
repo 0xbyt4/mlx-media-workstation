@@ -18,9 +18,10 @@ import time
 from typing import Any
 
 from app.agent.policy import Risk
-from app.agent.registry import Context, Tool, ToolError
+from app.agent.registry import MAX_RESULT, Context, Tool, ToolError
 
 MAX_READ = 1024 * 1024  # bytes read from one file
+MAX_LINES = 2000  # lines of one read_file result (MAX_RESULT caps the characters)
 MAX_ENTRIES = 500  # lines of list_files
 MAX_SCAN = 5000  # files search_files opens
 SEARCH_SECONDS = 15.0
@@ -133,10 +134,10 @@ def looks_text(sample: bytes) -> bool:
     return True
 
 
-def read_text(path: str, root: str, limit: int | None = None) -> tuple[str, int, bool]:
-    """The text of a file (decoded as UTF-8, bad bytes replaced), its size and whether it was cut at `limit`.
-
-    Raises ToolError for a binary file, a non-regular file, or a path that leaves the folder after opening."""
+def open_file(path: str, root: str) -> tuple[int, os.stat_result]:
+    """A regular file inside the folder, opened read-only with O_NOFOLLOW (and O_NONBLOCK, so a FIFO cannot block),
+    and its stat. The path of the open file is checked again: a link swapped in after resolve() is refused. Raises
+    ToolError; the caller closes the descriptor."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as e:
@@ -154,6 +155,18 @@ def read_text(path: str, root: str, limit: int | None = None) -> tuple[str, int,
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             raise ToolError(f"{_rel(path, root)}: not a regular file.")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, st
+
+
+def read_text(path: str, root: str, limit: int | None = None) -> tuple[str, int, bool]:
+    """The text of a file (decoded as UTF-8, bad bytes replaced), its size and whether it was cut at `limit`.
+
+    Raises ToolError for a binary file, a non-regular file, or a path that leaves the folder after opening."""
+    fd, st = open_file(path, root)
+    try:
         with os.fdopen(os.dup(fd), "rb") as f:
             data = f.read(limit or MAX_READ)
     finally:
@@ -240,12 +253,28 @@ def build() -> list[Tool]:
         text, size, cut = read_text(path, root)
         lines = text.splitlines()
         first = args["start_line"]
-        shown = lines[first - 1 : first - 1 + args["max_lines"]]
-        last = first + len(shown) - 1
+        end = args.get("end_line")
+        if end is not None and end < first:
+            raise ToolError("end_line must not be before start_line.")
+        count = min(args["max_lines"], MAX_LINES)
+        if end is not None:
+            count = min(end - first + 1, MAX_LINES)
         head = f"{_rel(path, root)} ({human(size)}, {len(lines)} lines"
         head += f" in the first {human(MAX_READ)})" if cut else ")"
-        if not shown:
+        if first > len(lines):
             return f"{head}: no lines from line {first}."
+        # the lines that fit in one result (MAX_RESULT), so a long file is read in parts and nothing is cut silently
+        budget = MAX_RESULT - len(head) - 200
+        shown: list[str] = []
+        for line in lines[first - 1 : first - 1 + count]:
+            if len(line) > budget and not shown:  # one very long line: show its start
+                shown.append(line[:budget] + f" [line cut at {budget:,} characters]")
+                break
+            if len(line) + 1 > budget:
+                break
+            shown.append(line)
+            budget -= len(line) + 1
+        last = first + len(shown) - 1
         head += f", lines {first}-{last}"
         if last < len(lines):
             head += f"; read on with start_line={last + 1}"
@@ -320,17 +349,21 @@ def build() -> list[Tool]:
         ),
         Tool(
             name="read_file",
-            description="Read a text file in the granted folder, by lines."
+            description=(
+                "Read a text file in the granted folder, by lines. The result gives the file's line count and says "
+                "where to read on; read a long file in parts with start_line and end_line."
+            )
             + folder_note,
             parameters={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "minLength": 1, "maxLength": 1024},
                     "start_line": {"type": "integer", "minimum": 1, "default": 1},
+                    "end_line": {"type": "integer", "minimum": 1},
                     "max_lines": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 2000,
+                        "maximum": MAX_LINES,
                         "default": 400,
                     },
                 },
@@ -340,7 +373,14 @@ def build() -> list[Tool]:
             risk=Risk.R1,
             run=read_file,
             untrusted_output=True,
-            explain=lambda a: f"Reads {a.get('path', '')!r} in the granted folder.",
+            explain=lambda a: (
+                f"Reads {a.get('path', '')!r} in the granted folder"
+                + (
+                    f", lines {a.get('start_line', 1)}-{a['end_line']}."
+                    if a.get("end_line")
+                    else "."
+                )
+            ),
         ),
         Tool(
             name="search_files",

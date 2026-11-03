@@ -59,6 +59,16 @@ const RISK = [
   {label: 'Leaves this Mac', pill: 'warn'},
   {label: 'Runs code', pill: 'err'},
 ];
+// the tools that write in the granted folder: their risk pill names that, not the network or code
+const WRITERS = {write_file: 'Writes files', export_from_workspace: 'Writes files', edit_file: 'Changes files'};
+
+// network: false names an R2 tool that uses this Mac (create_job); undefined (a saved tool card) keeps the level's label
+function riskLabel(name, risk, network) {
+  if (WRITERS[name]) return WRITERS[name];
+  if (risk === 2 && network === false) return 'Uses this Mac';
+  return (RISK[risk] || RISK[3]).label;
+}
+
 const STATUS = {
   ok: ['ok', 'Done'], error: ['err', 'Error'], denied: ['warn', 'Denied'], refused: ['warn', 'Not allowed'],
   cancelled: ['idle', 'Stopped'], skipped: ['idle', 'Not run'],
@@ -1054,8 +1064,9 @@ function argsBlock(t) {
 }
 
 function filesBlock(t) {
+  const saved = (t.files || []).filter((f) => f.kind === 'saved' && typeof f.path === 'string');
   const files = (t.files || []).filter((f) => s.api.safeFileUrl(f.url));
-  if (!files.length) return null;
+  if (!files.length && !saved.length) return null;
   const images = files.filter((f) => f.kind === 'image');
   const items = images.map((f) => ({url: f.url, name: f.path}));
   return h('div', {class: 'tool-files'},
@@ -1063,7 +1074,40 @@ function filesBlock(t) {
       type: 'button', class: 'att', 'aria-label': 'Enlarge ' + f.path, onclick: () => lightbox(items, k),
     }, h('img', {src: f.url, alt: f.path, loading: 'lazy'}))),
     files.filter((f) => f.kind !== 'image').map((f) => h('a', {class: 'file-link', href: f.url, download: f.path.split('/').pop()},
-      icon('file', 'ic-sm'), f.path)));
+      icon('file', 'ic-sm'), f.path)),
+    saved.map((f) => savedFile(f.path)));
+}
+
+// A file a tool wrote in the granted folder: its path, and a button that shows it in Finder (POST .../reveal).
+function savedFile(path) {
+  const chatId = memo.activeId;
+  const err = h('span', {class: 'field-err', role: 'alert', hidden: true});
+  const reveal = async () => {
+    err.hidden = true;
+    try {
+      await s.api.request('/api/chats/' + encodeURIComponent(chatId) + '/reveal', {method: 'POST',
+        headers: {'content-type': 'application/json'}, body: JSON.stringify({path})});
+    } catch (e) {
+      if (!err.isConnected) return;
+      err.textContent = 'Show in Finder failed: ' + errText(e);
+      err.hidden = false;
+    }
+  };
+  return h('span', {class: 'saved-file'}, icon('file', 'ic-sm'), h('code', null, visible(path)),
+    chatId ? h('button', {type: 'button', class: 'btn btn-ghost btn-sm', onclick: reveal, 'aria-label': 'Show ' + path + ' in Finder'},
+      icon('reveal', 'ic-sm'), 'Show in Finder') : null, err);
+}
+
+// The change a call makes (edit_file, write_file), as the server's unified diff: each line is text in its own span,
+// colored by its first character. The server escapes hiding characters (registry.visible_lines).
+function diffBlock(text) {
+  const lines = String(text).split('\n').map((line) => {
+    const cls = line.startsWith('@@') ? 'd-hunk' : line.startsWith('+++') || line.startsWith('---') ? 'd-file'
+      : line.startsWith('+') ? 'd-add' : line.startsWith('-') ? 'd-del' : line.startsWith('[') ? 'd-note' : null;
+    return h('span', {class: cls ? 'd-line ' + cls : 'd-line'}, line);
+  });
+  return h('div', {class: 'tool-sec'}, h('span', {class: 'eyebrow'}, 'Change'),
+    h('pre', {class: 'tool-pre tool-diff', tabindex: '0', 'aria-label': 'The change as a diff'}, h('code', null, lines)));
 }
 
 // One tool call as a compact card: name, what it did, status and time; the arguments and the result inside. Files it
@@ -1071,7 +1115,7 @@ function filesBlock(t) {
 function toolBlock(t, seg) {
   const st = t.status ? STATUS[t.status] || ['idle', t.status] : ['run', 'Running'];
   const sum = t.describe ? visible(t.describe) : argsLine(t.arguments);
-  const risk = t.risk === null || t.risk === undefined ? null : RISK[t.risk];
+  const risk = t.risk === null || t.risk === undefined ? null : {...RISK[t.risk], label: riskLabel(t.name, t.risk)};
   const body = h('div', {class: 'tool-body'},
     t.approval && DECISION[t.approval] ? h('p', {class: 'tool-note'}, icon('lock', 'ic-sm'), DECISION[t.approval]) : null,
     argsBlock(t),
@@ -1097,7 +1141,7 @@ function toolBlock(t, seg) {
 function approvalCard(seg, live) {
   const ap = seg.approval;
   const label = ap.label || ap.name;
-  const risk = RISK[ap.risk] || RISK[3];
+  const risk = {...(RISK[ap.risk] || RISK[3]), label: riskLabel(ap.name, ap.risk, ap.network)};
   const id = 'ap-' + ap.id;
   const err = h('p', {class: 'field-err', role: 'alert', hidden: true});
   const buttons = [];
@@ -1141,7 +1185,8 @@ function approvalCard(seg, live) {
   h('p', {class: 'approval-what', id: id + '-d'}, ap.describe ? visible(ap.describe) : argsLine(ap.arguments)),
   ap.host ? h('p', {class: 'approval-host'}, 'Host: ', h('code', null, ap.host)) : null,
   ap.reason ? h('p', {class: 'approval-why'}, ap.reason) : null,
-  argsBlock(ap),
+  ap.preview ? diffBlock(ap.preview) : null,
+  ap.preview ? h('details', {class: 'approval-args'}, h('summary', null, 'Arguments'), argsBlock(ap)) : argsBlock(ap),
   h('div', {class: 'approval-actions'}, buttons),
   err,
   h('p', {class: 'approval-help'}, 'No answer in ' + minutes + (minutes === 1 ? ' minute' : ' minutes') + ' denies it. Escape denies.'));
@@ -1247,7 +1292,7 @@ function renderTools(focusKey) {
   }
   const rows = st.tools.map((tool) => {
     const risk = RISK[tool.risk] || RISK[3];
-    const riskLabel = tool.risk === 2 && !tool.network ? 'Uses this Mac' : risk.label;
+    const label = riskLabel(tool.name, tool.risk, tool.network);
     const sw = h('input', {
       type: 'checkbox', role: 'switch', id: 'tool-' + tool.name, 'data-key': 'tool-' + tool.name, checked: tool.enabled, disabled: t.busy,
       'aria-describedby': 'tool-' + tool.name + '-help',
@@ -1259,7 +1304,7 @@ function renderTools(focusKey) {
     return h('li', {class: 'tool-row'},
       h('label', {class: 'switch', for: 'tool-' + tool.name}, sw, h('span', {class: 'track'}), h('span', {class: 'sr-only'}, tool.label)),
       h('div', {class: 'tool-row-text'},
-        h('div', {class: 'tool-row-head'}, h('b', null, tool.label), h('span', {class: 'pill pill-' + risk.pill}, riskLabel)),
+        h('div', {class: 'tool-row-head'}, h('b', null, tool.label), h('span', {class: 'pill pill-' + risk.pill}, label)),
         h('p', {class: 'help', id: 'tool-' + tool.name + '-help'}, tool.risk_text),
         tool.granted ? h('div', {class: 'tool-grant'}, h('span', {class: 'chip'}, icon('check', 'ic-sm'), 'Allowed in this chat'),
           h('button', {type: 'button', class: 'btn btn-ghost btn-sm', 'data-key': 'revoke-' + tool.name, disabled: t.busy,
@@ -1290,16 +1335,16 @@ function renderTools(focusKey) {
     : h('div', {class: 'tools-folder-row'}, input,
       h('button', {type: 'button', class: 'btn btn-sm', disabled: t.busy, onclick: grant}, 'Grant'));
   pop.replaceChildren(...[head,
-    h('p', {class: 'tools-intro'}, 'The model uses a tool only when it needs one. Calls marked "Leaves this Mac", "Uses this Mac" or "Runs code" ask you first.'),
+    h('p', {class: 'tools-intro'}, 'The model uses a tool only when it needs one. Calls marked "Leaves this Mac", "Uses this Mac", "Writes files", "Changes files" or "Runs code" ask you first.'),
     st.tainted ? h('p', {class: 'tools-taint'}, icon('info', 'ic-sm'),
       'Web pages, files or program output are in this chat, so tools that send data off this Mac ask before every call.') : null,
     t.error ? h('p', {class: 'field-err', role: 'alert'}, t.error) : null,
     h('ul', {class: 'tool-list', role: 'list'}, rows),
     h('div', {class: 'field tools-folder'},
-      h('label', {class: 'label', for: 'tools-folder'}, 'Folder the file tools may read'),
+      h('label', {class: 'label', for: 'tools-folder'}, 'Folder the file tools may use'),
       folder,
       t.folderError ? h('p', {class: 'field-err', id: 'tools-folder-err', role: 'alert'}, t.folderError) : null,
-      h('p', {class: 'help', id: 'tools-folder-help'}, 'Text files in this folder and its subfolders only. Hidden files and key files are never read. Not your home folder itself or a system folder.'))].filter(Boolean));
+      h('p', {class: 'help', id: 'tools-folder-help'}, 'This folder and its subfolders only. The tools read text files here, and write new files or change files when you allow it. Hidden files and key files are never read or written. Not your home folder itself or a system folder.'))].filter(Boolean));
   if (key) {
     const el = pop.querySelector('[data-key="' + CSS.escape(key) + '"]');
     if (el && !el.disabled) el.focus();

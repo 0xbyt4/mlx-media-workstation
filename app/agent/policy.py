@@ -4,12 +4,15 @@ Risk levels (docs/AGENT.md):
 
 - R0 reads app state only: runs.
 - R1 reads user files in the folder the user granted: runs when a folder is granted, else refused. Granting the folder
-  is the consent.
-- R2 sends text off the Mac or queues minutes of compute: asks on the first use in a chat; the user can answer "allow
-  in this chat". Once untrusted content (a web page, a file, a search result, program output) is in the model's
-  context, every R2 call asks again, even with a chat grant. Reason: a page could tell the model to put private text
-  into a query or URL (data leak), or to queue jobs; the user then sees the call before it runs.
-- R3 runs code or has effects the app cannot check: asks every time. No chat-wide grant is offered.
+  is the consent. A tool can say that it needs no folder (Tool.needs_folder: it reads the chat's work folder or the
+  Library too); a tool of any level can say that it needs one (the tools that write in the folder).
+- R2 sends text off the Mac, queues minutes of compute or writes a new file in the granted folder: asks on the first
+  use in a chat; the user can answer "allow in this chat". Once untrusted content (a web page, a file, a search
+  result, program output) is in the model's context, every R2 call asks again, even with a chat grant. Reason: a page
+  could tell the model to put private text into a query or URL (data leak), to queue jobs or to write files; the user
+  then sees the call before it runs.
+- R3 runs code, changes an existing file, or has effects the app cannot check: asks every time. No chat-wide grant
+  is offered.
 
 decide() never has side effects. The loop keeps the state: the chat's Grants (stored in chat.json) and a "tainted"
 flag, set by taints() after a tool that returns untrusted content ran. The flag stays set while any such result is in
@@ -78,18 +81,24 @@ def decide(
             f"The tool {tool.name} is off in this chat. Do not call it again; tell the user that they can "
             "turn it on in this chat's Tools menu.",
         )
+    if tool.folder_needed() and grants.folder is None:
+        return Verdict(
+            Action.REFUSE,
+            "No folder is granted to this chat. Ask the user to grant a folder.",
+        )
     if tool.risk == Risk.R0:
         return Verdict(Action.RUN, "Reads app state only.")
     if tool.risk == Risk.R1:
-        if grants.folder is None:
-            return Verdict(
-                Action.REFUSE,
-                "No folder is granted to this chat. Ask the user to grant a folder.",
-            )
         return Verdict(Action.RUN, "Reads the folder the user granted.")
     if tool.risk == Risk.R2:
         if tainted:
-            what = "sends data off this Mac" if tool.network else "has a cost"
+            what = (
+                "sends data off this Mac"
+                if tool.network
+                else "writes to your files"
+                if tool.writes
+                else "has a cost"
+            )
             return Verdict(
                 Action.ASK,
                 f"Untrusted content is in this chat and this call {what}: confirm it.",

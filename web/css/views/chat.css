@@ -752,6 +752,41 @@
   background: none;
   font-size: inherit;
 }
+.v-chat .tool-diff {
+  max-height: 360px;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+.v-chat .tool-diff .d-line {
+  display: block;
+  min-height: 1.5em;
+}
+.v-chat .tool-diff .d-add {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.v-chat .tool-diff .d-del {
+  background: var(--err-soft);
+  color: var(--err);
+}
+.v-chat .tool-diff .d-hunk,
+.v-chat .tool-diff .d-file,
+.v-chat .tool-diff .d-note {
+  color: var(--text-3);
+}
+.v-chat .approval-args summary {
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+.v-chat .saved-file {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
 .v-chat .tool-note {
   display: flex;
   align-items: center;
