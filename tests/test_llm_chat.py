@@ -13,7 +13,7 @@ import pytest
 import uvicorn
 from fastapi.testclient import TestClient
 
-from app import assist, chat, llm, models, server, tools
+from app import assist, chat, config, llm, models, server, tools
 
 FAKE = Path(__file__).with_name("fake_llm_worker.py")
 PNG = (
@@ -71,6 +71,42 @@ def wait_for(cond, timeout=5.0):
 
 
 # ---------- llm ----------
+
+
+class IdleWorker:
+    def __init__(self) -> None:
+        self.pending: dict[str, object] = {}
+        self.stopped: list[str] = []
+
+    def stop(self, reason: str) -> None:
+        self.stopped.append(reason)
+
+
+@pytest.mark.parametrize(
+    ("minutes", "idle_s", "stops"),
+    [(10, 601, True), (10, 500, False), (5, 301, True), (0, 10**6, False)],
+)
+def test_idle_unload_follows_the_setting(monkeypatch, minutes, idle_s, stops):
+    w = IdleWorker()
+    monkeypatch.setattr(
+        config,
+        "APP",
+        config.App(**{**config.APP_DEFAULTS, "llm_idle_minutes": minutes}),
+    )
+    monkeypatch.setattr(llm, "worker", w)
+    monkeypatch.setattr(llm, "last_used", time.time() - idle_s)
+    assert llm.stop_if_idle() is stops
+    assert w.stopped == (["Unloaded after being idle."] if stops else [])
+    assert (llm.worker is None) is stops
+    assert llm.idle_stop() == (minutes * 60.0 if minutes else None)
+
+
+def test_idle_unload_waits_for_a_running_answer(monkeypatch):
+    w = IdleWorker()
+    w.pending["r1"] = object()
+    monkeypatch.setattr(llm, "worker", w)
+    monkeypatch.setattr(llm, "last_used", 0.0)
+    assert llm.stop_if_idle() is False
 
 
 def test_generate_streams_started_deltas_and_done():

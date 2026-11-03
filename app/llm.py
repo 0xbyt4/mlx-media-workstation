@@ -1,7 +1,7 @@
 """The local LLM (Qwen3.8 27B, 4-bit) behind prompt help and chat: one worker process, started on demand.
 
 The worker (app/llm_worker.py) runs with the LLM environment's python and keeps the model loaded between requests.
-It stops after IDLE_STOP of no use, and before a media job whose peak memory would not fit next to it: the server
+It stops after the [app] llm_idle_minutes of no use (app/config.py; 0 = never), and before a media job whose peak memory would not fit next to it: the server
 calls claim before each job and release after it. A request sent while such a job holds the memory waits (a "waiting"
 event) and runs when the job ends, before the next job starts, so a chat never pushes a video job into swap. Stopping
 kills the process: only an exit returns all of its memory.
@@ -18,19 +18,24 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
-from app import models
+from app import config, models
 from app.config import PATHS, ROOT
 
 MODEL = models.BY_ID["qwen3.8-27b-4bit"]
 LOG = ROOT / "outputs" / "llm.log"
 LOAD_TIMEOUT = 300.0  # seconds to load the weights (about 16 GB from disk)
-IDLE_STOP = 600.0  # seconds without a request before the model is unloaded
 STOP_WAIT = 5.0  # seconds for a clean exit before SIGKILL
 JOB_WAIT = 600.0  # seconds a media job waits for the answers before it; then it stops the model
 CRASHED = "The model stopped unexpectedly. See outputs/llm.log."
 WAITING = "Waiting for memory: a media job needs it. This continues when the job ends."
 CLOSED = "The app was closed."
 WORKER = ["-m", "app.llm_worker"]  # run with the LLM environment's python
+
+
+def idle_stop() -> float | None:
+    """Seconds without a request before the model is unloaded (None: never). Read on each use: Settings changes it."""
+    minutes = config.APP.llm_idle_minutes
+    return minutes * 60.0 if minutes > 0 else None
 
 
 class LLMError(Exception):
@@ -163,7 +168,7 @@ def status() -> dict[str, Any]:
         "media_peak_gb": held,
         "model": MODEL.label,
         "peak_gb": MODEL.peak_gb,
-        "idle_stop_s": IDLE_STOP,
+        "idle_stop_s": idle_stop(),
     }
 
 
@@ -416,17 +421,27 @@ def release() -> None:
         room.notify_all()
 
 
-def watch_idle() -> None:
-    """Unload the model after IDLE_STOP without requests (a daemon thread the server starts)."""
+def stop_if_idle() -> bool:
+    """Unload the model when it has had no request for idle_stop(); True when it did."""
     global worker
+    limit = idle_stop()
+    with lock:  # check and detach together, so a new request cannot slip in between
+        w = worker
+        idle = (
+            limit is not None
+            and w is not None
+            and not w.pending
+            and time.time() - last_used > limit
+        )
+        if idle:
+            worker = None
+    if idle:
+        w.stop("Unloaded after being idle.")
+    return idle
+
+
+def watch_idle() -> None:
+    """Check for an idle model every 30 s (a daemon thread the server starts)."""
     while True:
         time.sleep(30)
-        with lock:  # check and detach together, so a new request cannot slip in between
-            w = worker
-            idle = (
-                w is not None and not w.pending and time.time() - last_used > IDLE_STOP
-            )
-            if idle:
-                worker = None
-        if idle:
-            w.stop("Unloaded after being idle.")
+        stop_if_idle()

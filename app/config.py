@@ -4,9 +4,13 @@ config.example.toml to start).
 The code holds no machine-specific paths. Any path left out of config.toml takes the default below (the layout the
 README's install steps make). A tool whose files are missing is refused when a job is submitted, with the path it
 looked for; the other tools keep working. The [assist] section picks the prompt help provider (app/assist.py).
+
+The [app] section holds the Settings > Jobs switches. Unlike the paths, they apply while the app runs: a change through
+PUT /api/settings replaces APP at once (app/settings_api.py).
 """
 
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +28,13 @@ DEFAULTS = {
     "qwen_model": "~/mlx-media/models/qwen3.8-27b-4bit",
 }
 ASSIST_DEFAULTS = {"provider": "local"}
+APP_DEFAULTS: dict[str, bool | int] = {
+    "keep_awake": True,
+    "notify": True,
+    "llm_idle_minutes": 10,
+}
+IDLE_CHOICES = (5, 10, 30, 60, 0)  # the minutes the Settings screen offers; 0 = never
+MAX_IDLE = 24 * 60
 
 
 @dataclass(frozen=True)
@@ -43,7 +54,16 @@ class Assist:
     provider: str  # who writes prompt help: "local" (the local LLM)
 
 
-def section(file: Path, name: str, known: dict[str, str]) -> dict[str, object]:
+@dataclass(frozen=True)
+class App:
+    keep_awake: (
+        bool  # hold off system sleep while a job is queued or running (caffeinate -i)
+    )
+    notify: bool  # a macOS notification when a job is done or failed
+    llm_idle_minutes: int  # minutes without use before the local LLM unloads; 0 = never
+
+
+def section(file: Path, name: str, known: Mapping[str, object]) -> dict[str, object]:
     data = tomllib.loads(file.read_text()) if file.exists() else {}
     values = data.get(name, {})
     unknown = sorted(set(values) - set(known))
@@ -70,5 +90,24 @@ def load_assist(file: Path = FILE) -> Assist:
     return Assist(**{k: str(values.get(k, v)) for k, v in ASSIST_DEFAULTS.items()})
 
 
+def check_app(key: str, value: object) -> str | None:
+    """The problem with an [app] value, or None when it is valid."""
+    if key == "llm_idle_minutes":
+        if type(value) is not int or not 0 <= value <= MAX_IDLE:
+            return f"Enter whole minutes from 0 (never) to {MAX_IDLE}."
+    elif type(value) is not bool:
+        return "Use true or false."
+    return None
+
+
+def load_app(file: Path = FILE) -> App:
+    values = section(file, "app", APP_DEFAULTS)
+    bad = [f"{k} ({error})" for k, v in values.items() if (error := check_app(k, v))]
+    if bad:
+        raise SystemExit(f"{file.name}: bad value in [app]: {'; '.join(bad)}")
+    return App(**{k: values.get(k, v) for k, v in APP_DEFAULTS.items()})
+
+
 PATHS = load()
 ASSIST = load_assist()
+APP = load_app()

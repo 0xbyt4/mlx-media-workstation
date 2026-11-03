@@ -82,3 +82,36 @@ def test_invalid_toml_raises_the_toml_error(tmp_path: Path) -> None:
     # start.py catches this error and reports it
     with pytest.raises(tomllib.TOMLDecodeError):
         config.load(write(tmp_path, "[paths\nmflux_bin = 1\n"))
+
+
+def test_app_switches_default_without_a_file(tmp_path: Path) -> None:
+    assert config.load_app(tmp_path / "missing.toml") == config.App(
+        keep_awake=True, notify=True, llm_idle_minutes=10
+    )
+
+
+def test_app_switches_from_the_file(tmp_path: Path) -> None:
+    file = write(tmp_path, "[app]\nnotify = false\nllm_idle_minutes = 0\n")
+    assert config.load_app(file) == config.App(
+        keep_awake=True, notify=False, llm_idle_minutes=0
+    )
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'keep_awake = "yes"',
+        "notify = 1",
+        "llm_idle_minutes = 2.5",
+        "llm_idle_minutes = -5",
+    ],
+)
+def test_bad_app_values_are_refused(tmp_path: Path, line: str) -> None:
+    with pytest.raises(SystemExit, match=r"config.toml: bad value in \[app\]"):
+        config.load_app(write(tmp_path, f"[app]\n{line}\n"))
+
+
+def test_example_config_holds_the_defaults() -> None:
+    example = config.ROOT / "config.example.toml"
+    assert config.load_app(example) == config.App(**config.APP_DEFAULTS)
+    assert tomllib.loads(example.read_text())["app"] == config.APP_DEFAULTS

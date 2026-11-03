@@ -19,3 +19,12 @@ qwen_model = "~/mlx-media/models/qwen3.8-27b-4bit"
 [assist]
 # Prompt help ("Improve" under the prompt fields) and chat use the local LLM: provider = "local" (the only one built in)
 provider = "local"
+
+[app]
+# Settings > Jobs. A change in the app applies at once; a change here by hand applies at the next start.
+# keep the Mac from going to sleep while a job is queued or running (the display may still sleep): true or false
+keep_awake = true
+# a macOS notification when a job is done or failed: true or false
+notify = true
+# minutes without use before the local LLM is unloaded to free its memory; 0 = never
+llm_idle_minutes = 10

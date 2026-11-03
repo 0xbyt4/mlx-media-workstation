@@ -80,6 +80,16 @@ checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Erro
 `POST /api/jobs/{id}/cancel` cancels a queued or running job. `DELETE /api/jobs/{id}` removes a finished job from the
 list and deletes its folder.
 
+`POST /api/jobs/{id}/move` takes JSON `{"to": "up" | "down" | "top" | "bottom"}` and moves a queued job one place up
+or down, or to the first or last place of the queue. It returns `{"position": 2}`, the job's new `position`. A move
+past an end changes nothing. Errors: HTTP 404 for an unknown job, HTTP 409 for a job that is not queued, HTTP 422
+for another `to`.
+
+- The queue order is the `order` number in each `job.json`. A new job goes last. A job without `order` (made by an
+  older version) sorts before the others, by `created`.
+- The server changes the order under the same lock the worker uses to pick the next job. When a move puts another job
+  first while the first job waits for prompt help or chat answers, the worker starts the new first job instead.
+
 `GET /files/{id}/{name}` serves an output file.
 
 ## Library
@@ -273,7 +283,7 @@ running requests cannot use the same `request_id` (HTTP 400).
 ```
 
 - `state` is `off`, `loading` or `ready`. The model loads on the first request and unloads after `idle_stop_s`
-  without use, or before a media job that does not fit next to it.
+  without use (`null`: never; Settings > Jobs sets it), or before a media job that does not fit next to it.
 - `waiting` counts requests that wait for such a job to end. They run before the next job starts; that job waits
   for them at most 10 minutes, then it stops the model and the answer ends with an error.
 - `media_peak_gb` is the peak memory of the job that holds the memory now (0 when none).
@@ -332,6 +342,9 @@ turns that fit in 32K tokens.
     "providers": [{"id": "local", "label": "Local LLM", "description": "...", "available": true,
                    "model": "Qwen3.8 27B (4-bit)", "llm": {}}]
   },
+  "app": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10,
+          "defaults": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10},
+          "idle_choices": [5, 10, 30, 60, 0]},
   "llm": {"idle_stop_s": 600.0},
   "about": {"version": "0.1.0", "commit": "8172e42 2026-11-02", "root": "/Users/me/mlx-media-workstation",
             "outputs": "/Users/me/mlx-media-workstation/outputs",
@@ -348,19 +361,26 @@ turns that fit in 32K tokens.
 - `used_by` lists the entries of `GET /api/models`, the tools and the app features that need the path.
 - `config.error` is set when `config.toml` is not valid TOML; the values are then the defaults.
 - `about.commit` is `null` when git or the git checkout is not there.
-- `restart_required` is true when `config.toml` holds other values than the ones the app read at start.
+- `restart_required` is true when `config.toml` holds other `[paths]` or `[assist]` values than the ones the app read
+  at start.
+- `app` holds the `[app]` values the app uses now (Settings > Jobs): `keep_awake` (no system sleep while a job is
+  queued or running), `notify` (a macOS notification when a job is done or failed; none for a cancelled job) and
+  `llm_idle_minutes` (minutes without use before the local LLM unloads; 0 = never). `idle_choices` are the minutes
+  the screen offers.
 
 `PUT /api/settings` takes JSON with the values to change: `{"paths": {"ltx_model": "~/models/ltx"}, "assist":
-{"provider": "local"}}`. Both parts are optional. It writes `config.toml` and returns the same object as
+{"provider": "local"}, "app": {"notify": false, "llm_idle_minutes": 30}}`. Each part is optional. It writes `config.toml` and returns the same object as
 `GET /api/settings`, plus `changed` (for example `["paths.ltx_model"]`; empty when nothing changed).
 
 - Only the lines of the changed keys change. Comments, blank lines, other keys and other sections stay. A key that
   is not in the file goes after the last key of its section; a missing section goes at the end; a missing file is
   made.
 - The write is atomic (a temp file, then a rename) and keeps the file mode. A symbolic link stays a link.
-- The app reads `config.toml` only at start, so a change takes effect after a restart (`restart_required`).
+- The app reads `[paths]` and `[assist]` only at start, so such a change takes effect after a restart
+  (`restart_required`). An `[app]` value applies at once: the running app uses it as soon as the request returns.
 - Errors: HTTP 400 with `{"detail": {"message": "...", "fields": {"paths.ltx_model": "message"}}}` for an unknown
-  key, an unknown provider, an empty path, or a path with a double quote, a backslash or a line break. HTTP 409
+  key, an unknown provider, an empty path, a path with a double quote, a backslash or a line break, an `[app]` switch
+that is not `true` or `false`, or `llm_idle_minutes` that is not a whole number from 0 to 1440. HTTP 409
   when `config.toml` is not valid TOML or sets the key in a form this endpoint cannot edit (for example an inline
   table); the file is then not changed.
 - Settings hold no secrets.

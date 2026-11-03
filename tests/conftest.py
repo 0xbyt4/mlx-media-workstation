@@ -1,6 +1,6 @@
 """Shared fixtures: fixed model paths, a stand-in for ffmpeg and ffprobe, and a server on a temp outputs folder.
 
-No test runs a model or touches the network. The server's worker thread is never started (only start() starts it),
+No test runs a model or touches the network, starts caffeinate or shows a notification (mac_effects). The server's worker thread is never started (only start() starts it),
 and the client fixture replaces run_job, so a job that a test creates stays queued.
 """
 
@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import llm, server, tools
+from app import config, llm, macos, server, tools
 
 MODELS = Path("/models")
 
@@ -33,6 +33,42 @@ def model_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     }
     for name, path in fixed.items():
         monkeypatch.setattr(tools, name, path)
+
+
+class FakeAwake:
+    """Stands in for macos.Awake: records each sync's answer instead of starting caffeinate."""
+
+    def __init__(self) -> None:
+        self.held = False
+        self.calls: list[bool] = []
+
+    def sync(self, want: Callable[[], bool]) -> bool:
+        self.held = want()
+        self.calls.append(self.held)
+        return self.held
+
+    def release(self) -> None:
+        self.held = False
+        self.calls.append(False)
+
+
+class MacEffects:
+    def __init__(self) -> None:
+        self.awake = FakeAwake()
+        self.notes: list[tuple[str, str]] = []
+
+    def notify(self, text: str, title: str = "Workstation") -> None:
+        self.notes.append((text, title))
+
+
+@pytest.fixture(autouse=True)
+def mac_effects(monkeypatch: pytest.MonkeyPatch) -> MacEffects:
+    """The default [app] settings, a fake keep-awake and recorded notifications."""
+    fake = MacEffects()
+    monkeypatch.setattr(config, "APP", config.App(**config.APP_DEFAULTS))
+    monkeypatch.setattr(server, "awake", fake.awake)
+    monkeypatch.setattr(macos, "notify", fake.notify)
+    return fake
 
 
 class FakeMedia:
