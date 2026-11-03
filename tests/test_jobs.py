@@ -144,6 +144,28 @@ def test_view_of_a_running_job(state: Path, make_job: Job) -> None:
     assert "pgid" not in v and "files" not in v
 
 
+def test_view_of_a_running_job_tails_its_log(state: Path, make_job: Job) -> None:
+    make_job("j1", "running", started=None)
+    assert server.view(server.jobs["j1"])["log_tail"] == ""  # no log yet
+    lines = [f"line {i}" for i in range(40)]
+    (state / "j1" / "job.log").write_bytes(
+        ("\n".join(lines) + "\nbad \xff byte\n").encode("latin-1")
+    )
+    tail = server.view(server.jobs["j1"])["log_tail"].splitlines()
+    assert tail == [*lines[-24:], "bad \ufffd byte"]
+
+
+def test_live_tail_reads_only_the_end(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server, "TAIL_BYTES", 10)
+    log = state / "job.log"
+    log.write_text("first line\nab\ncd\n")
+    assert server.live_tail(log) == "ab\ncd"  # the cut line is dropped
+    log.write_text("ab\ncd\n")
+    assert server.live_tail(log) == "ab\ncd"
+
+
 def test_view_of_queued_and_finished_jobs(state: Path, make_job: Job) -> None:
     make_job("late", "queued", created="2026-11-02T10:00:05")
     make_job("early", "queued", created="2026-11-02T10:00:01")

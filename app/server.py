@@ -61,6 +61,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs"
 WEB = ROOT / "web"
 PORT = 7870
+TAIL_LINES = 25  # log lines in a job's view
+TAIL_BYTES = 64 * 1024  # the part of a running job's log that is read for its tail
 ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
 KINDS = {
     ".png": "image",
@@ -295,6 +297,25 @@ def peak_gb(log: str) -> float | None:
     return round(max(int(x) for x in m) / 2**30, 1) if m else None
 
 
+def tail(log: str) -> str:
+    return "\n".join(log.splitlines()[-TAIL_LINES:])
+
+
+def live_tail(path: Path) -> str:
+    """The last lines of a running job's log. Only the end of the file is read, because a tqdm log can be large."""
+    try:
+        with path.open("rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - TAIL_BYTES))
+            text = f.read().decode(errors="replace")
+    except OSError:  # not yet written while the job's inputs are prepared
+        return ""
+    lines = text.splitlines()
+    if size > TAIL_BYTES:  # the first line is cut
+        lines = lines[1:]
+    return "\n".join(lines[-TAIL_LINES:])
+
+
 def run_job(job: dict[str, Any]) -> None:
     job_dir = OUT / job["id"]
     log_path = job_dir / "job.log"
@@ -345,7 +366,7 @@ def run_job(job: dict[str, Any]) -> None:
             job["status"], job["error"] = "failed", f"{type(e).__name__}: {e}"
     finally:
         log = log_path.read_text(errors="replace") if log_path.exists() else ""
-        job["log_tail"] = "\n".join(log.splitlines()[-25:])
+        job["log_tail"] = tail(log)
         job["peak_gb"] = peak_gb(log)
         job["finished"], job["elapsed"] = now(), round(time.time() - t0, 1)
         job.pop("pgid", None)
@@ -452,6 +473,8 @@ def view(job: dict[str, Any]) -> dict[str, Any]:
     ):  # first in line, but answers of prompt help or chat finish first
         v["waiting"] = "Waiting for the prompt help or chat answer to finish."
     v["outputs"] = v["outputs"] or []
+    if job["status"] == "running":  # run_job saves the tail only at the end
+        v["log_tail"] = live_tail(OUT / job["id"] / "job.log")
     if job["status"] == "running" and job.get("started"):
         v["elapsed"] = round(
             (datetime.now() - datetime.fromisoformat(job["started"])).total_seconds(), 1

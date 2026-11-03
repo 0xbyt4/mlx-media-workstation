@@ -300,7 +300,7 @@ function buildRunning(job) {
     r.stage.textContent = p.stage || 'Starting';
     r.left.textContent = [known ? Math.round(p.fraction * 100) + '%' : '', fmtLeft(p.eta_s)].filter(Boolean).join(' · ');
     r.elapsed.textContent = fmtDuration(store.liveElapsed(j)) + ' elapsed';
-    setLog(r.log, j.log_tail || '');
+    setLog(r.log, j.log_tail || 'No output yet.');
   };
   card.tick = () => {
     r.elapsed.textContent = fmtDuration(store.liveElapsed(card.job)) + ' elapsed';
