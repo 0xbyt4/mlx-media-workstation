@@ -4,7 +4,8 @@
 //
 // An agent chat's answer is a series of steps: the model's text, then tool calls shown as compact cards. A call that
 // needs the user's approval shows an approval card in the thread (POST .../approve); a page that comes back replays it
-// from the stream. The Tools menu turns tools on or off, grants a folder and revokes chat-wide approvals.
+// from the stream. The model's plan (update_plan) is one checklist at the top of the answer, updated in place. The
+// Tools menu turns tools on or off, grants a folder and revokes chat-wide approvals.
 
 import {store} from '../store.js';
 import {h, icon, toolIcon, grow, fmtBytes, fmtLeft, fmtTime, timeAgo, toast, inlineConfirm, lightbox, lsGet, lsSet, menu, closeMenu} from '../ui.js';
@@ -71,8 +72,9 @@ const RISK = [
 ];
 const STATUS = {
   ok: ['ok', 'Done'], error: ['err', 'Error'], denied: ['warn', 'Denied'], refused: ['warn', 'Not allowed'],
-  cancelled: ['idle', 'Stopped'], skipped: ['idle', 'Not run'],
+  cancelled: ['idle', 'Stopped'], skipped: ['idle', 'Not run'], repeat: ['idle', 'Already done'],
 };
+const PLAN_TOOL = 'update_plan'; // its calls show as the answer's checklist, not as cards (app/agent/plan_tool.py)
 const DECISION = {
   once: 'You allowed it once.', chat: 'You allowed it for this chat.', deny: 'You denied it.',
   timeout: 'Denied: no answer in time.', stopped: 'Stopped while it waited for your answer.',
@@ -840,7 +842,7 @@ function newLive(chatId) {
     waiting: null, stopping: false, thinkTouched: false, frame: 0, agent: chatMode() === 'agent',
   };
   if (live.agent) {
-    Object.assign(live, {segs: [], step: 0, asking: null, focusAsk: false});
+    Object.assign(live, {segs: [], step: 0, maxSteps: 0, last: false, plan: null, asking: null, focusAsk: false});
     live.flow = h('div', {class: 'agent-flow'});
     live.state = h('div', {class: 'msg-wait'});
     live.node = h('article', {class: 'msg msg-ai is-live', 'aria-label': 'Answer from ' + modelName()},
@@ -888,14 +890,9 @@ function liveStatus(live) {
   const spin = () => h('span', {class: 'spinner sm', 'aria-hidden': 'true'});
   if (live.stopping) return [spin(), 'Stopping'];
   if (live.agent && live.asking) {
-    return [icon('lock', 'ic-sm'), h('span', null, h('b', null, 'Waiting for your answer above. '), 'Stop also works.')];
+    return [icon('lock', 'ic-sm'), h('span', null, stepChip(live), h('b', null, 'Waiting for your answer above. '), 'Stop also works.')];
   }
-  if (live.agent && !live.waiting && !m.finish) {
-    const last = live.segs[live.segs.length - 1];
-    if (last && last.kind === 'tool' && !last.result) return [spin(), 'Running ' + (last.call.label || last.call.name)];
-    if (last && last.kind === 'text' && (last.msg.content || last.msg.reasoning)) return [];
-    if (live.step > 1) return [spin(), 'Reading the tool results'];
-  }
+  if (live.agent && !live.waiting && !m.finish && live.step) return agentStatus(live, spin);
   if (live.waiting) {
     const job = store.runningJob();
     const left = job && job.progress ? fmtLeft(job.progress.eta_s) : '';
@@ -912,6 +909,45 @@ function liveStatus(live) {
 
 // ---------- agent answers ----------
 
+// The running agent answer's line under the steps: "Step 3 of 12" and what it does now.
+function agentStatus(live, spin) {
+  const last = live.segs[live.segs.length - 1];
+  let now;
+  if (last && last.kind === 'tool' && !last.result) now = 'Running ' + (last.call.label || last.call.name);
+  else if (last && last.kind === 'text' && last.msg.content) now = live.last ? 'Writing the final answer' : 'Writing';
+  else if (last && last.kind === 'text' && last.msg.reasoning) now = 'Thinking';
+  else if (live.step > 1) now = 'Reading the tool results';
+  else {
+    const llm = store.get('llm') || {};
+    now = llm.state === 'loading' || llm.state === 'off'
+      ? 'Loading ' + modelName() + ' into memory (about ' + Math.round(llm.peak_gb || 18) + ' GB). The first answer takes longer.'
+      : 'Reading your message';
+  }
+  return [spin(), h('span', null, stepChip(live), now)];
+}
+
+function stepChip(live) {
+  if (!live.step) return null;
+  return h('span', {class: 'step-n num'}, 'Step ' + live.step + ' of ' + live.maxSteps + (live.last ? ', no more tools' : ''));
+}
+
+// The plan of an answer as a compact checklist: done, current and open steps.
+const PLAN_MARK = {done: 'Done', in_progress: 'Now', pending: 'Open'};
+function planBlock(items) {
+  const done = items.filter((i) => i.status === 'done').length;
+  return h('section', {class: 'agent-plan', 'aria-label': 'Plan, ' + done + ' of ' + items.length + ' steps done'},
+    h('div', {class: 'agent-plan-head'}, h('b', null, 'Plan'), h('span', {class: 'num'}, done + ' of ' + items.length + ' done')),
+    h('ol', {class: 'plan-list'}, items.map((i) => h('li', {class: 'plan-item is-' + i.status},
+      h('span', {class: 'plan-mark', title: PLAN_MARK[i.status] || i.status}, i.status === 'done' ? icon('check', 'ic-sm') : null),
+      h('span', {class: 'sr-only'}, (PLAN_MARK[i.status] || i.status) + ': '),
+      h('span', {class: 'plan-text'}, visible(i.step))))));
+}
+
+// A plan call is shown in the checklist; only a failed one (an error the model reads) keeps its card.
+function planCallHidden(name, status) {
+  return name === PLAN_TOOL && (!status || status === 'ok');
+}
+
 // The agent events (docs/API.md): step, tool_call, approval, approval_done, tool_result, and the text deltas of the
 // current step. Returns false for the events the plain path handles (waiting, done, error).
 function onAgentEvent(live, ev) {
@@ -923,7 +959,7 @@ function onAgentEvent(live, ev) {
   const toolSeg = (id) => live.segs.find((x) => x.kind === 'tool' && x.call.id === id);
   if (ev.event === 'step') {
     live.waiting = null;
-    live.step = ev.n;
+    Object.assign(live, {step: ev.n, maxSteps: ev.max, last: !!ev.last});
     live.segs.filter((x) => x.kind === 'text').forEach((x) => (x.dirty = true)); // drop the caret of the step before
     addSeg(live, newTextSeg());
   } else if (ev.event === 'reasoning' || ev.event === 'content') {
@@ -947,6 +983,11 @@ function onAgentEvent(live, ev) {
   } else if (ev.event === 'tool_result') {
     const seg = toolSeg(ev.id);
     if (seg) Object.assign(seg, {result: ev, dirty: true});
+  } else if (ev.event === 'plan') {
+    const plan = planBlock(ev.items || []);
+    if (live.plan) live.plan.replaceWith(plan);
+    else live.flow.before(plan);
+    live.plan = plan;
   } else if (ev.event === 'done') {
     live.waiting = null;
     Object.assign(live.msg, {finish: ev.finish, stats: ev.stats, note: ev.note, content: ev.content || ''});
@@ -1031,6 +1072,7 @@ function paintAgent(live) {
 function toolSegNode(seg, live) {
   if (seg.approval && !seg.decision) return approvalCard(seg, live);
   const r = seg.result || {};
+  if (planCallHidden(seg.call.name, r.status)) return h('div', {hidden: true});
   const c = seg.call;
   return toolBlock({
     id: c.id, name: c.name, label: c.label, arguments: c.arguments, describe: c.describe, risk: c.risk,
@@ -1166,12 +1208,14 @@ function agentTurn(run, isLast) {
   const results = new Map(run.filter((m) => m.role === 'tool').map((m) => [m.tool_call_id, m]));
   const steps = run.filter((m) => m.role === 'assistant');
   const final = steps[steps.length - 1] || {};
+  const plans = run.filter((m) => m.role === 'tool' && Array.isArray(m.plan));
   const body = [];
   for (const m of steps) {
     if (m.reasoning) body.push(thinkBlock(m.reasoning));
     if (m.content) body.push(h('div', {class: 'bubble md'}, renderMarkdown(m.content, false, showCards(), showHosts())));
     for (const c of m.tool_calls || []) {
       const r = results.get(c.id) || {};
+      if (planCallHidden(c.name, r.status || 'skipped')) continue;
       body.push(toolBlock({
         id: c.id, name: c.name, label: r.label || c.name, arguments: c.arguments, describe: r.describe, risk: r.risk,
         status: r.status || 'skipped', content: r.content, files: r.files, seconds: r.seconds, approval: r.approval,
@@ -1180,6 +1224,7 @@ function agentTurn(run, isLast) {
   }
   return h('article', {class: 'msg msg-ai', 'aria-label': 'Answer from ' + modelName()},
     h('span', {class: 'who', title: fmtTime(final.time)}, modelName()),
+    plans.length ? planBlock(plans[plans.length - 1].plan) : null,
     h('div', {class: 'agent-flow'}, body),
     finishNote(final),
     msgTools(final, isLast));
@@ -1443,6 +1488,7 @@ function statsLine(st) {
   if (!st) return null;
   const parts = [];
   if (st.steps > 1) parts.push(st.steps + ' steps');
+  if (st.tool_calls) parts.push(st.tool_calls + (st.tool_calls === 1 ? ' tool call' : ' tool calls'));
   if (st.generation_tokens) parts.push(st.generation_tokens + ' tokens');
   if (st.generation_tps) parts.push(st.generation_tps.toFixed(1) + ' tokens/s');
   if (typeof st.seconds === 'number') parts.push(st.seconds.toFixed(1) + ' s');

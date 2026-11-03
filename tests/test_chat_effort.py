@@ -308,6 +308,7 @@ def fake_engine(tokens: list[int], record: dict[str, Any]) -> llm_worker.Engine:
     eng = llm_worker.Engine.__new__(llm_worker.Engine)
     eng.mx, eng.template, eng.stream = FakeMx(), template, stream
     eng.model, eng.processor, eng.specials = SimpleNamespace(config=None), None, []
+    eng.vocab, eng.no_emoji = {}, None  # no token bans: the requests set allow_emoji
     return eng
 
 
@@ -319,6 +320,7 @@ def run_engine(monkeypatch, req: dict[str, Any], tokens: list[int]):
         "id": "r1",
         "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 100,
+        "allow_emoji": True,
     }
     fake_engine(tokens, record).generate({**base, **req}, llm_worker.threading.Event())
     done = [json.loads(line) for line in out.getvalue().splitlines()][-1]

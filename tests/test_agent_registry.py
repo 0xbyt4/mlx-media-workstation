@@ -163,7 +163,8 @@ def test_duplicate_names_are_refused() -> None:
 def test_schemas_are_openai_function_schemas() -> None:
     reg = build_registry(FakeWorkstation(), Settings())
     names = reg.names()
-    assert names[:4] == [
+    assert names[:5] == [
+        "update_plan",
         "list_workstation_tools",
         "job_status",
         "search_library",

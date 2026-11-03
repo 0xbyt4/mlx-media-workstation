@@ -20,6 +20,7 @@ the tool's result, so it can answer the user.
 
 | Tool | Level | What it does |
 |---|---|---|
+| `update_plan` | R0 | Writes or updates the answer's plan: a checklist of at most 10 steps, each `pending`, `in_progress` or `done` (at most one `in_progress`). The page shows it at the top of the answer. |
 | `list_workstation_tools` | R0 | Lists the media tools, their fields and whether their models are installed. |
 | `job_status` | R0 | Shows one job: status, progress, outputs, error. |
 | `search_library` | R0 | Finds finished outputs by text, tool or file name. Its result is untrusted. |
@@ -34,7 +35,8 @@ the tool's result, so it can answer the user.
 The Workstation tools exist only in the full profile. The chat profile has no Workstation, so its registry has none
 of them.
 
-A new agent chat has every tool on except `run_python`. The model writes that code, and the code can carry text from
+A new agent chat has every tool on except `run_python`. A chat saved before `update_plan` existed keeps its own list,
+so the plan is off there until the user turns it on. The model writes that code, and the code can carry text from
 earlier untrusted content. So the user turns it on in the Tools menu when the chat needs it.
 
 The file tools never list, search or read hidden names (any path part that starts with `.`) or secret files (keys,
@@ -173,9 +175,12 @@ registry per media flag, so at most one per profile: with the media tools (the f
 1. Take the schemas of the tools the chat offers. The R1 tools are offered only when a folder is granted.
 2. Build the model input. The budget counts the system prompt, the tool schemas and the tool messages. Old tool
    results are shortened first, then old turns are dropped.
-3. Run one model request with the schemas. With no calls, the answer ends.
+3. Run one model request with the schemas. With no calls, the answer ends. When the content has no call but the
+   reasoning ends with complete call blocks (Qwen sometimes writes its call while it thinks), the worker takes the
+   calls from there.
 4. For each call: check Stop and the time, check the format, check for a repeat, then call
-   `decide(tool, grants, tainted, enabled)`.
+   `decide(tool, grants, tainted, enabled)`. The second identical call (same tool, same arguments) in one answer does
+   not run: its result says that the first result is above. The third one ends the answer with a note.
 5. On "ask", show the approval card and wait, at most 10 minutes. No answer counts as a denial. "Allow in this chat"
    adds the tool to the chat's grants. An answer that the server accepted (HTTP 200) counts, also when it came in the
    moment the wait timed out. The card shows `describe` and the arguments with bidi, zero-width, tag and control
@@ -183,8 +188,33 @@ registry per media flag, so at most one per profile: with the media tools (the f
    line.
 6. Run the call with `registry.call(name, args, Context(chat_id, folder, abort, work_dir))`. Then update the taint
    flag with `taints(tool, tainted)`.
-7. Add a tool message with the result and go to the next step. An answer has at most 8 steps and 10 minutes. The
-   time a step waits for memory (a media job runs) does not count against the 10 minutes, and Stop ends that wait.
+7. Add a tool message with the result and go to the next step. For `update_plan`, also send the checked items to the
+   page (a `plan` event) and keep them in the tool message.
+8. An answer has at most 12 steps (`MAX_STEPS`) and 10 minutes. The time a step waits for memory (a media job runs)
+   does not count against the 10 minutes, and Stop ends that wait.
+9. The last step cannot call tools. Its request keeps the same tool schemas, so the prompt's start does not change
+   and the prompt cache holds. It adds a user message from the app (`NUDGE`: no more tools, give the final answer)
+   and sends `tool_choice: "none"`, so the worker bans the call marker token. The answer then ends with the model's
+   summary and the step-limit note. The saved final message keeps that user message as `nudge`, so the next turn's
+   prompt still starts with the text that the cache holds.
+
+The worker bans emoji in every request with a logits processor (`ByteBan` and `NoEmoji` in `app/llm_worker.py`).
+The prompt rule alone did not stop them, also not in code. The banned set is built once from the tokenizer's
+vocabulary. Byte-level BPE can split one emoji over two tokens, so the ban follows the unfinished character at the
+end of the text so far: a small state machine whose tables are arrays, so a step never waits for the token before
+it. The banned code points are the Misc Symbols and Dingbats blocks (but the music signs, as in "C♯"), the emoji
+among the technical and geometric symbols, the keycap mark, the emoji variation selector, the flag tags and
+U+1F000 to U+1FFFF. Arrows, box drawing, math signs and (c) stay allowed. A request with `"allow_emoji": true` has no
+ban (tests).
+
+### The prompt and the prompt cache
+
+The worker keeps a chat's prompt cache only while each new prompt extends the one before: Qwen3.8's linear-attention
+layers cannot rewind, so any change reads the whole chat again. So the agent prompt does not change between turns.
+It holds the offered tools, the tools that are off (by name, with the rule to ask the user to turn one on in the
+Tools menu), the step limit, the folder and two short fixed example runs (`AGENT_EXAMPLES`, about 250 tokens). It
+changes only when the user changes the tools or the folder, and when the date changes: the prompt has today's date,
+so the first answer after midnight reads the chat again.
 
 All steps run in one `llm.session()`. Its time limit counts from the moment it first holds the memory. `create_job`
 never waits for its job, because the job waits for that session. When the app closes, every running answer gets

@@ -12,8 +12,13 @@ settings (LIMITS) the same way.
 An agent test scripts a whole answer: the last user message holds "STEPS:" and a JSON list, one item per model step
 (the number of assistant messages after that user message picks the item; past the end the answer is "Done."). An
 item is a text answer ("RESULT" answers "Result: <last tool message>", "SLOW" streams until cancelled), a list of
-calls, or {"text": ..., "calls": [...]}. A call is {"name": ..., "arguments": {...}}, written as the model writes it,
-or {"raw": "..."}: that text inside the call markers, to test calls that do not parse.
+calls, or {"text": ..., "calls": [...], "think": ..., "think_calls": [...]}: "think" is reasoning, and "think_calls"
+are written at its end, as Qwen sometimes does. A call is {"name": ..., "arguments": {...}}, written as the model
+writes it, or {"raw": "..."}: that text inside the call markers, to test calls that do not parse.
+
+A request with "tool_choice": "none" is the agent's last step: its script item is picked from the user message before
+the app's note, and its calls are left out, as the worker's ban of the call marker would do ("FINAL" when it has no
+text).
 """
 
 import json
@@ -88,9 +93,11 @@ def call_text(call):
     return f"<tool_call>\n<function={call['name']}>\n{params}</function>\n</tool_call>"
 
 
-def scripted(messages):
-    """The chunks of this step of a STEPS: script, or None when the last user message has none."""
+def scripted(messages, final=False):
+    """(the chunks, the reasoning) of this step of a STEPS: script, or None when the last user message has none."""
     users = [i for i, m in enumerate(messages) if m["role"] == "user"]
+    if final:  # the last user message is the app's note
+        users = users[:-1]
     text = text_of(messages[users[-1]]) if users else ""
     if STEPS not in text:
         return None
@@ -99,15 +106,20 @@ def scripted(messages):
     step = steps[n] if n < len(steps) else "Done."
     if step == "RESULT":
         tool = [m for m in messages if m["role"] == "tool"]
-        return ["Result: ", tool[-1]["content"] if tool else "none"]
+        return ["Result: ", tool[-1]["content"] if tool else "none"], ""
     if step == "SLOW":
-        return iter(lambda: "tick ", None)
+        return iter(lambda: "tick ", None), ""
     if isinstance(step, str):
-        return [step]
+        return [step], ""
     if isinstance(step, list):
         step = {"calls": step}
+    if final:
+        return [step.get("text") or "FINAL"], step.get("think", "")
     chunks = [step["text"] + "\n\n"] if step.get("text") else []
-    return chunks + [call_text(c) for c in step["calls"]]
+    think = step.get("think", "")
+    if step.get("think_calls"):
+        think += "\n\n" + "\n".join(call_text(c) for c in step["think_calls"])
+    return chunks + [call_text(c) for c in step.get("calls", [])], think
 
 
 def parse(text, tools):
@@ -144,8 +156,13 @@ def tool_answer(req, cancel):
     """A request with tools: stream the script through the worker's hold-back, then finish as the worker does."""
     rid, messages = req["id"], req["messages"]
     text = last_text(messages) if messages[-1]["role"] != "tool" else ""
-    script = scripted(messages)
+    script = scripted(messages, req.get("tool_choice") == "none")
+    reasoning = ""
+    if script is not None:
+        script, reasoning = script
     slow = "SLOW" in text or (script is not None and not isinstance(script, list))
+    if reasoning:
+        emit({"id": rid, "event": "reasoning", "text": reasoning})
     if script is not None:
         chunks = script
     elif messages[-1]["role"] == "tool":
@@ -164,12 +181,14 @@ def tool_answer(req, cancel):
             emit({"id": rid, "event": "content", "text": shown})
         if slow:
             time.sleep(0.02)
-    seen = {k: req.get(k) for k in ("messages", "tools", "chat", *LIMITS)}
+    seen = {
+        k: req.get(k) for k in ("messages", "tools", "tool_choice", "chat", *LIMITS)
+    }
     done = {
         "id": rid,
         "event": "done",
         "finish": finish,
-        "reasoning": "",
+        "reasoning": reasoning.strip(),
         "content": calls.text,
         "stats": {"turns": len(messages), "images": len(req["images"]), "seen": seen},
     }

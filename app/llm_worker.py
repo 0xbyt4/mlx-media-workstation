@@ -6,8 +6,9 @@ free the memory, which only a process exit releases in full. Everything mlx-vlm 
 carries only the protocol.
 
 Requests: {"op": "generate", "id", "messages", "images", "thinking", "schema", "max_tokens", "chat", "tools",
-"reasoning_effort", "thinking_budget"}, {"op": "cancel", "id"} and {"op": "shutdown"}. Events: {"event": "ready"},
-then per request "reasoning" and "content" deltas, and one "done" (with the full answer and its stats) or "error".
+"tool_choice", "reasoning_effort", "thinking_budget", "allow_emoji"}, {"op": "cancel", "id"} and {"op": "shutdown"}.
+Events: {"event": "ready"}, then per request "reasoning" and "content" deltas, and one "done" (with the full answer
+and its stats) or "error".
 
 thinking_budget uses mlx-vlm's ThinkingBudgetCriteria: after that many thinking tokens it forces "\n</think>", so the
 model must answer. It counts from the "<think>" that the template's generation prompt opens; mlx-vlm looks for that
@@ -18,6 +19,10 @@ With "tools" (OpenAI-style function schemas), the content deltas stop at the fir
 held back, parsed with mlx-vlm's parser for the model at the end, and the "done" event carries it as "tool_calls"
 (see ToolText and parse_calls; tests/fake_llm_worker.py uses them too, so this module imports nothing from MLX at the
 top level and has no side effects on import).
+
+Every request bans emoji with a logits processor (ByteBan, NoEmoji), unless it has "allow_emoji": true: the prompt
+rule alone did not stop them. "tool_choice": "none" also bans the call marker, so the model answers with text while
+the tools stay in the prompt.
 """
 
 import json
@@ -218,6 +223,220 @@ def parse_calls(
     return calls
 
 
+def trailing_calls(
+    text: str, start: str = TOOL_START, end: str = TOOL_END
+) -> tuple[str, list[tuple[str, bool]]]:
+    """The complete call blocks at the end of a text, as (the text before them, blocks as in ToolText.finish). Qwen
+    sometimes writes its call inside its reasoning; finish_tools then takes it from there."""
+    rest, blocks = text.rstrip(), []
+    while rest.endswith(end):
+        at = rest.rfind(start, 0, len(rest) - len(end))
+        if at < 0:
+            break
+        blocks.insert(0, (rest[at + len(start) : len(rest) - len(end)], True))
+        rest = rest[:at].rstrip()
+    return rest, blocks
+
+
+# ---------- banned tokens: emoji, and the call marker for tool_choice "none" ----------
+
+# Code points that are emoji: the Misc Symbols and Dingbats blocks (but the music signs U+2669-266F, as in "C♯"), the
+# emoji among the technical and geometric symbols, the keycap mark, the emoji variation selector, the tags of flag
+# sequences and everything from U+1F000 to U+1FFFF. Arrows, box drawing, math, (c) and TM stay allowed.
+EMOJI = (
+    (0x20E3, 0x20E3),
+    (0x231A, 0x231B),
+    (0x23E9, 0x23F3),
+    (0x23F8, 0x23FA),
+    (0x25FB, 0x25FE),
+    (0x2600, 0x2668),
+    (0x2670, 0x27BF),
+    (0x2B1B, 0x2B1C),
+    (0x2B50, 0x2B50),
+    (0x2B55, 0x2B55),
+    (0xFE0F, 0xFE0F),
+    (0x1F000, 0x1FFFF),
+    (0xE0000, 0xE007F),
+)
+
+
+def byte_decoder() -> dict[str, int]:
+    """The byte-level BPE alphabet (GPT-2's bytes_to_unicode) read backwards: token character -> byte."""
+    keep = [*range(0x21, 0x7F), *range(0xA1, 0xAD), *range(0xAE, 0x100)]
+    chars, n = list(keep), 0
+    for b in range(256):
+        if b not in keep:
+            keep.append(b)
+            chars.append(256 + n)
+            n += 1
+    return {chr(c): b for b, c in zip(keep, chars, strict=True)}
+
+
+def token_pieces(vocab: dict[str, int]) -> list[bytes]:
+    """Each token id's bytes, from a byte-level BPE vocabulary (token text -> id). A token outside that alphabet
+    (an added token such as <|im_start|>) counts as its UTF-8 text."""
+    table = byte_decoder()
+    pieces = [b""] * (max(vocab.values()) + 1)
+    for text, i in vocab.items():
+        if all(c in table for c in text):
+            pieces[i] = bytes(table[c] for c in text)
+        else:
+            pieces[i] = text.encode()
+    return pieces
+
+
+def _size(lead: int) -> int:
+    """The length of the UTF-8 sequence that this byte starts; 0 for a byte that cannot start one."""
+    if 0xC2 <= lead <= 0xDF:
+        return 2
+    if 0xE0 <= lead <= 0xEF:
+        return 3
+    return 4 if 0xF0 <= lead <= 0xF4 else 0
+
+
+def _span(prefix: bytes) -> tuple[int, int]:
+    """The code points that the bytes of an unfinished character can still become (lowest, highest). An overlong
+    start gives low > high: it can become nothing."""
+    size = _size(prefix[0])
+    low, high = (prefix[0] & (0x7F >> size),) * 2
+    for k in range(1, size):
+        low = low << 6 | (prefix[k] & 0x3F if k < len(prefix) else 0)
+        high = high << 6 | (prefix[k] & 0x3F if k < len(prefix) else 0x3F)
+    return max(low, (0x80, 0x800, 0x10000)[size - 2]), high
+
+
+def _scan(data: bytes) -> tuple[bool, bytes]:
+    """(whether the bytes hold an emoji, the unfinished character at their end). Broken sequences are skipped."""
+    i, n = 0, len(data)
+    while i < n:
+        size = _size(data[i]) if data[i] >= 0x80 else 1
+        j = i + 1
+        while j < n and j < i + size and 0x80 <= data[j] <= 0xBF:
+            j += 1
+        if size > 1 and j == i + size:
+            try:
+                point = ord(data[i:j].decode())
+            except UnicodeDecodeError:  # an overlong form or a surrogate
+                point = -1
+            if any(lo <= point <= hi for lo, hi in EMOJI):
+                return True, b""
+        elif size > 1 and j == n:
+            return False, data[i:]
+        i = j
+    return False, b""
+
+
+class ByteBan:
+    """Which tokens would write an emoji, built once from the vocabulary's bytes (token_pieces).
+
+    Byte-level BPE can split one emoji over two tokens ("\\xf0\\x9f" + "\\x98\\x80"). So the banned set
+    depends on the unfinished character at the end of the text so far: the state. State 0 is "nothing that can still
+    become an emoji"; each other state is such an unfinished character. A token is banned in a state when the state's
+    bytes plus the token's hold an emoji, or end in an unfinished character that can only become one. Only tokens
+    that start with a continuation byte can finish the state's character, so the other states differ from state 0
+    only for those tokens.
+
+    nxt[s][t] is the state after token t in state s, ban[s][t] whether t is banned there."""
+
+    def __init__(self, pieces: list[bytes]) -> None:
+        self.width = len(pieces)
+        self.states: list[bytes] = [b""]
+        index = {b"": 0}
+
+        def outcome(data: bytes) -> tuple[bool, int]:
+            hit, tail = _scan(data)
+            if hit:
+                return True, 0
+            if not tail:
+                return False, 0
+            low, high = _span(tail)
+            if low > high:
+                return False, 0
+            if any(lo <= low and high <= hi for lo, hi in EMOJI):
+                return True, 0
+            if not any(lo <= high and low <= hi for lo, hi in EMOJI):
+                return False, 0
+            if tail not in index:
+                index[tail] = len(self.states)
+                self.states.append(tail)
+            return False, index[tail]
+
+        base = [(False, 0)] * self.width
+        for t, piece in enumerate(pieces):
+            if not piece.isascii():
+                base[t] = outcome(piece)
+        finishers = [t for t, p in enumerate(pieces) if p and 0x80 <= p[0] <= 0xBF]
+        self.nxt = [[o[1] for o in base]]
+        self.ban = [[o[0] for o in base]]
+        s = 1
+        while s < len(self.states):  # outcome() may add states while this runs
+            nxt, ban = list(self.nxt[0]), list(self.ban[0])
+            for t in finishers:
+                ban[t], nxt[t] = outcome(self.states[s] + pieces[t])
+            self.nxt.append(nxt)
+            self.ban.append(ban)
+            s += 1
+        self.arrays: dict[int, tuple[Any, Any]] = {}
+
+    def tables(self, xp: Any, width: int) -> tuple[Any, Any]:
+        """(nxt flattened, ban) as arrays of the module xp, padded to the model's vocabulary width; made once."""
+        if width not in self.arrays:
+            pad = max(0, width - self.width)
+            nxt = [n for row in self.nxt for n in row + [0] * pad]
+            ban = [row + [False] * pad for row in self.ban]
+            self.arrays[width] = (xp.array(nxt), xp.array(ban))
+        return self.arrays[width]
+
+
+class NoEmoji:
+    """A logits processor (one per request) that keeps a ByteBan's state and bans its tokens. The state stays an
+    array of xp (mlx.core in the worker), so a step never waits for the token before it."""
+
+    def __init__(self, xp: Any, ban: ByteBan) -> None:
+        self.xp, self.bans = xp, ban
+        self.state: Any = None
+
+    def __call__(self, tokens: Any, logits: Any) -> Any:
+        xp = self.xp
+        width = logits.shape[-1]
+        nxt, ban = self.bans.tables(xp, width)
+        # the first call sees the prompt, which ends with a whole character
+        if self.state is None:
+            self.state = xp.array(0)
+        else:
+            self.state = xp.take(nxt, self.state * width + tokens[-1])
+        return xp.where(xp.take(ban, self.state, axis=0), -float("inf"), logits)
+
+
+class BanIds:
+    """A logits processor that bans fixed token ids (the call marker for tool_choice "none")."""
+
+    def __init__(self, xp: Any, ids: list[int]) -> None:
+        self.xp, self.ids, self.mask = xp, ids, None
+
+    def __call__(self, tokens: Any, logits: Any) -> Any:
+        if self.mask is None:
+            row = [False] * logits.shape[-1]
+            for i in self.ids:
+                row[i] = True
+            self.mask = self.xp.array(row)
+        return self.xp.where(self.mask, -float("inf"), logits)
+
+
+def bans(
+    xp: Any, req: dict[str, Any], emoji: ByteBan, vocab: dict[str, int], marker: str
+) -> list[Any]:
+    """The logits processors that ban tokens for a request: emoji unless "allow_emoji" is true, and the tool-call
+    marker with "tool_choice": "none" (the marker must be one token)."""
+    out: list[Any] = [] if req.get("allow_emoji") else [NoEmoji(xp, emoji)]
+    if req.get("tools") and req.get("tool_choice") == "none":
+        if marker in vocab:
+            out.append(BanIds(xp, [vocab[marker]]))
+        else:
+            print(f"tool_choice none: {marker!r} is not one token", file=sys.stderr)
+    return out
+
+
 class Engine:
     def __init__(self, model_dir: str) -> None:
         import mlx.core as mx
@@ -241,6 +460,9 @@ class Engine:
         self.specials = sorted(
             {t.content for t in added if len(t.content) > 1}, key=len, reverse=True
         )
+        # the token bans of every request (bans(): emoji, and the call marker for tool_choice "none")
+        self.vocab = self.processor.tokenizer.get_vocab()
+        self.no_emoji = ByteBan(token_pieces(self.vocab))
 
     def tool_parser(self) -> Any:
         if self.parser is None:
@@ -286,6 +508,10 @@ class Engine:
             kwargs["logits_processors"] = [
                 self.json_processor(self.processor.tokenizer, req["schema"])
             ]
+        marker = self.tool_parser().tool_call_start if tools else TOOL_START
+        kwargs["logits_processors"] = kwargs.get("logits_processors", []) + bans(
+            self.mx, req, self.no_emoji, self.vocab, marker
+        )
         state = None
         if req.get(
             "chat"
@@ -377,11 +603,16 @@ def finish_tools(
 ) -> None:
     """Complete a "done" event of a request with tools: the rest of the visible text (as a last content delta), the
     content without call markup, and "tool_calls" ("finish": "tool_calls" when there are any). A cancelled answer
-    gets no calls: nothing it started may run."""
+    gets no calls: nothing it started may run. When the content has no call but the reasoning ends with complete
+    call blocks (Qwen wrote its call while it thought), those are the calls, and the reasoning loses them."""
     tail, visible, blocks = calls.finish()
     if tail and done["finish"] != "cancelled":
         emit({"id": done["id"], "event": "content", "text": tail})
     done["content"] = visible.lstrip("\n")
+    if not blocks and done["finish"] != "cancelled":
+        rest, blocks = trailing_calls(done["reasoning"], calls.start, calls.end)
+        if blocks:
+            done["reasoning"] = rest
     done["tool_calls"] = (
         [] if done["finish"] == "cancelled" else parse_calls(blocks, parse, tools)
     )
