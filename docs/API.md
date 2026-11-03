@@ -297,6 +297,85 @@ running requests cannot use the same `request_id` (HTTP 400).
 
 `POST /api/llm/unload` stops the model and returns `{"status": "off"}`.
 
+### Python interface for server code (`app/llm.py`)
+
+Chat and prompt help call the model through these functions; no HTTP endpoint exposes them directly.
+
+```python
+llm.generate(messages, images=(), *, thinking=False, schema=None, max_tokens=4096, chat=None,
+             tools=None, reasoning_effort=None, session=None) -> Iterator[dict]
+llm.complete(messages, images=(), on_start=None, **same_keywords) -> dict   # the "done" event; LLMError on error
+llm.cancel(request_id) -> bool
+with llm.session(abort=lambda: False, limit=600.0) as s: ...
+```
+
+- `generate` yields `{"event": "started", "id": "r12"}`, `{"event": "waiting", "message": "..."}` (only while a
+  media job holds the memory), `reasoning` and `content` deltas (`{"event": "content", "text": "..."}`), and at the
+  end one `done` or `{"event": "error", "message": "..."}`. Closing the iterator early cancels the request.
+- `done` is `{"event": "done", "finish": "stop" | "length" | "cancelled" | "tool_calls", "content": "...",
+  "reasoning": "...", "stats": {...}}`, plus `"tool_calls": [...]` when the request had `tools`.
+- `chat` keeps the prompt cache of that chat in the worker, so a request that extends the previous prompt reads only
+  the new tokens. Use the same `chat` for every step of a tool turn.
+- `reasoning_effort` is `"low"`, `"medium"` or `"xhigh"` (the Qwen3.8 template's default). It applies only with
+  `thinking=True`. Another value raises `ValueError`.
+
+**Tools.** `tools` is a list of OpenAI-style function schemas:
+
+```json
+{"type": "function", "function": {"name": "get_weather", "description": "...",
+ "parameters": {"type": "object", "properties": {"city": {"type": "string"}, "days": {"type": "integer"}},
+                "required": ["city"]}}}
+```
+
+- The worker passes `tools` to the chat template. The model writes a call as
+  `<tool_call><function=NAME><parameter=P>value</parameter></function></tool_call>`.
+- The `content` deltas never contain that markup. The worker shows the text before the first `<tool_call>` and holds
+  back the rest, also a partial marker at the end of a chunk (`<tool`). Text that only looks like a marker
+  (`<toolbox>`) is shown when it cannot be one any more, at the latest at the end of the answer.
+- `done.tool_calls` is a list of `{"id": "call_3f2a...", "name": "get_weather", "arguments": {"city": "Ankara",
+  "days": 2}}`. mlx-vlm's parser for the model (`qwen3_coder`) parses each call and converts each argument to the
+  type in the schema. With one or more calls, `finish` is `"tool_calls"`; without, the list is empty.
+- A call that does not parse is still in the list, with `"arguments": {}`, an `"error": "Invalid tool call: ..."` and
+  its `"raw"` text. A call cut off by `max_tokens` gets an error too. The worker goes on with the next request.
+- The tool name is not checked against `tools`; the caller validates the name and the arguments.
+- `content` in `done` is the answer without call markup. Text the model wrote after its calls (the template asks for
+  none) is sent as a last `content` delta and is in `content`.
+- A cancelled answer has `"tool_calls": []`, so nothing it started can run.
+- Without `tools`, nothing changes: the deltas are the model's text as it is.
+
+**History with tools.** `messages` may contain:
+
+```json
+{"role": "assistant", "content": "", "reasoning_content": "...",
+ "tool_calls": [{"id": "call_3f2a...", "name": "get_weather", "arguments": {"city": "Ankara"}}]}
+{"role": "tool", "tool_call_id": "call_3f2a...", "name": "get_weather", "content": "9 C, rain"}
+```
+
+- The calls of a `done` event can go back unchanged. OpenAI's form `{"id", "type": "function", "function": {"name",
+  "arguments": "<JSON string>"}}` works too: the arguments become a dict, because the template renders them with
+  `|items`. Arguments that are not a JSON object become `{}`.
+- The Qwen3.8 template renders a tool message from its `content` and position only (consecutive tool messages
+  become one user turn of `<tool_response>` blocks). Keep tool messages right after their assistant message, in call
+  order. Content that is not a string or a list of text parts is sent as JSON.
+
+**Session (memory lease).** A tool turn runs several requests with tool work between them. Between two requests no
+answer runs, so a queued media job could claim the memory and unload the model in the middle of the turn.
+`llm.session()` prevents that:
+
+1. Open `with llm.session(abort) as s:` around the whole turn, in the thread that calls `generate`. Requests in that
+   thread use the session; from another thread, pass `session=s`.
+2. The lease starts at once when the memory is free. When a media job holds the memory, it starts with the first
+   request of the session that gets the memory after the job.
+3. While the lease holds, a media job that does not fit next to the model waits for it, as it waits for a running
+   answer. The session's requests skip the memory check, so they never wait for that job.
+4. The lease ends when the block ends, when `abort()` returns `True`, or after `limit` seconds (default 600, the same
+   as a job's wait). After that, requests in the block wait for memory like any other request.
+5. `close()` ends every lease. The idle unload does not stop the model while a lease holds.
+
+`abort` runs with the module lock held: it must be fast and must not call `app.llm`. Cancel a request of a session
+with `llm.cancel(request_id)` as usual. Do not wait for a media job inside a session: a big job waits for the lease,
+so both would wait until the time limit.
+
 Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images sent in the chat). The endpoints with `{id}`
 return HTTP 404 for an unknown chat.
 

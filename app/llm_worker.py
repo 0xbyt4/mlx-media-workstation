@@ -5,17 +5,25 @@ It loads the model once and answers requests one at a time, as JSON lines: reque
 free the memory, which only a process exit releases in full. Everything mlx-vlm prints goes to stderr, so stdout
 carries only the protocol.
 
-Requests: {"op": "generate", "id", "messages", "images", "thinking", "schema", "max_tokens", "chat"},
-{"op": "cancel", "id"} and {"op": "shutdown"}. Events: {"event": "ready"}, then per request "reasoning" and "content"
-deltas, and one "done" (with the full answer and its stats) or "error".
+Requests: {"op": "generate", "id", "messages", "images", "thinking", "schema", "max_tokens", "chat", "tools",
+"reasoning_effort"}, {"op": "cancel", "id"} and {"op": "shutdown"}. Events: {"event": "ready"}, then per request
+"reasoning" and "content" deltas, and one "done" (with the full answer and its stats) or "error".
+
+With "tools" (OpenAI-style function schemas), the content deltas stop at the first tool-call marker: the call text is
+held back, parsed with mlx-vlm's parser for the model at the end, and the "done" event carries it as "tool_calls"
+(see ToolText and parse_calls; tests/fake_llm_worker.py uses them too, so this module imports nothing from MLX at the
+top level and has no side effects on import).
 """
 
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
+import uuid
+from collections.abc import Callable
 from typing import Any
 
 THINK_END = 248069  # the '</think>' token of Qwen3.5-3.8
@@ -32,15 +40,114 @@ NO_THINKING = {
     "presence_penalty": 1.5,
 }
 
-proto = os.fdopen(os.dup(1), "w", buffering=1)  # the protocol keeps the real stdout
-os.dup2(2, 1)  # anything else printed goes to stderr
-sys.stdout = sys.stderr
+# Qwen3.8's tool-call markers (mlx-vlm's qwen3_coder parser); the worker takes them from the parser module
+TOOL_START, TOOL_END = "<tool_call>", "</tool_call>"
+FUNCTION = re.compile(r"<function=([^>\n]*)>")
+proto: Any = None  # the protocol's stdout, set by main()
 write_lock = threading.Lock()
 
 
 def emit(event: dict[str, Any]) -> None:
     with write_lock:
         proto.write(json.dumps(event) + "\n")
+
+
+class ToolText:
+    """Splits a streamed answer into the text the user may see and the tool-call text, which is held back.
+
+    feed() returns the new text that may be shown: everything before the first start marker, less an end that could
+    be the start of a marker split across chunks. From the first marker on, nothing more is shown until finish().
+    """
+
+    def __init__(self, start: str = TOOL_START, end: str = TOOL_END) -> None:
+        self.start, self.end = start, end
+        self.text = ""  # the whole answer so far
+        self.shown = 0  # length of the part returned by feed
+        self.held = False  # a start marker was seen
+
+    def feed(self, delta: str) -> str:
+        self.text += delta
+        if self.held:
+            return ""
+        at = self.text.find(self.start, self.shown)
+        if at >= 0:
+            self.held = True
+        else:  # keep back the longest end of the text that begins a marker
+            at = len(self.text)
+            for n in range(min(len(self.start) - 1, at - self.shown), 0, -1):
+                if self.start.startswith(self.text[-n:]):
+                    at -= n
+                    break
+        out, self.shown = self.text[self.shown : at], at
+        return out
+
+    def finish(self) -> tuple[str, str, list[tuple[str, bool]]]:
+        """(the rest to show, the whole visible answer, the call blocks as (text inside the markers, closed))."""
+        if not self.held:
+            return self.text[self.shown :], self.text, []
+        blocks: list[tuple[str, bool]] = []
+        outside: list[str] = []
+        pos = self.shown
+        while (at := self.text.find(self.start, pos)) >= 0:
+            outside.append(self.text[pos:at])
+            body = at + len(self.start)
+            close = self.text.find(self.end, body)
+            if close < 0:  # cut off, for example by max_tokens
+                blocks.append((self.text[body:], False))
+                pos = len(self.text)
+                break
+            blocks.append((self.text[body:close], True))
+            pos = close + len(self.end)
+        outside.append(self.text[pos:])
+        before = self.text[: self.shown]
+        # text between or after the calls: the template asks for none, so it is shown only at the end
+        after = "".join(outside[1:]).strip()
+        if not after:
+            return "", before.rstrip(), blocks
+        if not before.strip():
+            return after, after, blocks
+        return f"\n\n{after}", f"{before.rstrip()}\n\n{after}", blocks
+
+
+def parse_calls(
+    blocks: list[tuple[str, bool]],
+    parse: Callable[[str, Any], Any],
+    tools: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """The calls of an answer as {"id", "name", "arguments" (a dict)}; a call that does not parse gets an "error" (and
+    its "raw" text) instead of failing the answer. parse is the parser module's parse_tool_call(text, tools)."""
+    calls: list[dict[str, Any]] = []
+    for raw, closed in blocks:
+        found = FUNCTION.search(raw)
+        name = found.group(1).strip() if found else ""
+        try:
+            if not closed:
+                raise ValueError(f"the call has no {TOOL_END} (the answer was cut off)")
+            parsed = parse(raw.strip(), tools)
+            for call in parsed if isinstance(parsed, list) else [parsed]:
+                args = call.get("arguments") or {}
+                if isinstance(args, str):
+                    args = json.loads(args)
+                if not isinstance(args, dict):
+                    raise TypeError("the arguments are not an object")
+                calls.append(
+                    {
+                        "id": f"call_{uuid.uuid4().hex[:12]}",
+                        "name": str(call["name"]).strip(),
+                        "arguments": args,
+                    }
+                )
+        except Exception as e:  # noqa: BLE001 - the model's text is untrusted: any parse failure is reported
+            calls.append(
+                {
+                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "name": name,
+                    "arguments": {},
+                    "error": f"Invalid tool call: {type(e).__name__}: {e}",
+                    "raw": raw,
+                }
+            )
+    return calls
 
 
 class Engine:
@@ -59,16 +166,42 @@ class Engine:
             None  # the chat whose prompt cache is kept (one at a time)
         )
         self.state = PromptCacheState()
+        # the tool-call parser module, loaded at the first request with tools
+        self.parser: Any = None
+
+    def tool_parser(self) -> Any:
+        if self.parser is None:
+            from mlx_vlm.tools import (
+                _infer_tool_parser_from_processor,
+                load_tool_module,
+            )
+
+            name = _infer_tool_parser_from_processor(self.processor)
+            if name is None:
+                raise ValueError(
+                    "This model's chat template has no known tool-call format."
+                )
+            self.parser = load_tool_module(name)
+        return self.parser
 
     def generate(self, req: dict[str, Any], cancel: threading.Event) -> None:
         rid, thinking = req["id"], bool(req.get("thinking"))
         images = req.get("images") or []
+        tools = req.get("tools") or None
+        options: dict[str, Any] = {}  # passed to the chat template only when set
+        if tools:
+            options["tools"] = tools
+            parser = self.tool_parser()
+            calls = ToolText(parser.tool_call_start, parser.tool_call_end)
+        if req.get("reasoning_effort"):
+            options["reasoning_effort"] = req["reasoning_effort"]
         prompt = self.template(
             self.processor,
             self.model.config,
             req["messages"],
             num_images=len(images),
             enable_thinking=thinking,
+            **options,
         )
         kwargs: dict[str, Any] = dict(THINKING if thinking else NO_THINKING)
         if req.get("schema") is not None:  # thinking is off for JSON answers
@@ -108,8 +241,9 @@ class Engine:
                     continue
                 part = "reasoning" if in_think else "content"
                 (reasoning if in_think else answer).append(r.text)
-                if r.text:
-                    emit({"id": rid, "event": part, "text": r.text})
+                text = r.text if in_think or not tools else calls.feed(r.text)
+                if text:
+                    emit({"id": rid, "event": part, "text": text})
         finally:
             gen.close()
             if cancelled:
@@ -126,18 +260,39 @@ class Engine:
                 generation_tps=round(last.generation_tps, 1),
                 peak_gb=round(last.peak_memory, 1),
             )
-        emit(
-            {
-                "id": rid,
-                "event": "done",
-                "finish": "cancelled"
-                if cancelled
-                else (last.finish_reason if last else "stop"),
-                "reasoning": "".join(reasoning).strip(),
-                "content": "".join(answer).lstrip("\n"),
-                "stats": stats,
-            }
-        )
+        done = {
+            "id": rid,
+            "event": "done",
+            "finish": "cancelled"
+            if cancelled
+            else (last.finish_reason if last else "stop"),
+            "reasoning": "".join(reasoning).strip(),
+            "content": "".join(answer).lstrip("\n"),
+            "stats": stats,
+        }
+        if tools:
+            finish_tools(done, calls, parser.parse_tool_call, tools)
+        emit(done)
+
+
+def finish_tools(
+    done: dict[str, Any],
+    calls: ToolText,
+    parse: Callable[[str, Any], Any],
+    tools: list[dict[str, Any]],
+) -> None:
+    """Complete a "done" event of a request with tools: the rest of the visible text (as a last content delta), the
+    content without call markup, and "tool_calls" ("finish": "tool_calls" when there are any). A cancelled answer
+    gets no calls: nothing it started may run."""
+    tail, visible, blocks = calls.finish()
+    if tail and done["finish"] != "cancelled":
+        emit({"id": done["id"], "event": "content", "text": tail})
+    done["content"] = visible.lstrip("\n")
+    done["tool_calls"] = (
+        [] if done["finish"] == "cancelled" else parse_calls(blocks, parse, tools)
+    )
+    if done["tool_calls"]:
+        done["finish"] = "tool_calls"
 
 
 def read_requests(jobs: queue.Queue, cancels: dict[str, threading.Event]) -> None:
@@ -161,6 +316,10 @@ def read_requests(jobs: queue.Queue, cancels: dict[str, threading.Event]) -> Non
 
 
 def main() -> None:
+    global proto
+    proto = os.fdopen(os.dup(1), "w", buffering=1)  # the protocol keeps the real stdout
+    os.dup2(2, 1)  # anything else printed goes to stderr
+    sys.stdout = sys.stderr
     try:
         engine = Engine(sys.argv[1])
     except Exception as e:  # noqa: BLE001 - the parent shows this to the user
