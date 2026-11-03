@@ -6,7 +6,7 @@ no CDN or other network request. All JSON is UTF-8.
 
 ## Tools
 
-`GET /api/tools` returns the list of tools. The UI builds its left sidebar and its forms from it.
+`GET /api/tools` returns the list of tools. The Create screen builds its tool list and its forms from it.
 
 ```json
 [
@@ -29,7 +29,7 @@ no CDN or other network request. All JSON is UTF-8.
 ]
 ```
 
-- `group` is one of `Image`, `Voice`, `Music`, `Video`, `Edit`, in that order in the sidebar.
+- `group` is one of `Image`, `Voice`, `Music`, `Video`, `Edit`, in that order in the tool list.
 - Field `type` is one of `text`, `textarea`, `number`, `select`, `checkbox`, `file` (one file), `files` (several).
 - `advanced: true` fields go in a collapsed "Advanced" section.
 - `step` may be given for numbers (for example 0.05). A `null` default means an empty input.
@@ -70,15 +70,17 @@ checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Erro
 
 - `position` is the place in the queue for queued jobs (1 = next), 0 otherwise.
 - `progress` is set only while a job runs, otherwise `null`. It comes from the model's own output (app/progress.py).
-- `waiting` (a text) is set only on the first queued job while it waits for prompt help or chat answers to finish
-  before it starts.
   `stage` is a short label, `fraction` is the share of the whole job done (0-1), and `eta_s` is the seconds left.
   `eta_s` blends the live rate with the median time of finished jobs with the same settings. Each field is `null`
   until the output shows it, and `eta_s` is `null` when the job has run past every estimate.
+- `waiting` (a text) is set only on the first queued job while it waits for prompt help or chat answers to finish
+  before it starts.
+- `elapsed` counts from `started` while the job runs; after it, it is the time the job took.
 - Only one job runs at a time (each model needs most of the memory of a 32-48 GB Mac).
 
-`POST /api/jobs/{id}/cancel` cancels a queued or running job. `DELETE /api/jobs/{id}` removes a finished job from the
-list and deletes its folder.
+`POST /api/jobs/{id}/cancel` cancels a queued or running job and returns `{"status": "cancelled"}`, or the job's
+status when it has already ended. `DELETE /api/jobs/{id}` removes a finished job from the list and deletes its folder
+(HTTP 400 while the job is queued or running). Both return HTTP 404 for an unknown id.
 
 `POST /api/jobs/{id}/move` takes JSON `{"to": "up" | "down" | "top" | "bottom"}` and moves a queued job one place up
 or down, or to the first or last place of the queue. It returns `{"position": 2}`, the job's new `position`. A move
@@ -130,7 +132,7 @@ for another `to`.
 `POST /api/library/reveal` takes JSON `{"job": "<job id>", "name": "<file name>"}` and shows the file in Finder
 (`open -R`). It returns `{"status": "shown"}`. The file must be a listed output of that job: HTTP 404 for any other
 name, a symbolic link or an unknown job, HTTP 400 for an input file, and HTTP 409 while the job is queued or
-running.
+running. HTTP 500 when Finder cannot show the file.
 
 `DELETE /api/library/{job}/{name}` deletes one output file and removes it from the job's `outputs`. It returns
 `{"status": "deleted"}`. HTTP 400 for an input file, HTTP 409 while the job is queued or running, HTTP 404 for any
@@ -242,11 +244,16 @@ download has the reason in `download.error`.
 `POST /api/models/{id}/cancel` stops the running download, or takes a queued one out of the queue, and returns
 `{"status": "cancelled"}` (or the finished status). The next queued download starts. Finished files stay, and the next
 download skips them. HTTP 400 when the model is neither running nor queued.
+
+Both `POST /api/models/{id}/...` endpoints return HTTP 404 for an unknown id.
+
 ## Prompt help
 
 `GET /api/assist` returns `{"available": true, "provider": "local", "model": "Qwen3.8 27B (4-bit)", "llm": {...}}`.
-`available` is false when the provider's model is not installed; the UI then hides the "Improve" buttons. `llm` is the
-local model's state (see `GET /api/llm`).
+`available` is false when the provider's model is not installed, or when it does not fit this Mac (its peak plus the
+8 GB reserve is more than the Mac's memory); the UI then hides the "Improve" buttons. `llm` is the local model's
+state (see `GET /api/llm`). When `config.toml` names an unknown provider, the answer is
+`{"available": false, "provider": "...", "error": "message"}`.
 
 `POST /api/assist/enhance` takes the same `multipart/form-data` as `POST /api/jobs`, plus `field`: the name of a field
 with `assist: true`, and `request_id`: a random token that the client makes (1 to 64 characters of `A-Z`, `a-z`,
@@ -290,9 +297,11 @@ running requests cannot use the same `request_id` (HTTP 400).
 
 `POST /api/llm/unload` stops the model and returns `{"status": "off"}`.
 
-Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images sent in the chat).
+Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images sent in the chat). The endpoints with `{id}`
+return HTTP 404 for an unknown chat.
 
-- `GET /api/chats` lists the chats, newest first: `id`, `title`, `created`, `updated`, `messages` (count), `running`.
+- `GET /api/chats` lists the chats, most recently updated first: `id`, `title`, `created`, `updated`, `messages`
+  (count), `running`.
 - `POST /api/chats` creates an empty chat and returns its summary.
 - `GET /api/chats/{id}` returns the chat with all messages and `running`.
 - `DELETE /api/chats/{id}` deletes it (HTTP 409 while it answers).
@@ -304,6 +313,12 @@ Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images sent in th
   - `{"event": "reasoning", "text": "..."}` and `{"event": "content", "text": "..."}` deltas;
   - `{"event": "done", "finish": "stop" | "length" | "cancelled", "content": "...", "reasoning": "...", "stats": {...}}`
     or `{"event": "error", "message": "..."}` at the end.
+  - `stats` has `seconds`, and when the model ran, `prompt_tokens`, `generation_tokens`, `cached_tokens`,
+    `prompt_tps`, `generation_tps` and `peak_gb`.
+  - `text` is at most 20,000 characters. An answer is at most 4,096 tokens, or 8,192 with thinking on.
+  - Errors before the stream starts: HTTP 400 with `{"detail": "message"}` (an empty message, a text that is too
+    long, too many images, an image of another type or over 20 MB, nothing to answer again), HTTP 409 while the chat
+    still answers.
 - `GET /api/chats/{id}/stream` replays the running answer's events from the start (for a page that came back); HTTP
   404 when nothing runs.
 - `POST /api/chats/{id}/stop` stops the answer between tokens, also while it waits. It returns
@@ -368,8 +383,8 @@ turns that fit in 32K tokens.
   `llm_idle_minutes` (minutes without use before the local LLM unloads; 0 = never). `idle_choices` are the minutes
   the screen offers.
 
-`PUT /api/settings` takes JSON with the values to change: `{"paths": {"ltx_model": "~/models/ltx"}, "assist":
-{"provider": "local"}, "app": {"notify": false, "llm_idle_minutes": 30}}`. Each part is optional. It writes `config.toml` and returns the same object as
+`PUT /api/settings` takes JSON with the values to change: `{"paths": {"ltx_model": "/Volumes/Models/ltx-2.5-mlx-q8"},
+"assist": {"provider": "local"}, "app": {"notify": false, "llm_idle_minutes": 30}}`. Each part is optional. It writes `config.toml` and returns the same object as
 `GET /api/settings`, plus `changed` (for example `["paths.ltx_model"]`; empty when nothing changed).
 
 - Only the lines of the changed keys change. Comments, blank lines, other keys and other sections stay. A key that
@@ -380,7 +395,7 @@ turns that fit in 32K tokens.
   (`restart_required`). An `[app]` value applies at once: the running app uses it as soon as the request returns.
 - Errors: HTTP 400 with `{"detail": {"message": "...", "fields": {"paths.ltx_model": "message"}}}` for an unknown
   key, an unknown provider, an empty path, a path with a double quote, a backslash or a line break, an `[app]` switch
-that is not `true` or `false`, or `llm_idle_minutes` that is not a whole number from 0 to 1440. HTTP 409
+  that is not `true` or `false`, or `llm_idle_minutes` that is not a whole number from 0 to 1440. HTTP 409
   when `config.toml` is not valid TOML or sets the key in a form this endpoint cannot edit (for example an inline
   table); the file is then not changed.
 - Settings hold no secrets.
@@ -396,7 +411,7 @@ views.
   Cancel while it waits, loads or writes, and Undo and Redo after it); an "On this Mac" card with peak memory, time
   and queue wait; Generate ("Add to queue" while a job runs). Choosing another tool cancels the open tool's running
   Improve; going to another view does not: its text goes into the tool's saved form, with a toast.
-- Jobs: the running job with progress, the queue with start estimates, and finished jobs with their media, settings,
+- Jobs: the running job with progress, the queue with start estimates and move buttons, and finished jobs with their media, settings,
   "Use these settings", "Send to" (an output into another tool's file field), download and delete.
 - Chat, Library, Models and Settings use the endpoints of their sections above.
 - Polling: `/api/jobs` every 2 s while a job is queued or running, else 10 s; `/api/system` and `/api/llm` every 5 s;
