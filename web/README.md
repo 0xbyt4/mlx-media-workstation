@@ -27,8 +27,9 @@ The design is in `docs/DESIGN.md` and `docs/design/mock.html`. The endpoints are
 1. A view changes only its own files: `js/views/<view>.js` and `css/views/<view>.css`.
 2. Scope every rule in a view stylesheet under `.v-<view>` (for example `.v-library .grid`).
 3. Use the shared classes in `css/base.css` and the helpers in `js/ui.js` before you add new ones.
-4. Change a shared file (`index.html`, `css/tokens.css`, `css/base.css`, `css/shell.css`, `js/*.js`) only through
-   the integrator. If a view needs a shared change, write down what it needs and why.
+4. Keep a change to a shared file (`index.html`, `css/tokens.css`, `css/base.css`, `css/shell.css`, `js/*.js`) in
+   its own commit. A shared file affects every view, so say in the commit message which views need the change and
+   why.
 5. Use only colours from `css/tokens.css`. Media placeholders are the one exception.
 
 ## View contract

@@ -2,8 +2,8 @@
 
 Workstation is a local app for open image, voice, music and video models on Apple Silicon Macs. You pick a tool, fill
 in a form and press Generate. A local language model helps you write prompts and answers questions in a chat. Every
-model runs on your Mac with [MLX](https://github.com/ml-explore/mlx). Nothing is uploaded, and the models download
-nothing at run time.
+model runs on your Mac with [MLX](https://github.com/ml-explore/mlx). The models upload nothing and download nothing
+at run time. Only the web tools of an Agent chat send data off the Mac, and only after you approve the call.
 
 ![The Create screen with the Text to Video form](docs/images/create.png)
 
@@ -22,13 +22,13 @@ The sidebar has six sections. Cmd-1 to Cmd-6 open them. The chat profile shows o
   LLM to rewrite your draft for that tool. Undo brings your own text back.
 - **Jobs**: the running job with its progress, the queue, and the finished jobs with their results. You can move a
   queued job up or down. "Use these settings" fills the form again. "Send to" puts an output into a file field of another tool.
-- **Chat**: talk with the local LLM. You can attach up to 4 images to a message and turn on thinking. A new chat is
-  in Workstation, General or Agent mode. In Workstation mode the model knows the app's tools, and when it writes a
-  prompt for a tool, the answer shows a "Use in" card that copies the text into that tool's form. General mode is a
-  plain assistant. In Agent mode the model can call tools: search the web, read a web page, read files in a folder
-  you grant, run Python in a sandbox, search the Library and queue jobs. A call that sends data off the Mac, queues
-  a job or runs code shows an approval card first. The Tools menu turns tools on or off and grants the folder
-  (`docs/AGENT.md`). The mode is fixed after the first message.
+- **Chat**: talk with the local LLM. You can attach up to 4 images to a message and turn on thinking. A new chat is in
+  Workstation, General or Agent mode (the chat profile has no Workstation mode). In Workstation mode the model knows
+  the app's tools, and when it writes a prompt for a tool, the answer shows a "Use in" card that copies the text into
+  that tool's form. General mode is a plain assistant. In Agent mode the model can call tools: search the web, read a
+  web page, read files in a folder you grant, run Python in a sandbox, search the Library and queue jobs. A call that
+  sends data off the Mac, queues a job or runs code shows an approval card first. The Tools menu turns tools on or off
+  and grants the folder (`docs/AGENT.md`). The mode is fixed after the first message.
 - **Library**: every output of the finished jobs, with search and filters. A card opens a larger preview with "Use
   these settings", "Send to", "Show in Finder", download and delete.
 - **Models**: what each tool needs, what is installed, the download size, the peak memory and whether it fits this
@@ -61,6 +61,9 @@ The sidebar has six sections. Cmd-1 to Cmd-6 open them. The chat profile shows o
 | Video | Voice to Video | LTX-2.5 audio-to-video: a person from an image speaks the audio | 7 s in about 3.5 min; about 28 GB |
 | Video | Extend Video | LTX-2.5 extend: continues a clip from its last second | 5 s more in about 2.5 min; 29-35 GB |
 | Edit | Mix | ffmpeg only: music under a video's own sound, ducked, -14 LUFS | a few seconds |
+
+The app plans with one peak per model: the highest peak of the tools that use it. So the UI shows 35 GB for every
+LTX-2.5 tool and 39 GB for Fish Drama 3 and its speech check, which can be more than the range in this table.
 
 Prompt help ("Improve") and Chat use the local LLM: Qwen3.8 27B, 4-bit (`mlx-community/Qwen3.8-27B-4bit`, run with
 [mlx-vlm](https://github.com/Blaizzy/mlx-vlm)). It is a download of about 16 GB and peaks at about 17-18 GB. It loads
@@ -112,7 +115,7 @@ The local LLM shares the memory with the jobs:
 
    ```sh
    .venv/bin/python start.py            # opens the app window
-   .venv/bin/python start.py --browser  # server only: open http://127.0.0.1:7870 in a browser
+   .venv/bin/python start.py --browser  # server only: open the link it prints in a browser
    .venv/bin/python start.py --chat     # the chat profile: Chat, Models and Settings only
    ```
 
@@ -122,7 +125,7 @@ The app uses port 7870. If the port is in use, `start.py` asks the app on that p
 
 - If the app there shows the other profile, `start.py` opens only a window on that app, in the profile you asked
   for. It does not start a second server, so the local LLM loads only once. Closing this window does not stop the
-  app. With `--browser`, `start.py` prints the address of that window and stops.
+  app. With `--browser`, `start.py` prints the link of that window and stops.
 - In all other cases (the same profile, or a port that another program uses), `start.py` says so and stops.
 
 Closing the app's own window, or Ctrl-C in `--browser` mode, cancels the queue and stops every model process. A
@@ -159,7 +162,8 @@ Do these steps:
 
 To start in the chat profile without `--chat`, set `profile = "chat"` in the `[app]` section of `config.toml`, or
 choose "Chat only" in Settings > Profile. The Settings choice applies at once and saves `profile` in `config.toml`.
-`--chat` always starts the chat profile, whatever `config.toml` says.
+`--chat` always starts the chat profile, whatever `config.toml` says. Settings > Profile names the saved profile,
+so you can see which profile the next start without `--chat` uses.
 
 To start the chat from Finder or the Dock, build `Workstation Chat.app` in the repository folder and keep it there:
 
@@ -351,7 +355,9 @@ The code that runs the models is MIT-licensed: mflux, mlx-audio, ACE-Step 1.5, l
 
 ## How it works
 
-- `start.py` starts the server on `127.0.0.1:7870` and opens a native window (pywebview, the system WebKit).
+- `start.py` starts the server on `127.0.0.1:7870` and opens a native window (pywebview, the system WebKit). The
+  window opens a sign-in link with this run's token, so other programs and users on the Mac cannot use the API.
+  In `--browser` mode the browser sends that cookie to every server on 127.0.0.1, so prefer the window.
 - `app/server.py`: the API (`docs/API.md`), the job queue, the output files and the memory display.
 - `app/tools.py`: the tools, their form fields and defaults, and the commands each job runs.
 - `app/models.py` and `app/models_api.py`: the model catalog (repositories, pinned revisions, sizes, peaks and

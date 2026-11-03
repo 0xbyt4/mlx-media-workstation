@@ -28,6 +28,7 @@ from app.config import PATHS, ROOT
 
 MODEL = models.BY_ID["qwen3.8-27b-4bit"]
 LOG = ROOT / "outputs" / "llm.log"
+CANCEL_WAIT = 0.5  # seconds a stopping worker gives its cancelled answers to end between two tokens
 LOAD_TIMEOUT = 300.0  # seconds to load the weights (about 16 GB from disk)
 STOP_WAIT = 5.0  # seconds for a clean exit before SIGKILL
 JOB_WAIT = 600.0  # seconds a media job waits for the answers before it; then it stops the model
@@ -115,6 +116,23 @@ class Worker:
     def stop(self, reason: str) -> None:
         self.reason = reason
         if self.alive():
+            with lock:
+                running = list(self.pending)
+            try:
+                # the worker ends the current answer before it reads shutdown: cancel it first, or the exit waits
+                # STOP_WAIT for the answer and then needs the SIGKILL
+                for rid in running:
+                    self.send({"op": "cancel", "id": rid})
+            except LLMError:
+                pass
+            # a request cancelled just before (Stop, the app closing) ends as cancelled; the rest end with the reason
+            end = time.monotonic() + CANCEL_WAIT
+            while time.monotonic() < end and any(r in self.pending for r in running):
+                time.sleep(0.02)
+            with lock:
+                for q in self.pending.values():
+                    q.put({"event": "error", "message": reason})
+                self.pending.clear()
             try:
                 self.send({"op": "shutdown"})
                 self.proc.stdin.close()
@@ -300,22 +318,36 @@ def check_installed() -> None:
         )
 
 
-def start() -> Worker:
-    """The running worker, started first if needed; waits until the model is loaded."""
-    global worker
+def start(cancelled: threading.Event | None = None) -> Worker | None:
+    """The running worker, started first if needed; waits until the model is loaded. None when cancelled is set
+    during the load: the load goes on in the worker, so the next request finds the model ready."""
+    global worker, last_used
     with start_lock:
         with lock:
             w = worker
         if w is None or not w.alive():
             check_installed()
-            w = Worker()
+            try:
+                w = Worker()
+            except OSError as e:  # a python that is not a program: a folder, no exec bit, the wrong CPU
+                raise LLMError(
+                    f"The LLM environment's python could not start ({PATHS.qwen_python}): {e.strerror}. "
+                    "Check qwen_python in Settings."
+                ) from e
             with lock:
                 if not closed:
                     worker = w
+                    # the idle watch counts from here: a model that loads is not idle (also after a Stop that
+                    # left it loading for the next request)
+                    last_used = time.time()
             if worker is not w:  # the app closed while it started
                 w.stop(CLOSED)
                 raise LLMError(CLOSED)
-        if not w.ready.wait(LOAD_TIMEOUT) or not w.alive():
+        deadline = time.monotonic() + LOAD_TIMEOUT
+        while not w.ready.wait(0.25) and w.alive() and time.monotonic() < deadline:
+            if cancelled is not None and cancelled.is_set():
+                return None
+        if not w.ready.is_set() or not w.alive():
             message = (
                 w.fatal or w.reason or "The model did not load. See outputs/llm.log."
             )
@@ -423,7 +455,16 @@ def run(
 ) -> Iterator[dict[str, Any]]:
     """The worker part of generate: send the request and yield its events."""
     global last_used
-    w = start()
+    w = start(cancelled)
+    if w is None:  # Stop while the model loaded
+        yield {
+            "event": "done",
+            "finish": "cancelled",
+            "reasoning": "",
+            "content": "",
+            "stats": {},
+        }
+        return
     q: queue.Queue = queue.Queue()
     with lock:
         w.pending[rid] = q
@@ -572,6 +613,7 @@ def stop_if_idle() -> bool:
         idle = (
             limit is not None
             and w is not None
+            and w.ready.is_set()  # still loading: not idle
             and not w.pending
             and not holding()  # a turn between its steps
             and time.time() - last_used > limit

@@ -151,8 +151,9 @@ function promptHelp() {
 async function saveProvider(id) {
   s.provErr.hidden = true;
   try {
-    await put({assist: {provider: id}});
-    toast('Prompt help saved. Restart the app to use it.');
+    const data = await put({assist: {provider: id}});
+    toast(data.assist.provider !== data.assist.active ? 'Prompt help saved. Restart the app to use it.' :
+      'Prompt help saved. The app uses it now.');
   } catch (e) {
     if (!s || e.name === 'AbortError') return;
     const fields = e.detail && e.detail.fields;
@@ -275,6 +276,7 @@ function rowFor(key, label, help, control) {
 }
 
 // The profile: what the sidebar shows. A window opened with ?profile= keeps its own, so it cannot change it here.
+// The select shows this run's profile, which --chat can set. The help names the saved one, so a change is not hidden.
 function profile() {
   const a = s.data.app;
   const pinned = s.ctx.store.profilePinned();
@@ -285,8 +287,9 @@ function profile() {
   const help = pinned
     ? 'This window opened next to the running app and always shows ' + (shown === 'chat' ? 'Chat only' : 'every section') +
       '. Change the profile in the app\'s own window.'
-    : 'Chat only hides Create, Jobs and Library, for a Mac with only the local LLM. It applies at once and is the ' +
-      'profile for the next start. start.py --chat and Workstation Chat.app always start in Chat only.';
+    : ['Chat only hides Create, Jobs and Library, for a Mac with only the local LLM. A change applies at once and is ' +
+      'saved for the next start. start.py --chat and Workstation Chat.app always start in Chat only. ' +
+      'Saved for Workstation.app and start.py: ', h('strong', null, a.saved_profile === 'chat' ? 'Chat only' : 'Full'), '.'];
   return section('set-pf', 'Profile', null, h('div', {class: 'card set-card'}, rowFor('profile', 'Sections', help, select)));
 }
 
@@ -494,7 +497,7 @@ function renderAgent() {
   s.agentResetBtn.hidden = !n;
   if (s.agentSaving) s.agentMsg.textContent = 'Saving...';
   else if (n) s.agentMsg.textContent = n === 1 ? '1 value changed.' : n + ' values changed.';
-  else if (a.restart_required) s.agentMsg.textContent = 'Saved. Until the restart the agent uses the values from the start.';
+  else if (a.restart_required) s.agentMsg.textContent = 'Saved. The agent uses the new values after a restart.';
   else s.agentMsg.textContent = 'No changes.';
 }
 
@@ -539,8 +542,9 @@ async function saveAgent() {
   s.agentSaving = true;
   renderAgent();
   try {
-    await put({agent: todo});
-    toast('Agent settings saved to config.toml. Restart the app to use them.');
+    const data = await put({agent: todo});
+    toast(data.agent.restart_required ? 'Agent settings saved to config.toml. Restart the app to use them.' :
+      'Agent settings saved to config.toml. The app uses them now.');
   } catch (e) {
     if (!s || e.name === 'AbortError') return;
     const fields = (e.detail && e.detail.fields) || {};
@@ -739,8 +743,9 @@ async function savePaths() {
   s.saving = true;
   renderSave();
   try {
-    await put({paths: todo});
-    toast('Paths saved to config.toml. Restart the app to use them.');
+    const data = await put({paths: todo});
+    toast(data.paths.some((r) => r.path !== r.active) ? 'Paths saved to config.toml. Restart the app to use them.' :
+      'Paths saved to config.toml. The app uses them now.');
   } catch (e) {
     if (!s || e.name === 'AbortError') return;
     const fields = (e.detail && e.detail.fields) || {};
@@ -798,7 +803,7 @@ function about() {
         faint((chatOnly() ? '' : 'Each job writes to outputs/<job id>/. ') + 'Chats are in outputs/chats/.')),
       row('Logs', mono('outputs/llm.log'), faint(' (local LLM)'), h('br'), mono('outputs/app.log'),
         faint(' (when started from Workstation.app or Workstation Chat.app)')),
-      row('Server', mono(location.host), faint(' on this Mac only. The app sends no data anywhere.')),
+      row('Server', mono(location.host), faint(' on this Mac only. The app sends no data off this Mac, except the agent\'s web tools after you approve a call.')),
     )),
     h('div', {class: 'set-row stack'},
       h('span', {class: 'label'}, 'README'),

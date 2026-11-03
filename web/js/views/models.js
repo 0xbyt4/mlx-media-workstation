@@ -367,7 +367,8 @@ function build(m, byId, busy) {
       m.licence_url ? extLink(m.licence_url, 'Read the licence') : null);
   }
 
-  const path = h('div', {class: 'model-path'}, h('span', {class: 'faint'}, m.installed ? 'At ' : 'Installs to '), m.path);
+  const path = h('div', {class: 'model-path'},
+    h('span', {class: 'faint'}, m.installed ? 'At ' : m.kind === 'manual' ? 'Looks for it at ' : 'Installs to '), m.path);
 
   const actions = [];
   let reason = null;
@@ -418,8 +419,8 @@ function build(m, byId, busy) {
     if (m.installed) extra.push(disclosure(m.id + ':install', 'Install commands', cmds));
     else {
       extra.push(h('div', {class: 'model-wide manual'},
-        h('p', {class: 'help'}, 'Workstation does not install this one. Run these commands in Terminal, then press Check again.',
-          m.path_key ? [' If it is in another folder, set ', h('code', null, m.path_key), ' in Settings.'] : null),
+        h('p', {class: 'help'}, 'Workstation does not install this one. Run these commands in Terminal, then press Check again. ',
+          pathHelp(m, true)),
         cmds,
         h('div', null, h('button', {type: 'button', class: 'btn btn-sm', 'data-k': 'recheck', onclick: () => recheck(m)},
           icon('refresh', 'ic-sm'), 'Check again'))));
@@ -642,12 +643,14 @@ function blockedWhy(m, byId) {
   return null;
 }
 
+// The weights that fit this Mac. Weights whose runtime is missing are left out: they cannot run after the download.
 function defaultPicks(d) {
   const byId = new Map(d.models.map((m) => [m.id, m]));
   const picks = new Set();
   for (const m of d.models) {
     // the full profile leaves out what no tool uses (the LLM); in the chat profile the LLM is the point
     if (m.kind !== 'download' || blockedWhy(m, byId) || (!(m.tools || []).length && !chatOnly())) continue;
+    if (missingEnvs(m, d).length) continue;
     const f = fit(m.peak_gb, d.machine.mem_total_gb, d.machine.mem_reserve_gb);
     if (f && f.k !== 'no') picks.add(m.id);
   }
@@ -821,6 +824,7 @@ function pickStep(d) {
     h('div', {class: 'setup-items'}, ms.map((m) => pickItem(m, d, byId)))));
 
   const anyMissing = all.some((m) => !m.installed);
+  const noEnv = all.some((m) => !m.installed && missingEnvs(m, d).length);
   live.total = h('p', {class: 'setup-total num', id: 'setup-total'});
   live.say = h('span', {class: 'sr-only', 'aria-live': 'polite'});
   live.go = h('button', {type: 'button', class: 'btn btn-primary', 'data-k': 'setup-go', 'aria-describedby': 'setup-total',
@@ -828,7 +832,8 @@ function pickStep(d) {
   const intro = anyMissing ?
     'Workstation runs open models on this Mac and uploads nothing. The models are not included: you download each one once. ' +
       'The picks below fit ' + (mem ? Math.round(mem) + ' GB' : 'this Mac') +
-      (chatOnly() ? ' and are what Chat needs.' : ' and are used by a tool. Change them if you like.') :
+      (chatOnly() ? ' and are what Chat needs.' : ' and are used by a tool. Change them if you like.') +
+      (noEnv ? ' A model whose environment is missing is not picked: install the environment below first.' : '') :
     'Every model that Workstation can download is installed.';
   return setupShell('Set up this Mac', 'Pick the models for this Mac', 1,
     h('p', {class: 'setup-intro'}, intro),
@@ -886,6 +891,18 @@ function pickItem(m, d, byId) {
       typeof m.peak_gb === 'number' ? h('span', {class: 'num faint'}, 'peak ' + fmtGb(m.peak_gb, 0)) : null));
 }
 
+// Where the commands put a manual entry. When that is not the folder Workstation checks, the user sets the path key.
+// The card shows the path above, so it gets the short text.
+function pathHelp(m, short) {
+  if (!m.path_key) return null;
+  if (m.install_path && m.install_path !== m.path) {
+    return ['The commands install it to ', h('code', {class: 'mono'}, m.install_path), '. Then set ', h('code', null, m.path_key),
+      ' to that path in Settings.'];
+  }
+  if (short) return ['If it is in another folder, set ', h('code', null, m.path_key), ' in Settings.'];
+  return ['It goes to ', h('code', {class: 'mono'}, m.path), '. For another folder, set ', h('code', null, m.path_key), ' in Settings.'];
+}
+
 // The environments and checkouts: Workstation cannot install them, and a model without its environment cannot run.
 function manualBlock(d) {
   const manual = d.models.filter((m) => m.kind === 'manual');
@@ -899,8 +916,7 @@ function manualBlock(d) {
       users.length ? h('span', {class: 'faint'}, 'Runs ' + users.join(', ')) : null);
     if (m.installed) return h('div', {class: 'setup-env'}, head);
     return h('div', {class: 'setup-env'}, head, commandBlock(m.install || '', 'Copy the install commands for ' + m.label),
-      m.path_key ? h('p', {class: 'help'}, 'It goes to ', h('code', {class: 'mono'}, m.path), '. For another folder, set ',
-        h('code', null, m.path_key), ' in Settings.') : null);
+      m.path_key ? h('p', {class: 'help'}, pathHelp(m)) : null);
   });
   return h('section', {class: 'setup-envs', 'aria-labelledby': 'setup-envs-h'},
     h('h3', {id: 'setup-envs-h'}, 'Environments you install by hand'),

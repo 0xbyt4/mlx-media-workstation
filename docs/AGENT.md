@@ -12,7 +12,7 @@ Each tool has a risk level. `app/agent/policy.py` decides from that level whethe
 |---|---|---|
 | R0 | Reads app state only. | Runs. |
 | R1 | Reads the user's files in the granted folder. | Runs when the chat has a granted folder. Refused without one. The grant is the consent. |
-| R2 | Sends text off this Mac, or queues minutes of compute. | Asks on the first use in a chat. The user can answer "Allow in this chat". When the chat is tainted, it asks every time, also with that grant. |
+| R2 | Sends text off this Mac, or queues minutes of compute. | Asks on the first use in a chat. The user can answer "Allow in this chat", except for a tool whose result taints the chat (web_search, fetch_url): after its first result it asks every time, so a chat-wide grant would do nothing. When the chat is tainted, every R2 call asks, also with that grant. |
 | R3 | Runs code, or has effects the app cannot check. | Asks every time. "Allow in this chat" is not offered. |
 
 A tool that is off in the chat's Tools menu is refused. An unknown tool name is refused. The model gets the reason as
@@ -149,14 +149,19 @@ search fails only when every source fails.
 - Seatbelt (`sandbox-exec`) is deprecated by Apple. It works on current macOS, but Apple may remove it.
 - The memory watchdog polls. Between two polls the code can use more memory than the limit.
 - The code can `stat` any path, so it can learn which files exist and their sizes and dates.
+- The code can read the Mac's name (`kern.hostname`), which often holds the user's name: `os.uname()` needs it,
+  and `ctypes` and `platform` call that at import.
 - The folders of a symlinked interpreter's target are not checked. A Homebrew `Cellar` folder, for example, is
   writable by the `admin` group.
 - A DNS lookup and the HTML parsing of `fetch_url` cannot be interrupted. Stop takes effect after they end.
 - The SearXNG URL is trusted. Its address is not checked, so it can be on this Mac or the local network.
 - The granted folder is not mounted in the sandbox. `run_python` cannot read the user's files. Only the file tools
   can, and only as text for the model.
-- A local program can send any `Origin` header. The same-origin check on approvals and grants stops other web pages,
-  not programs on this Mac.
+- A local program can send any `Origin` header. The same-origin check stops other web pages. Programs on this Mac
+  need the session cookie, which only the token file of this user gives (docs/API.md). A program that runs as this
+  user can read that file.
+- In `--browser` mode the browser sends the session cookie to every server on 127.0.0.1, at any port, that its pages
+  open. Use the app window when other local servers run.
 
 ## How the chat loop uses the package
 
@@ -183,11 +188,12 @@ registry per media flag, so at most one per profile: with the media tools (the f
 
 All steps run in one `llm.session()`. Its time limit counts from the moment it first holds the memory. `create_job`
 never waits for its job, because the job waits for that session. When the app closes, every running answer gets
-Stop (a waiting approval is denied) and a few seconds to save what it has. `docs/API.md` lists all rules of the loop.
+Stop (a waiting approval ends as stopped) and a few seconds to save what it has. `docs/API.md` lists all rules of the loop.
 
 In an agent chat, a Markdown link shows its host after its label ("label (host)"), and a long bare URL is shortened
 with the whole URL in its tooltip. A web page can tell the model to write a link that carries private text in its
-address: the host shows where one click sends it.
+address: the host shows where one click sends it. A link with a query shows the query too ("label
+(host/path?query)", cut at 80 characters), so the text that it sends is visible before the click.
 
 ## Settings
 

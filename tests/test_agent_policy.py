@@ -28,7 +28,8 @@ FOLDER = Path("/Users/someone/Documents/project")
         (R1, Grants(), False, Action.REFUSE, False),
         (R1, Grants(FOLDER), False, Action.RUN, False),
         (R1, Grants(FOLDER), True, Action.RUN, False),
-        (SEARCH, Grants(), False, Action.ASK, True),
+        # its result taints the chat, so a chat-wide yes would not hold: only once or deny
+        (SEARCH, Grants(), False, Action.ASK, False),
         (SEARCH, Grants().allow("web_search"), False, Action.RUN, False),
         # after untrusted content, a network call asks again despite the chat grant
         (SEARCH, Grants().allow("web_search"), True, Action.ASK, False),

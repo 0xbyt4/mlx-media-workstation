@@ -109,6 +109,50 @@ class ToolText:
         return f"\n\n{after}", f"{before.rstrip()}\n\n{after}", blocks
 
 
+def neutralize(
+    messages: list[dict[str, Any]], specials: list[str]
+) -> list[dict[str, Any]]:
+    """The messages with every special-token string in their text broken by a word joiner (U+2060), so text from a
+    web page, a file or a tool result cannot close its own block and speak as the user or the system. specials is
+    the tokenizer's added tokens (<|im_start|>, </tool_response>, ...); the system message is the app's own."""
+
+    def clean(text: Any) -> Any:
+        if not isinstance(text, str) or "<" not in text:
+            return text
+        for token in specials:
+            text = text.replace(token, token[0] + "\u2060" + token[1:])
+        return text
+
+    def deep(
+        value: Any,
+    ) -> Any:  # tool-call arguments: the template writes their strings raw
+        if isinstance(value, dict):
+            return {k: deep(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [deep(v) for v in value]
+        return clean(value)
+
+    out = []
+    for msg in messages:
+        if msg.get("role") != "system":
+            msg = {
+                **msg,
+                "content": clean(msg.get("content")),
+                "reasoning_content": clean(msg.get("reasoning_content")),
+            }
+            if msg["reasoning_content"] is None:
+                del msg["reasoning_content"]
+            if msg.get("tool_calls"):
+                msg["tool_calls"] = [deep(call) for call in msg["tool_calls"]]
+            if isinstance(msg["content"], list):
+                msg["content"] = [
+                    {**part, "text": clean(part["text"])} if "text" in part else part
+                    for part in msg["content"]
+                ]
+        out.append(msg)
+    return out
+
+
 def parse_calls(
     blocks: list[tuple[str, bool]],
     parse: Callable[[str, Any], Any],
@@ -168,6 +212,11 @@ class Engine:
         self.state = PromptCacheState()
         # the tool-call parser module, loaded at the first request with tools
         self.parser: Any = None
+        # the strings the tokenizer turns into special tokens; neutralize() breaks them in message text
+        added = self.processor.tokenizer.added_tokens_decoder.values()
+        self.specials = sorted(
+            {t.content for t in added if len(t.content) > 1}, key=len, reverse=True
+        )
 
     def tool_parser(self) -> Any:
         if self.parser is None:
@@ -198,7 +247,7 @@ class Engine:
         prompt = self.template(
             self.processor,
             self.model.config,
-            req["messages"],
+            neutralize(req["messages"], self.specials),
             num_images=len(images),
             enable_thinking=thinking,
             **options,

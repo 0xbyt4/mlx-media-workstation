@@ -8,14 +8,14 @@ import {
   inlineConfirm, emptyState, errorBox, menu, media, downloadLink, lightbox,
 } from '../ui.js';
 
-const FILTERS = [['all', 'All'], ['active', 'Active'], ['done', 'Done'], ['failed', 'Failed']];
+const FILTERS = [['all', 'All'], ['active', 'Active'], ['done', 'Done'], ['failed', 'Failed or cancelled']];
 const STATUS = {
   queued: ['Queued', 'idle'], running: ['Running', 'run'], done: ['Done', 'ok'], failed: ['Failed', 'err'],
   cancelled: ['Cancelled', 'idle'],
 };
 const KIND_ICON = {image: 'image', audio: 'voice', video: 'video'};
 
-// Kept across mounts: details the user opened or closed, and queued jobs waiting for their Undo to expire.
+// Kept across mounts: details the user opened or closed, and queued jobs that are being removed.
 const openDetails = new Set();
 const removing = new Set();  // job ids being removed, hidden until the next refresh
 
@@ -114,7 +114,7 @@ function render() {
   place(s.finSec.body, shownFinished, seen);
   const finEmpty = s.finSec.body.querySelector(':scope > .empty');
   if (!shownFinished.length && !finEmpty) {
-    s.finSec.body.append(emptyState({icon: 'check', title: s.filter === 'failed' ? 'No failed jobs' : 'No finished jobs',
+    s.finSec.body.append(emptyState({icon: 'check', title: s.filter === 'failed' ? 'No failed or cancelled jobs' : 'No finished jobs',
       text: s.filter === 'failed' ? 'Every job so far has worked.' : 'Finished jobs appear here with their results.'}));
   }
   if (shownFinished.length && finEmpty) finEmpty.remove();
@@ -300,7 +300,7 @@ function buildRunning(job) {
     r.stage.textContent = p.stage || 'Starting';
     r.left.textContent = [known ? Math.round(p.fraction * 100) + '%' : '', fmtLeft(p.eta_s)].filter(Boolean).join(' · ');
     r.elapsed.textContent = fmtDuration(store.liveElapsed(j)) + ' elapsed';
-    setLog(r.log, j.log_tail || '');
+    setLog(r.log, j.log_tail || 'No output yet.');
   };
   card.tick = () => {
     r.elapsed.textContent = fmtDuration(store.liveElapsed(card.job)) + ' elapsed';
@@ -447,17 +447,17 @@ function diagnose(job) {
   if (/LocalEntryNotFoundError|Cannot find the requested files/.test(all)) {
     return {title: 'A model file is missing', fixes: [
       'Open Models and check the model this tool uses. Download it again if it shows as not installed.',
-      'Press Run again.']};
+      'Press Use these settings, then press Generate in Create.']};
   }
   if (/signal 9|SIGKILL|code -9\b|code 137\b|Killed: 9/.test(all)) {
     return {title: 'macOS stopped the job: memory may have run out', fixes: [
       'Quit other apps that use a lot of memory.',
-      'Press Run again. If it stops again, pick a smaller size, a shorter length or fewer takes.']};
+      'Press Use these settings and generate again. If it stops again, pick a smaller size, a shorter length or fewer takes.']};
   }
   if (/multiple of 64/.test(all)) {
     return {title: 'This video size does not work here', fixes: [
       'Use a clip from the video tools: their sizes are multiples of 64.',
-      'Or crop the clip so both sides are a multiple of 64, then press Run again.']};
+      'Or crop the clip so both sides are a multiple of 64. Then press Use these settings and generate again.']};
   }
   return {title: 'The job failed', fixes: []};
 }
@@ -500,8 +500,9 @@ function buildFinished(job) {
   } else if (job.error) {
     body = h('p', {class: 'muted small'}, job.error);
   }
+  // Loads the job's settings into Create. It does not start a job.
   const useBtn = h('button', {type: 'button', class: 'btn btn-sm', onclick: () => s.ctx.handoff.useSettings(job)},
-    icon(job.status === 'done' ? 'undo' : 'refresh', 'ic-sm'), job.status === 'done' ? 'Use these settings' : 'Run again');
+    icon(job.status === 'done' ? 'undo' : 'refresh', 'ic-sm'), 'Use these settings');
   const delBtn = h('button', {type: 'button', class: 'btn btn-sm btn-ghost btn-icon', 'aria-label': 'Delete this job and its files'}, icon('trash', 'ic-sm'));
   delBtn.addEventListener('click', () => {
     delBtn.hidden = true;
@@ -522,7 +523,8 @@ function buildFinished(job) {
   });
   const side = h('div', {class: 'job-side'}, pill(job.status),
     h('span', {class: 'num'}, fmtTime(job.finished || job.created) + (typeof job.elapsed === 'number' && job.elapsed > 0 ? ' · took ' + fmtClock(job.elapsed) : '')),
-    typeof job.peak_gb === 'number' ? h('span', {class: 'num'}, 'peak ' + fmtGb(job.peak_gb)) : null);
+    // a process that stops at once reports a peak of about 0 GB, which says nothing
+    typeof job.peak_gb === 'number' && job.peak_gb >= 0.1 ? h('span', {class: 'num'}, 'peak ' + fmtGb(job.peak_gb)) : null);
   const el = h('article', {class: 'card job', 'aria-label': label + ', ' + (STATUS[job.status] || [job.status])[0]},
     jobTop(job, side), body,
     params.length ? trackedDetails(job, 'params', 'All settings',

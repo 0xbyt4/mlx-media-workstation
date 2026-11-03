@@ -272,6 +272,8 @@
   color: var(--warn);
 }
 .views {
+  /* Contain the absolute sr-only text, so that only this pane scrolls. */
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow: auto;

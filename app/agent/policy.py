@@ -73,7 +73,11 @@ def decide(
     if tool is None:
         return Verdict(Action.REFUSE, "There is no such tool.")
     if enabled is not None and tool.name not in enabled:
-        return Verdict(Action.REFUSE, f"The tool {tool.name} is off in this chat.")
+        return Verdict(
+            Action.REFUSE,
+            f"The tool {tool.name} is off in this chat. Do not call it again; tell the user that they can "
+            "turn it on in this chat's Tools menu.",
+        )
     if tool.risk == Risk.R0:
         return Verdict(Action.RUN, "Reads app state only.")
     if tool.risk == Risk.R1:
@@ -92,7 +96,10 @@ def decide(
             )
         if tool.name in grants.tools:
             return Verdict(Action.RUN, "Allowed in this chat.")
-        return Verdict(Action.ASK, "First use in this chat.", chat_scope=True)
+        # a tool whose result taints the chat asks again after its first result: a chat-wide yes would do nothing
+        return Verdict(
+            Action.ASK, "First use in this chat.", chat_scope=not tool.untrusted_output
+        )
     return Verdict(Action.ASK, "This tool asks every time.")
 
 

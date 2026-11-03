@@ -144,6 +144,28 @@ def test_view_of_a_running_job(state: Path, make_job: Job) -> None:
     assert "pgid" not in v and "files" not in v
 
 
+def test_view_of_a_running_job_tails_its_log(state: Path, make_job: Job) -> None:
+    make_job("j1", "running", started=None)
+    assert server.view(server.jobs["j1"])["log_tail"] == ""  # no log yet
+    lines = [f"line {i}" for i in range(40)]
+    (state / "j1" / "job.log").write_bytes(
+        ("\n".join(lines) + "\nbad \xff byte\n").encode("latin-1")
+    )
+    tail = server.view(server.jobs["j1"])["log_tail"].splitlines()
+    assert tail == [*lines[-24:], "bad \ufffd byte"]
+
+
+def test_live_tail_reads_only_the_end(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server, "TAIL_BYTES", 10)
+    log = state / "job.log"
+    log.write_text("first line\nab\ncd\n")
+    assert server.live_tail(log) == "ab\ncd"  # the cut line is dropped
+    log.write_text("ab\ncd\n")
+    assert server.live_tail(log) == "ab\ncd"
+
+
 def test_view_of_queued_and_finished_jobs(state: Path, make_job: Job) -> None:
     make_job("late", "queued", created="2026-11-02T10:00:05")
     make_job("early", "queued", created="2026-11-02T10:00:01")
@@ -290,6 +312,73 @@ def test_worker_runs_queued_jobs_until_shutdown(
     for job_id in ("early", "late"):  # the worker may have started "late" too
         job = saved(state, job_id)
         assert (job["status"], job["error"]) == ("cancelled", "The app was closed.")
+
+
+def test_a_failed_job_json_write_fails_the_job_and_the_queue_goes_on(
+    state: Path, make_job: Job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tools, "plan", lambda *a: tools.Plan([["/usr/bin/true"]], {}))
+    monkeypatch.setattr(llm, "claim", lambda peak, abort=lambda: False: True)
+    real_save = server.save
+
+    def save(job: dict[str, Any]) -> None:
+        if job["id"] == "full" and job.get(
+            "finished"
+        ):  # the last write of the job: the disk is full
+            raise OSError(28, "No space left on device")
+        real_save(job)
+
+    monkeypatch.setattr(server, "save", save)
+    full = make_job("full", "queued", order=1)
+    make_job("next", "queued", order=2)
+    worker = threading.Thread(target=server.worker, daemon=True)
+    worker.start()
+    server.wake.set()
+    deadline = time.time() + 10
+    while (
+        server.jobs["next"]["status"] in ("queued", "running")
+        and time.time() < deadline
+    ):
+        time.sleep(0.05)
+    assert worker.is_alive()
+    assert (
+        server.jobs["next"]["status"] == "failed"
+    )  # /usr/bin/true writes no output; it ran all the same
+    assert full["status"] == "failed"
+    server.stopping.set()
+    server.wake.set()
+    worker.join(5)
+
+
+def test_a_model_left_running_by_a_failed_write_is_stopped(
+    state: Path, make_job: Job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tools, "plan", lambda *a: tools.Plan([["/bin/sleep", "30"]], {})
+    )
+    monkeypatch.setattr(llm, "claim", lambda peak, abort=lambda: False: True)
+    started: list[int] = []
+
+    def save(job: dict[str, Any]) -> None:
+        if job.get("pgid") or job.get(
+            "finished"
+        ):  # the disk is full from the model's start on
+            started.append(job.get("pgid") or 0)
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(server, "save", save)
+    job = make_job("full", "queued")
+    worker = threading.Thread(target=server.worker, daemon=True)
+    worker.start()
+    server.wake.set()
+    deadline = time.time() + 20
+    while (job["status"] != "failed" or server.procs) and time.time() < deadline:
+        time.sleep(0.05)
+    assert job["status"] == "failed" and not server.procs
+    assert not server.group_alive(started[0])  # the model's process group is gone
+    server.stopping.set()
+    server.wake.set()
+    worker.join(5)
 
 
 def test_worker_takes_the_new_first_job_after_a_move_during_its_claim(

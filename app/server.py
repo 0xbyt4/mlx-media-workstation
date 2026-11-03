@@ -3,7 +3,9 @@
 Listens on 127.0.0.1 only and answers only requests addressed to it (Host check) from its own page (Origin check), so
 other web pages cannot reach it through the browser, and no page may show it in a frame (frame_headers). At start it
 writes a random token to outputs/.server-token (0600); GET /api/system?nonce= proves it knows the token, so start.py
-opens a window only on this app. Jobs live in outputs/<id>/ with job.json (state and parameters),
+opens a window only on this app. Every request needs the session cookie, which GET /auth?t=<token> sets: start.py
+opens the window there. So another program or user on this Mac, which cannot read the token file, gets 401.
+In --browser mode the browser also sends the cookie to other servers on 127.0.0.1 (cookies ignore the port). Jobs live in outputs/<id>/ with job.json (state and parameters),
 job.log (the model's output) and the result files; the list is rebuilt from those folders at start.
 
 One model at a time: the worker starts a job's process (its own process group) under the lock, and does not take the
@@ -28,6 +30,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -59,6 +62,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs"
 WEB = ROOT / "web"
 PORT = 7870
+TAIL_LINES = 25  # log lines in a job's view
+TAIL_BYTES = 64 * 1024  # the part of a running job's log that is read for its tail
 ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
 KINDS = {
     ".png": "image",
@@ -91,6 +96,12 @@ TOKEN_NAME = ".server-token"
 token: str | None = (
     None  # this run's secret; only start.py (the same user) can read the file that holds it
 )
+# where /auth may go: a path of this app (not //host) in printable ASCII, with no spaces or backslashes
+NEXT = re.compile(r"/(?![/\\])[!-\[\]-~]*")
+SESSION_COOKIE = f"workstation_{PORT}"  # holds the token; HttpOnly, SameSite=Strict
+SIGN_IN = """<!doctype html><meta charset="utf-8"><title>Workstation</title>
+<p style="font: 15px -apple-system, sans-serif; margin: 3em">Open Workstation with Workstation.app or
+<code>start.py</code>. This address needs the link that start.py opens or prints.</p>"""
 
 app = FastAPI(title="Workstation", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
@@ -117,10 +128,42 @@ def frame_headers(response: Response) -> Response:
     return response
 
 
+def signed_in(request: Request) -> bool:
+    return (
+        token is not None
+        and hmac.compare_digest(  # bytes: any text compares, ASCII or not
+            request.cookies.get(SESSION_COOKIE, "").encode(), token.encode()
+        )
+    )
+
+
+def open_route(request: Request) -> bool:
+    """The routes that work without the session: the sign-in link, and start.py's check of the server (it answers
+    only the proof and the profile without the session; see system())."""
+    path = request.url.path
+    return request.method == "GET" and (
+        path == "/auth" or (path == "/api/system" and "nonce" in request.query_params)
+    )
+
+
 @app.middleware("http")
 async def same_origin_writes(request: Request, call_next):
-    """Changes (every method but GET and HEAD) only from this app's own page, and no oversized bodies. Every
-    response, a refusal too, gets the frame headers."""
+    """Every request needs the session cookie (signed_in), except open_route. Changes (every method but GET and
+    HEAD) only from this app's own page, and no oversized bodies. Every response, a refusal too, gets the frame
+    headers."""
+    if not signed_in(request) and not open_route(request):
+        if request.url.path.startswith("/api/") or request.url.path.startswith(
+            "/files/"
+        ):
+            refusal: Response = JSONResponse(
+                {
+                    "detail": "Not signed in: open the app with Workstation.app or start.py."
+                },
+                status_code=401,
+            )
+        else:
+            refusal = Response(SIGN_IN, status_code=401, media_type="text/html")
+        return frame_headers(refusal)
     if request.method not in ("GET", "HEAD"):
         origin = request.headers.get("origin")
         if origin is not None and origin not in ORIGINS:
@@ -145,7 +188,11 @@ def now() -> str:
 
 
 def save(job: dict[str, Any]) -> None:
-    (OUT / job["id"] / "job.json").write_text(json.dumps(job, indent=1))
+    """Write job.json through a temporary file, so a failed or concurrent write never leaves half a file."""
+    path = OUT / job["id"] / "job.json"
+    tmp = path.with_name(f".job.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(job, indent=1))
+    os.replace(tmp, path)
 
 
 def queue_key(job: dict[str, Any]) -> tuple[float, str, str]:
@@ -254,6 +301,25 @@ def peak_gb(log: str) -> float | None:
     return round(max(int(x) for x in m) / 2**30, 1) if m else None
 
 
+def tail(log: str) -> str:
+    return "\n".join(log.splitlines()[-TAIL_LINES:])
+
+
+def live_tail(path: Path) -> str:
+    """The last lines of a running job's log. Only the end of the file is read, because a tqdm log can be large."""
+    try:
+        with path.open("rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - TAIL_BYTES))
+            text = f.read().decode(errors="replace")
+    except OSError:  # not yet written while the job's inputs are prepared
+        return ""
+    lines = text.splitlines()
+    if size > TAIL_BYTES:  # the first line is cut
+        lines = lines[1:]
+    return "\n".join(lines[-TAIL_LINES:])
+
+
 def run_job(job: dict[str, Any]) -> None:
     job_dir = OUT / job["id"]
     log_path = job_dir / "job.log"
@@ -304,7 +370,7 @@ def run_job(job: dict[str, Any]) -> None:
             job["status"], job["error"] = "failed", f"{type(e).__name__}: {e}"
     finally:
         log = log_path.read_text(errors="replace") if log_path.exists() else ""
-        job["log_tail"] = "\n".join(log.splitlines()[-25:])
+        job["log_tail"] = tail(log)
         job["peak_gb"] = peak_gb(log)
         job["finished"], job["elapsed"] = now(), round(time.time() - t0, 1)
         job.pop("pgid", None)
@@ -315,37 +381,64 @@ def worker() -> None:
     while not stopping.is_set():
         wake.wait(2)
         wake.clear()
-        with lock:
-            if stopping.is_set():
-                return
-            queued = queued_jobs()
-            job = queued[0] if queued else None
-        if not job:
-            continue
-        go = False
+        job: dict[str, Any] | None = None
         try:
-            # before the job counts as running: prompt help and chat answers sent before it finish first
             with lock:
-                claiming.add(job["id"])
-            go = llm.claim(
-                models.tool_peak(job["tool"]),
-                lambda j=job: j["status"] != "queued" or stopping.is_set(),
-            )
+                if stopping.is_set():
+                    return
+                queued = queued_jobs()
+                job = queued[0] if queued else None
+            if job:
+                run_next(job)
+        except Exception as e:  # noqa: BLE001 - e.g. a full disk: this job fails, the queue keeps running
+            traceback.print_exc()
             with lock:
-                claiming.discard(job["id"])
-                go = go and job["status"] == "queued" and not stopping.is_set()
-                # a move during the claim may have put another job first: the next round picks that one
-                go = go and queued_jobs()[0] is job
-                if go:
-                    job["status"], job["started"] = "running", now()
-                    save(job)
+                orphan = procs.pop(job["id"], None) if job is not None else None
+            if (
+                orphan is not None
+            ):  # a save failed while its model ran: stop it, so no two models run at once
+                stop_group(orphan.pid)
+            with lock:
+                if job is not None:
+                    claiming.discard(job["id"])
+                    if job["status"] in ("queued", "running"):
+                        job["status"], job["error"] = (
+                            "failed",
+                            f"{type(e).__name__}: {e}",
+                        )
+            sync_awake()
+            time.sleep(
+                1
+            )  # a disk that stays full must not turn this loop into a busy loop
+        if job:
+            wake.set()
+
+
+def run_next(job: dict[str, Any]) -> None:
+    """Claim the memory for the first queued job, run it and announce the end."""
+    go = False
+    try:
+        # before the job counts as running: prompt help and chat answers sent before it finish first
+        with lock:
+            claiming.add(job["id"])
+        go = llm.claim(
+            models.tool_peak(job["tool"]),
+            lambda j=job: j["status"] != "queued" or stopping.is_set(),
+        )
+        with lock:
+            claiming.discard(job["id"])
+            go = go and job["status"] == "queued" and not stopping.is_set()
+            # a move during the claim may have put another job first: the next round picks that one
+            go = go and queued_jobs()[0] is job
             if go:
-                run_job(job)
-        finally:
-            llm.release()
+                job["status"], job["started"] = "running", now()
+                save(job)
         if go:
-            ended(job)
-        wake.set()
+            run_job(job)
+    finally:
+        llm.release()
+    if go:
+        ended(job)
 
 
 def shutdown() -> None:
@@ -390,6 +483,8 @@ def view(job: dict[str, Any]) -> dict[str, Any]:
     ):  # first in line, but answers of prompt help or chat finish first
         v["waiting"] = "Waiting for the prompt help or chat answer to finish."
     v["outputs"] = v["outputs"] or []
+    if job["status"] == "running":  # run_job saves the tail only at the end
+        v["log_tail"] = live_tail(OUT / job["id"] / "job.log")
     if job["status"] == "running" and job.get("started"):
         v["elapsed"] = round(
             (datetime.now() - datetime.fromisoformat(job["started"])).total_seconds(), 1
@@ -833,11 +928,30 @@ def remove_token() -> None:
         pass
 
 
+@app.get("/auth")
+def auth(t: str = "", next: str = "/") -> Response:
+    """The sign-in link start.py opens: with this run's token it sets the session cookie and goes to `next` (a path
+    of this app only)."""
+    if token is None or not hmac.compare_digest(t.encode(), token.encode()):
+        return Response(SIGN_IN, status_code=403, media_type="text/html")
+    if not NEXT.fullmatch(next):  # no other site, no header breaks
+        next = "/"
+        next = "/"
+    response = Response(status_code=303, headers={"Location": next})
+    response.set_cookie(
+        SESSION_COOKIE, token, httponly=True, samesite="strict", path="/"
+    )
+    return response
+
+
 @app.get("/api/system")
-def system(nonce: str | None = None) -> dict[str, Any]:
-    """The memory, the queue and the profile. With ?nonce= (start.py), also `proof`: HMAC(token, nonce)."""
+def system(request: Request, nonce: str | None = None) -> dict[str, Any]:
+    """The memory, the queue and the profile. With ?nonce= (start.py), also `proof`: HMAC(token, nonce); without
+    the session, only the proof and the profile."""
     if nonce is not None and not NONCE.fullmatch(nonce):
         raise HTTPException(400, "Bad nonce: 32 to 128 lowercase hex digits")
+    if nonce is not None and not signed_in(request):
+        return {"proof": proof(nonce), "profile": config.APP.profile}
     page = 16384
     vm = subprocess.run(["vm_stat"], capture_output=True, text=True, check=False).stdout
     pages = {

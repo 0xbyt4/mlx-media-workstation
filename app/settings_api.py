@@ -140,6 +140,11 @@ def snapshot() -> dict[str, Any]:
     _, data, error = read_file(file)
     file_paths = data.get("paths", {}) if isinstance(data.get("paths"), dict) else {}
     file_assist = data.get("assist", {}) if isinstance(data.get("assist"), dict) else {}
+    file_app = data.get("app", {}) if isinstance(data.get("app"), dict) else {}
+    # the profile of the next start without --chat; this run's profile can differ
+    saved_profile = file_app.get("profile")
+    if config.check_app("profile", saved_profile) is not None:
+        saved_profile = config.APP_DEFAULTS["profile"]
     rows = []
     for key, default in config.DEFAULTS.items():
         value = file_paths.get(key)
@@ -187,6 +192,7 @@ def snapshot() -> dict[str, Any]:
             "defaults": config.APP_DEFAULTS,
             "idle_choices": list(config.IDLE_CHOICES),
             "profiles": list(config.PROFILES),
+            "saved_profile": saved_profile,
         },
         "llm": {"idle_stop_s": llm.idle_stop()},
         "agent": agent,

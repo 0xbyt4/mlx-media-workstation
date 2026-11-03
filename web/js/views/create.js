@@ -101,8 +101,10 @@ function initialTool(params) {
   if (params && byId.has(params.tool)) return params.tool;
   const last = lsGet(KEY.lastTool);
   if (byId.has(last)) return last;
-  const first = groupTools(store.get('tools'))[0];
-  return first ? first.tools[0].id : null;
+  // the first tool that is not known to be missing a model
+  const all = groupTools(store.get('tools')).flatMap((g) => g.tools);
+  const pick = all.find((t) => store.toolInstalled(t.id) !== false) || all[0];
+  return pick ? pick.id : null;
 }
 
 function onKey(e) {
@@ -684,7 +686,7 @@ function buildFormData(tool) {
 // ---------- submit ----------
 
 async function submit() {
-  if (!s || !s.tool || s.submitting) return;
+  if (!s || !s.tool || s.submitting || store.toolInstalled(s.tool.id) === false) return;
   const tool = s.tool;
   showSubmitError(null);
   let firstBad = null;
@@ -892,12 +894,14 @@ function updateGenerate() {
   const tool = s.tool;
   const installed = tool ? store.toolInstalled(tool.id) : null;
   const busy = store.get('jobs').some((j) => store.ACTIVE.has(j.status));
-  els.generate.disabled = !tool || s.submitting;  // the server checks the files and says what is missing
+  // The server checks the files again and says what is missing.
+  els.generate.disabled = !tool || s.submitting || installed === false;
   els.reset.disabled = !tool;
-  els.generate.replaceChildren(...(s.submitting ? [h('span', {class: 'spinner'}), 'Submitting'] : [busy ? 'Add to queue' : 'Generate']));
+  els.generate.replaceChildren(...(s.submitting ? [h('span', {class: 'spinner'}), 'Submitting']
+    : [installed === false ? 'Install first' : busy ? 'Add to queue' : 'Generate']));
   els.genWhy.hidden = installed !== false;
   if (installed === false) {
-    els.genWhy.textContent = 'The Models screen shows a model of this tool as not installed, so the job may fail.';
+    els.genWhy.textContent = 'A model of this tool is not installed. Install it in Models, or set its folder in Settings.';
     els.generate.setAttribute('aria-describedby', 'gen-why');
   } else {
     els.generate.removeAttribute('aria-describedby');
@@ -987,15 +991,16 @@ function refreshFacts() {
   updateGenerate();
 }
 
-// First run: no model is installed yet (docs/DESIGN.md decision 11).
+// First run: no tool that needs a model can run yet. Its weights or its runtime are missing (docs/DESIGN.md
+// decision 11).
 function renderSetup() {
   const models = store.get('models');
-  const none = models && !models.models.some((m) => m.kind === 'download' && m.installed && (m.tools || []).length);
+  const none = models && !store.get('tools').some((t) => store.toolModels(t.id).length && store.toolInstalled(t.id));
   s.els.setup.replaceChildren();
   if (!none) return;
   s.els.setup.append(h('div', {class: 'banner banner-info'}, icon('info'),
-    h('div', {class: 'banner-body'}, h('strong', null, 'No models installed yet'),
-      h('span', null, 'Workstation does not ship the models. Pick the ones that fit this Mac and it downloads them for you. Mix needs no model and works now.'),
+    h('div', {class: 'banner-body'}, h('strong', null, 'No model is ready yet'),
+      h('span', null, 'Workstation does not ship the models. Pick the ones that fit this Mac: it downloads the weights and shows the commands for the runtimes. Mix needs no model and works now.'),
       h('div', {class: 'banner-actions'}, h('button', {type: 'button', class: 'btn btn-primary btn-sm', onclick: () => s.ctx.router.go('models', {setup: '1'})}, 'Set up models')))));
 }
 

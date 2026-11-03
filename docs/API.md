@@ -4,6 +4,14 @@ The server (`app/server.py`, FastAPI) listens on `http://127.0.0.1:7870` only. T
 (`index.html`, `css/`, `js/`; see `web/README.md`), served at `/`. Plain HTML, CSS and JavaScript: no framework, no build step,
 no CDN or other network request. All JSON is UTF-8.
 
+Every request needs the session cookie (`workstation_7870`, HttpOnly, SameSite=Strict). Without it the server
+answers HTTP 401: a JSON `detail` for `/api/` and `/files/`, a short HTML page for the rest. `GET /auth?t=<token>&next=<path>`
+sets the cookie when `t` is this run's token (see `GET /api/system?nonce=` below) and answers 303 to `next`, a path of
+this app (`/` for anything else). A wrong token is HTTP 403. `start.py` opens the window on this link and prints it in
+`--browser` mode. So another program or another user on this Mac, which cannot read `outputs/.server-token`, cannot use
+the API. Limit: cookies ignore the port, so in `--browser` mode the browser also sends the cookie to other servers on
+127.0.0.1 that its pages open. The app window keeps its cookies to itself. Only `/auth` and `/api/system?nonce=` work without the cookie.
+
 Every response has `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`, so no other page
 can show the app in a frame. A response with its own policy (the workspace files) gets `frame-ancestors 'none'`
 added to it.
@@ -80,6 +88,7 @@ checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Erro
 - `waiting` (a text) is set only on the first queued job while it waits for prompt help or chat answers to finish
   before it starts.
 - `elapsed` counts from `started` while the job runs; after it, it is the time the job took.
+- `log_tail` holds the last 25 lines of `job.log`. While the job runs, it is read from the file on each request.
 - Only one job runs at a time (each model needs most of the memory of a 32-48 GB Mac).
 
 `POST /api/jobs/{id}/cancel` cancels a queued or running job and returns `{"status": "cancelled"}`, or the job's
@@ -155,7 +164,7 @@ this endpoint when the port is in use, to find out whether the Workstation runs 
 server's token as the key. At start the server writes a new random token to `outputs/.server-token` (mode 0600,
 an atomic write) and removes it at a clean shutdown. `start.py` reads the file, sends a random nonce and opens a
 window only when the proof matches, so another program on the port cannot get a window. The token itself is never
-sent. A bad nonce is HTTP 400.
+sent. Without the session cookie the answer has only `proof` and `profile`. A bad nonce is HTTP 400.
 
 ## Models
 
@@ -186,6 +195,7 @@ sent. A bad nonce is HTTP 400.
       "disk_free_gb": 412.3,
       "needs": null,
       "install": null,
+      "install_path": null,
       "download": {"status": "queued | running | done | failed | cancelled", "position": null, "error": null,
                    "done_gb": 12.4, "total_gb": 54.1, "percent": 22.9, "speed_mbs": 85.2, "eta_s": 489,
                    "idle_s": 0, "stalled": false}
@@ -209,6 +219,8 @@ sent. A bad nonce is HTTP 400.
 - `features` lists the app features outside the tool list that need the entry (`"Prompt help"`, `"Chat"`). The chat
   profile shows only the entries whose `features` hold `"Chat"`. `used_by` is the tool labels plus `features`.
 - `path_key` is the `config.toml` key of the install path; `null` means the Hugging Face cache.
+- `install_path` is where the `install` commands put a manual entry: the default path of `path_key`. When it differs
+  from `path`, the user sets `path_key` to it after the install. It is `null` for downloads.
 - `fits` is true when `peak_gb` plus `mem_reserve_gb` is at most `mem_total_gb`.
 - `needs` names an entry to install first. `download` is `null` unless this model is queued, downloading, or was
   downloaded since the app started. A queued entry has `status: "queued"` and `position` (1 = it starts next); its
@@ -466,8 +478,9 @@ The chat's agent state is in `chat.json` under `agent`:
 - `tainted` is `true` after a tool returned untrusted text (a page, a file, program output). From then on every
   network or job call asks again.
 
-Endpoints. The writes need an `Origin` header of the app's own page (HTTP 403 without it), so a script on this Mac
-cannot approve calls or grant folders through plain `curl`.
+Endpoints. Like every endpoint they need the session cookie, so a program on this Mac that cannot read the token
+file cannot approve calls or grant folders. The writes also need an `Origin` header of the app's own page (HTTP 403
+with another one).
 
 - `GET /api/chats/{id}/agent` returns the state for the Tools menu: `folder`, `grants`, `tainted`, `enabled` (the
   names), `limits` (`steps`, `seconds`, `approval_s`) and `tools`, a list of `{name, label, description, risk,
@@ -567,7 +580,7 @@ oldest turns are dropped. The budget counts the system prompt and the tool schem
   },
   "app": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full",
           "defaults": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full"},
-          "idle_choices": [5, 10, 30, 60, 0], "profiles": ["full", "chat"]},
+          "idle_choices": [5, 10, 30, 60, 0], "profiles": ["full", "chat"], "saved_profile": "full"},
   "llm": {"idle_stop_s": 600.0},
   "agent": {"python": "", "searxng_url": "", "wikipedia_language": "en", "marginalia": true,
             "defaults": {"python": "", "searxng_url": "", "wikipedia_language": "en", "marginalia": true},
@@ -595,7 +608,9 @@ oldest turns are dropped. The budget counts the system prompt and the tool schem
   sleep while a job is queued or running), `notify` (a macOS notification when a job is done or failed; none for a
   cancelled job), `llm_idle_minutes` (minutes without use before the local LLM unloads; 0 = never) and `profile`
   (one of `profiles`; see [System](#system)). `idle_choices` are the minutes the screen offers. After
-  `start.py --chat`, `profile` is `"chat"` although `config.toml` may say `"full"`.
+  `start.py --chat`, `profile` is `"chat"` although `config.toml` may say `"full"`. `saved_profile` is the profile
+  in `config.toml` (the default when the file does not set a valid one): the profile of the next start without
+  `--chat`.
 - `agent` holds the `[agent]` values in `config.toml` (Settings > Agent; [AGENT.md](AGENT.md#settings)): `python` (the
   sandbox interpreter of `run_python`; `""` = the app's own Python with the standard library only), `searxng_url`,
   `wikipedia_language` and `marginalia`. A key the file does not set, or sets to a bad value, shows its default.

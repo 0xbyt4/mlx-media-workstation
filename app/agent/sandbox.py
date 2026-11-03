@@ -53,7 +53,7 @@ SYSTEM_READ = (
 )
 # what Python's start, os.uname() and platform read besides hw.* (found with the sandbox violation log)
 SYSCTLS = (
-    "kern.hostname",
+    "kern.hostname",  # os.uname() needs it (ctypes, platform): the code can read the Mac's name
     "kern.ostype",
     "kern.osrelease",
     "kern.osversion",
@@ -181,6 +181,30 @@ def snapshot(workdir: Path) -> dict[str, tuple[int, int]]:
             if not os.path.islink(path) and os.path.isfile(path):
                 found[os.path.relpath(path, workdir)] = (st.st_size, st.st_mtime_ns)
     return found
+
+
+def all_files(workdir: Path) -> set[str]:
+    """Every entry under the work dir: files, links and folders, hidden ones too (absolute paths; links are not
+    followed)."""
+    found: set[str] = set()
+    for here, dirs, files in os.walk(workdir):
+        found.update(os.path.join(here, name) for name in files + dirs)
+    return found
+
+
+def remove_new(workdir: Path, before: set[str]) -> None:
+    """Remove the entries that are not in `before`, deepest first. The run has ended, so nothing writes any more; a
+    folder the code made read-only is opened up first. A link is removed, never its target."""
+    for path in sorted(all_files(workdir) - before, key=len, reverse=True):
+        try:
+            os.chmod(os.path.dirname(path), 0o700)
+            if os.path.isdir(path) and not os.path.islink(path):
+                os.chmod(path, 0o700)
+                os.rmdir(path)  # empty by now: its entries came first
+            else:
+                os.unlink(path)
+        except OSError:
+            pass  # what stays counts against the next run, which the watchdog stops in time
 
 
 def dir_size(workdir: Path) -> tuple[int, int]:
@@ -394,6 +418,7 @@ class SeatbeltSandbox:
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
         before = snapshot(Path(work))
+        before_all = all_files(Path(work))
         t0 = time.monotonic()
         proc = subprocess.Popen(
             [SANDBOX_EXEC, "-p", sbpl, *interp.argv, "-B", "-X", "utf8", "-"],
@@ -454,6 +479,14 @@ class SeatbeltSandbox:
         shutil.rmtree(tmp, ignore_errors=True)
         after = snapshot(Path(work))
         changed = sorted(p for p, v in after.items() if before.get(p) != v)
+        size, count = dir_size(Path(work))
+        if size > limits.disk_mb * 1024 * 1024 or count > MAX_WORK_FILES:
+            # the watchdog looks every DISK_EVERY seconds: code that wrote fast and ended in between loses what it
+            # added (hidden files and folders too), so the folder is back under the limit for the next call. Files
+            # from earlier calls stay, also when this run changed them.
+            remove_new(Path(work), before_all)
+            killed = killed or "disk"
+            changed = [rel for rel in changed if rel in before]
         stdout, stdout_cut = out.text(limits.output_chars)
         stderr, stderr_cut = err.text(limits.output_chars)
         return RunResult(

@@ -256,7 +256,10 @@ export function inlineConfirm({text, confirmLabel, cancelLabel = 'Keep', onConfi
     el.remove();
     if (onCancel) onCancel();
   });
-  queueMicrotask(() => no.focus());
+  queueMicrotask(() => {
+    no.focus({preventScroll: true});
+    el.scrollIntoView({block: 'nearest'});  // the whole row, also at the bottom of a scrolled drawer
+  });
   return el;
 }
 

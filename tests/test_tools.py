@@ -260,8 +260,8 @@ def test_validate_names_missing_installs(
     with pytest.raises(ValueError) as exc:
         tools.validate("voice.drama3", {}, {})
     assert str(exc.value) == (
-        f"Not installed: {missing}. Install the model (README.md) or set its path in "
-        "config.toml."
+        f"Not installed: {missing}. Open Models to install it, or set its folder in "
+        "Settings > Model paths."
     )
 
 

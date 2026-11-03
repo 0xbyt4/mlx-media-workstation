@@ -207,6 +207,36 @@ def test_disk_watchdog(box: sb.SeatbeltSandbox, work: Path) -> None:
     assert r.killed == "disk"
 
 
+def test_a_fast_write_past_the_limit_is_caught_at_the_end(
+    box: sb.SeatbeltSandbox, work: Path
+) -> None:
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "kept.txt").write_text("from an earlier call")
+    (work / "results.csv").write_text("a,b\n")
+    code = (
+        "open('results.csv', 'a').write('1,2\\n')\n"  # an earlier file that this run changes: it stays
+        "import os\nos.makedirs('d/e')\n"
+        "for i in range(30):\n    open(f'd/e/f{i}.bin', 'wb').write(b'x' * 2**20)\n"
+        "open('.hidden.bin', 'wb').write(b'x' * 2**20)\n"
+        "os.chmod('d/e', 0o500)"
+    )  # ends long before the watchdog's next look
+    r = run(box, work, code, Limits(wall_s=10, disk_mb=10))
+    assert r.killed == "disk" and r.files == ["results.csv"]
+    assert sorted(p.name for p in work.iterdir()) == ["kept.txt", "results.csv"]
+    assert (work / "results.csv").read_text() == "a,b\n1,2\n"
+
+
+def test_too_many_new_folders_are_removed(box: sb.SeatbeltSandbox, work: Path) -> None:
+    code = "import os\nfor i in range(60):\n    os.mkdir(f'd{i}')"
+    r = run(box, work, code, Limits(wall_s=10))
+    assert r.killed is None
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(sb, "MAX_WORK_FILES", 50)
+        r = run(box, work, code.replace("d{i}", "e{i}"), Limits(wall_s=10))
+    assert r.killed == "disk"
+    assert not any(p.name.startswith("e") for p in work.iterdir())
+
+
 def test_abort_stops_it(box: sb.SeatbeltSandbox, work: Path) -> None:
     abort = threading.Event()
     threading.Timer(0.3, abort.set).start()

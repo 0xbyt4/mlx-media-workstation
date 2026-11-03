@@ -15,11 +15,11 @@ from pathlib import Path
 
 import httpx2
 import pytest
-from fastapi.testclient import TestClient
 from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
 from huggingface_hub.hf_api import RepoFile
 
-from app import config, models, server, tools
+from app import config, models, tools
+from tests.conftest import app_client
 
 ROOT = Path(__file__).resolve().parents[1]
 QWEN = models.BY_ID["qwen3.8-27b-4bit"]
@@ -262,6 +262,15 @@ def test_view_reports_status_and_machine(paths, monkeypatch):
     assert v[LTX.id]["disk_free_gb"] > 0
     assert v["mflux"]["kind"] == "manual" and v["mflux"]["fits"] is None
     assert v["mflux"]["install"].startswith("git clone")
+    assert v["mflux"]["install_path"].endswith("mlx-media/mflux/.venv/bin")
+    assert v[QWEN.id]["install_path"] is None
+
+
+def test_install_commands_use_the_default_paths():
+    for m in models.MODELS:
+        if m.manual:
+            folder = "/".join(Path(config.DEFAULTS[m.path_key]).parts[:3])
+            assert folder in m.install, m.id
 
 
 # fits rule
@@ -670,7 +679,7 @@ def test_fetch_into_the_cache_writes_the_main_ref(paths, monkeypatch):
 
 @pytest.fixture
 def client():
-    return TestClient(server.app, base_url="http://127.0.0.1:7870")
+    return app_client()
 
 
 def test_get_models(client, paths, monkeypatch):

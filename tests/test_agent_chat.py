@@ -12,12 +12,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app import chat, llm, models, server, tools
 from app.agent import Limits, RunResult, Settings, build_registry
 from app.agent.net import HttpRequest, HttpResponse
 from app.agent.web_tools import Net
+from tests.conftest import app_client
 from tests.fake_workstation import FakeWorkstation
 
 REAL_REGISTRY = chat.registry  # the tests below replace it with fakes
@@ -126,7 +126,7 @@ def reg(monkeypatch, ws, box, net):
 
 @pytest.fixture
 def client():
-    return TestClient(server.app, base_url=f"http://127.0.0.1:{server.PORT}")
+    return app_client()
 
 
 def events(response) -> list[dict[str, Any]]:
@@ -282,7 +282,7 @@ def test_allow_once_runs_the_call_and_taints_the_chat(client, net):
         client, cid, script([call("web_search", query="Antikythera")], "RESULT")
     )
     ask = pending(cid)
-    assert ask["name"] == "web_search" and ask["chat_scope"] is True
+    assert ask["name"] == "web_search" and ask["chat_scope"] is False
     assert ask["describe"] == "Sends the query 'Antikythera' to en.wikipedia.org."
     assert ask["timeout_s"] > 0 and ask["risk"] == 2
     assert ask["host"] is None  # only fetch_url names one host
@@ -311,7 +311,7 @@ def test_allow_in_this_chat_skips_the_next_question(client, ws):
     )
     t, box = start(client, cid, steps)
     ask = pending(cid)
-    assert "Queues a image.klein job" in ask["describe"]
+    assert "Queues a job for image.klein" in ask["describe"]
     approve(client, cid, ask["id"], "chat")
     t.join(5)
     evs = events(box["r"])
@@ -334,17 +334,30 @@ def test_untrusted_content_makes_a_network_tool_ask_again(client):
     )
     t, box = start(client, cid, steps)
     first = pending(cid)
-    approve(client, cid, first["id"], "chat")
-    second = pending(
-        cid, 2
-    )  # granted for the chat, but the first result is in the context now
+    # its result taints the chat, so "Allow in this chat" is not offered: it would not hold
+    assert first["chat_scope"] is False
+    assert approve(client, cid, first["id"], "chat").status_code == 400
+    approve(client, cid, first["id"], "once")
+    second = pending(cid, 2)
     assert second["chat_scope"] is False and "Untrusted content" in second["reason"]
-    assert approve(client, cid, second["id"], "chat").status_code == 400
     assert approve(client, cid, second["id"], "once").status_code == 200
     t.join(5)
     assert events(box["r"])[-1]["finish"] == "stop"
     state = saved(client, cid)["agent"]
-    assert state["grants"] == ["web_search"] and state["tainted"] is True
+    assert state["grants"] == [] and state["tainted"] is True
+
+
+def test_the_agent_prompt_names_only_the_offered_tools(client, reg):
+    cid = agent_chat(client)
+    prompt = chat.system_prompt(saved(client, cid))
+    assert "web_search" in prompt and "You reach the internet only through" in prompt
+    assert "read_file" not in prompt  # no folder: the file tools are not offered
+    client.patch(
+        f"/api/chats/{cid}/agent", json={"tools": ["job_status"]}, headers=ORIGIN
+    )
+    prompt = chat.system_prompt(saved(client, cid))
+    assert "You can call tools: job_status." in prompt
+    assert "web_search" not in prompt and "no internet access in this chat" in prompt
 
 
 def test_a_denied_call_goes_back_to_the_model(client, net):
@@ -614,7 +627,10 @@ def test_shared_and_other_folders_are_refused(client, tmp_path, monkeypatch):
     for own in (chat.ROOT, chat.ROOT / "app", chat.ROOT / "docs"):
         r = grant(own)
         assert r.status_code == 400, own
-        assert "app's own folder" in r.json()["detail"]
+        # a checkout under /private/tmp meets the shared-folder rule first
+        assert any(
+            m in r.json()["detail"] for m in ("app's own folder", "shared folder")
+        )
     # the folder that holds the app is refused too; when it is the home folder, that rule answers first
     assert grant(chat.ROOT.parent).status_code == 400
     # the checks hold in another letter case too (APFS ignores it)
@@ -976,3 +992,64 @@ def test_shutdown_ends_running_turns_and_saves_them(client, state):
     assert tool["tool_call_id"] == ask["id"] and tool["status"] == "cancelled"
     assert msgs[-1]["finish"] in ("cancelled", "error")
     t.join(5)
+
+
+# Failures around an answer: it always ends, and the page hears why
+
+
+def test_a_failed_final_save_still_ends_the_answer(client, monkeypatch):
+    cid = client.post("/api/chats", json={"mode": "general"}).json()["id"]
+    real = chat.save
+    writes = []
+
+    def full_disk(c):
+        writes.append(1)
+        if len(writes) >= 2:  # 1: the user message; 2: the answer
+            raise OSError(28, "No space left on device")
+        real(c)
+
+    monkeypatch.setattr(chat, "save", full_disk)
+    evs = events(client.post(f"/api/chats/{cid}/messages", data={"text": "hi"}))
+    assert evs[-1]["event"] == "error" and "could not be saved" in evs[-1]["message"]
+    assert cid not in chat.live
+    monkeypatch.setattr(
+        chat, "save", real
+    )  # the disk has room again: the chat takes a new message
+    assert (
+        events(client.post(f"/api/chats/{cid}/messages", data={"text": "again"}))[-1][
+            "event"
+        ]
+        == "done"
+    )
+
+
+def test_a_python_that_cannot_run_gives_an_error(client, monkeypatch, tmp_path):
+    bad = tmp_path / "python"
+    bad.write_text("not a program")  # it exists, but without the exec bit
+    monkeypatch.setattr(
+        llm, "PATHS", SimpleNamespace(qwen_python=bad, qwen_model=Path("ok"))
+    )
+    llm.stop("fresh")
+    cid = client.post("/api/chats", json={"mode": "general"}).json()["id"]
+    evs = events(client.post(f"/api/chats/{cid}/messages", data={"text": "hi"}))
+    assert evs[-1]["event"] == "error" and "could not start" in evs[-1]["message"]
+    assert saved(client, cid)["messages"][-1]["finish"] == "error"
+
+
+def test_stop_while_the_model_loads_ends_the_answer_at_once(
+    client, monkeypatch, tmp_path
+):
+    slow = tmp_path / "slow_worker.py"
+    slow.write_text(
+        f"import runpy, time\ntime.sleep(4)\nrunpy.run_path({str(FAKE)!r}, run_name='__main__')\n"
+    )
+    monkeypatch.setattr(llm, "WORKER", [str(slow)])
+    llm.stop("fresh")
+    cid = client.post("/api/chats", json={"mode": "general"}).json()["id"]
+    t, _ = start(client, cid, "hello")
+    assert wait_for(lambda: chat.live.get(cid) and chat.live[cid].rid)
+    t0 = time.monotonic()
+    client.post(f"/api/chats/{cid}/stop")
+    t.join(10)
+    assert time.monotonic() - t0 < 2
+    assert saved(client, cid)["messages"][-1]["finish"] == "cancelled"
