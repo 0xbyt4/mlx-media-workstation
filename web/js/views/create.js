@@ -684,7 +684,7 @@ function buildFormData(tool) {
 // ---------- submit ----------
 
 async function submit() {
-  if (!s || !s.tool || s.submitting) return;
+  if (!s || !s.tool || s.submitting || store.toolInstalled(s.tool.id) === false) return;
   const tool = s.tool;
   showSubmitError(null);
   let firstBad = null;
@@ -892,12 +892,14 @@ function updateGenerate() {
   const tool = s.tool;
   const installed = tool ? store.toolInstalled(tool.id) : null;
   const busy = store.get('jobs').some((j) => store.ACTIVE.has(j.status));
-  els.generate.disabled = !tool || s.submitting;  // the server checks the files and says what is missing
+  // The server checks the files again and says what is missing.
+  els.generate.disabled = !tool || s.submitting || installed === false;
   els.reset.disabled = !tool;
-  els.generate.replaceChildren(...(s.submitting ? [h('span', {class: 'spinner'}), 'Submitting'] : [busy ? 'Add to queue' : 'Generate']));
+  els.generate.replaceChildren(...(s.submitting ? [h('span', {class: 'spinner'}), 'Submitting']
+    : [installed === false ? 'Install first' : busy ? 'Add to queue' : 'Generate']));
   els.genWhy.hidden = installed !== false;
   if (installed === false) {
-    els.genWhy.textContent = 'The Models screen shows a model of this tool as not installed, so the job may fail.';
+    els.genWhy.textContent = 'A model of this tool is not installed. Install it in Models, or set its folder in Settings.';
     els.generate.setAttribute('aria-describedby', 'gen-why');
   } else {
     els.generate.removeAttribute('aria-describedby');
