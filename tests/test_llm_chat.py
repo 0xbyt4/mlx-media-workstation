@@ -76,6 +76,8 @@ def wait_for(cond, timeout=5.0):
 class IdleWorker:
     def __init__(self) -> None:
         self.pending: dict[str, object] = {}
+        self.ready = threading.Event()
+        self.ready.set()
         self.stopped: list[str] = []
 
     def stop(self, reason: str) -> None:
@@ -162,7 +164,7 @@ def test_closing_the_iterator_cancels_and_the_worker_goes_on():
     assert llm.complete(user("hi"))["content"] == "Hello world"
 
 
-def test_stop_fails_waiting_requests_with_the_reason():
+def test_stop_ends_a_running_answer():
     gen = llm.generate(user("SLOW"))
     while next(gen)["event"] != "content":  # the worker runs and answers
         pass
@@ -175,8 +177,24 @@ def test_stop_fails_waiting_requests_with_the_reason():
     for ev in gen:  # the deltas already sent, then the end; never an endless stream
         events.append(ev)
         assert len(events) < 1000
-    assert events[-1] == {"event": "error", "message": "Unloaded for a test."}
+    # cancelled between two tokens; the reason only when the worker did not answer the cancel in time
+    last = events[-1]
+    assert last.get("finish") == "cancelled" or last == {
+        "event": "error",
+        "message": "Unloaded for a test.",
+    }
     assert llm.status()["state"] == "off"
+
+
+def test_the_idle_watch_leaves_a_loading_model_alone(monkeypatch):
+    w = IdleWorker()
+    w.ready.clear()  # still loading
+    monkeypatch.setattr(llm, "worker", w)
+    monkeypatch.setattr(llm, "last_used", 0.0)
+    monkeypatch.setattr(llm, "idle_stop", lambda: 60.0)
+    assert llm.stop_if_idle() is False and w.stopped == []
+    w.ready.set()
+    assert llm.stop_if_idle() is True
 
 
 def test_claim_unloads_only_for_a_job_that_does_not_fit():
