@@ -614,7 +614,10 @@ def test_shared_and_other_folders_are_refused(client, tmp_path, monkeypatch):
     for own in (chat.ROOT, chat.ROOT / "app", chat.ROOT / "docs"):
         r = grant(own)
         assert r.status_code == 400, own
-        assert "app's own folder" in r.json()["detail"]
+        # a checkout under /private/tmp meets the shared-folder rule first
+        assert any(
+            m in r.json()["detail"] for m in ("app's own folder", "shared folder")
+        )
     # the folder that holds the app is refused too; when it is the home folder, that rule answers first
     assert grant(chat.ROOT.parent).status_code == 400
     # the checks hold in another letter case too (APFS ignores it)
