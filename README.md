@@ -21,8 +21,10 @@ The sidebar has six sections. Cmd-1 to Cmd-6 open them.
   LLM to rewrite your draft for that tool. Undo brings your own text back.
 - **Jobs**: the running job with its progress, the queue, and the finished jobs with their results. You can move a
   queued job up or down. "Use these settings" fills the form again. "Send to" puts an output into a file field of another tool.
-- **Chat**: talk with the local LLM. You can attach up to 4 images to a message and turn on thinking. When the model
-  writes a prompt for a tool, the answer shows a "Use in" card that copies the text into that tool's form.
+- **Chat**: talk with the local LLM. You can attach up to 4 images to a message and turn on thinking. A new chat is
+  in Workstation mode or General mode. In Workstation mode the model knows the app's tools, and when it writes a
+  prompt for a tool, the answer shows a "Use in" card that copies the text into that tool's form. General mode is a
+  plain assistant. The mode is fixed after the first message.
 - **Library**: every output of the finished jobs, with search and filters. A card opens a larger preview with "Use
   these settings", "Send to", "Show in Finder", download and delete.
 - **Models**: what each tool needs, what is installed, the download size, the peak memory and whether it fits this

@@ -301,9 +301,12 @@ Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images sent in th
 return HTTP 404 for an unknown chat.
 
 - `GET /api/chats` lists the chats, most recently updated first: `id`, `title`, `created`, `updated`, `messages`
-  (count), `running`.
-- `POST /api/chats` creates an empty chat and returns its summary.
-- `GET /api/chats/{id}` returns the chat with all messages and `running`.
+  (count), `mode`, `running`.
+- `POST /api/chats` creates an empty chat and returns its summary. An optional JSON body `{"mode": "general"}` sets
+  the mode (default `workstation`). HTTP 400 for an unknown mode.
+- `GET /api/chats/{id}` returns the chat with all messages, `mode` and `running`.
+- `PATCH /api/chats/{id}` with the JSON body `{"mode": "..."}` changes the mode of a chat that has no messages yet
+  and returns its summary. HTTP 409 after the first message, HTTP 400 for an unknown mode.
 - `DELETE /api/chats/{id}` deletes it (HTTP 409 while it answers).
 - `GET /api/chats/{id}/files/{name}` serves an image of the chat (`img_N.png`, `.jpg` or `.webp`).
 - `POST /api/chats/{id}/messages` takes `multipart/form-data`: `text`, `thinking` (`true`/`false`), up to 4
@@ -324,9 +327,22 @@ return HTTP 404 for an unknown chat.
 - `POST /api/chats/{id}/stop` stops the answer between tokens, also while it waits. It returns
   `{"status": "stopping"}`, or `{"status": "idle"}` when nothing runs. The reply is saved with `finish: "cancelled"`.
 
+The mode of a chat sets its system prompt:
+
+| Mode | System prompt | "Use in" cards |
+|---|---|---|
+| `workstation` | The app's tools with their prompt-help fields, and the `prompt` block rule below. | yes |
+| `general` | A short assistant prompt with today's date. It does not list the tools. | no |
+| `agent` | Reserved for tool use. For now it gets the `general` prompt, and the UI does not offer it. | no |
+
+Every mode tells the model to answer in the user's language and not to use emoji. A chat saved before modes existed has
+no `mode` in `chat.json` and is a `workstation` chat. The mode is fixed after the first message, because a different
+system prompt changes what the earlier answers meant. The context budget counts the chat's own system prompt.
+
 A text the model writes for a tool comes in a fenced block whose info string is `prompt`, the tool id and, for a tool
-with several prompt-help fields, the field name (`prompt video.t2v`, `prompt music.ace lyrics`). The UI shows a
-"Use in <tool>" button on such a block; without a field name it fills the tool's first `assist` field.
+with several prompt-help fields, the field name (`prompt video.t2v`, `prompt music.ace lyrics`). In a workstation
+chat the UI shows a "Use in <tool>" button on such a block; without a field name it fills the tool's first `assist`
+field.
 
 The answer runs on the server whether or not a page listens, and it is saved when it ends. The model sees the newest
 turns that fit in 32K tokens.
