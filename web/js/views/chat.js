@@ -1791,11 +1791,15 @@ function inline(parent, text, o) {
 
 const LINK_TEXT = 80; // characters of a bare URL shown in an agent chat; the title has all of it
 
-// The host a link opens, as the browser sends it (IDNA, so a look-alike letter shows as xn--); null when the URL does
-// not parse.
+// The host a link opens, as the browser sends it (IDNA, so a look-alike letter shows as xn--), with the query that
+// goes with it: a link the model wrote can carry chat text to that host in its query. Null when the URL does not
+// parse.
 function linkHost(url) {
   try {
-    return new URL(url).host;
+    const u = new URL(url);
+    if (!u.search) return u.host;
+    const sent = u.host + u.pathname + u.search;
+    return sent.length > LINK_TEXT ? sent.slice(0, LINK_TEXT - 1) + '…' : sent;
   } catch {
     return null;
   }
@@ -1814,7 +1818,7 @@ function link(parent, label, url, o) {
     else if (host) a.append(inline(h('bdi'), label, o));
     else inline(a, label, o);
     // a bare URL names its host already, unless it hides it (user info, a non-ASCII name, a cut before its end)
-    const named = label === null && shown.toLowerCase().startsWith(url.split(':')[0].toLowerCase() + '://' + host);
+    const named = label === null && shown.toLowerCase().startsWith(url.split(':')[0].toLowerCase() + '://' + host.replace(/…$/, ''));
     if (host && !named) a.append(' ', h('bdi', {class: 'link-host', dir: 'ltr'}, '(' + host + ')'));
     parent.append(a);
   } else if (label === null) {
