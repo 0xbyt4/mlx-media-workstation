@@ -2,13 +2,22 @@
 // returns the unsubscribe function (call it in unmount).
 //
 // Events: 'tools', 'jobs', 'system', 'llm', 'assist', 'models' (the new value), 'offline' (true/false),
-// 'job:finished' (a job that went from queued/running to done, failed or cancelled while the page was open).
+// 'job:finished' (a job that went from queued/running to done, failed or cancelled while the page was open),
+// 'profile' ('full' or 'chat': what the UI shows; see profile() below).
 
 import {api, poll} from './api.js';
 
 export const ACTIVE = new Set(['queued', 'running']);
 export const FINISHED = new Set(['done', 'failed', 'cancelled']);
 export const DEFAULT_RESERVE_GB = 8;
+export const PROFILES = ['full', 'chat'];
+
+// A window that start.py opened next to a running app in another profile has ?profile= in its address: that window
+// keeps its profile whatever the server says.
+const pinned = (() => {
+  const p = new URLSearchParams(location.search).get('profile');
+  return PROFILES.includes(p) ? p : null;
+})();
 
 const state = {
   tools: [],
@@ -20,6 +29,7 @@ const state = {
   assist: null,
   models: null,
   offline: false,
+  profile: pinned, // null until /api/system answers
 };
 const listeners = new Map();
 const offlineBy = {};
@@ -91,7 +101,12 @@ function noteFinished(jobs, prev) {
 }
 
 const fetchJobs = loader('jobs', api.jobs, noteFinished);
-const fetchSystem = loader('system', api.system);
+const fetchSystem = loader('system', api.system, (sys) => {
+  const next = pinned || (PROFILES.includes(sys.profile) ? sys.profile : 'full');
+  if (next === state.profile) return;
+  state.profile = next;
+  emit('profile', next);
+});
 const fetchModels = loader('models', api.models);
 const fetchAssist = loader('assist', api.assist);
 const fetchLlm = loader('llm', api.llm, (llm, prev) => {
@@ -140,6 +155,22 @@ export function fast(key) {
 }
 
 // ---------- derived facts that several views need ----------
+
+// What the UI shows: 'full' (every section) or 'chat' (Chat, Models and Settings). The server's [app] profile, or the
+// window's ?profile=; 'full' until the first /api/system answer.
+export function profile() {
+  return state.profile || 'full';
+}
+
+// True when this window's profile comes from its address (?profile=), not from the server.
+export function profilePinned() {
+  return pinned !== null;
+}
+
+// The models the UI shows: in the chat profile only what Chat needs (the LLM environment and weights).
+export function shownModel(m) {
+  return profile() !== 'chat' || (m.features || []).includes('Chat');
+}
 
 export function memTotal() {
   if (state.system && state.system.mem_total_gb) return state.system.mem_total_gb;
@@ -226,6 +257,9 @@ export const store = {
   start,
   refresh,
   fast,
+  profile,
+  profilePinned,
+  shownModel,
   memTotal,
   reserve,
   toolModels,
@@ -239,6 +273,7 @@ export const store = {
   llmUnloadsFor,
   ACTIVE,
   FINISHED,
+  PROFILES,
 };
 
 export default store;

@@ -724,6 +724,7 @@ def system() -> dict[str, Any]:
         "swap_used_gb": round(float(used.group(1)) / 1024, 1) if used else 0.0,
         "running": running,
         "queued": queued,
+        "profile": config.APP.profile,  # what the UI shows: "full" or "chat"
     }
 
 

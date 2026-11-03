@@ -2,7 +2,7 @@
 facts about the app.
 
 The app reads [paths] and [assist] once, at start (app/config.py), so a change there takes effect after a restart. The
-[app] values (keep awake, notify, LLM idle unload) apply at once: a write replaces config.APP and calls on_change. A write
+[app] values (keep awake, notify, LLM idle unload, profile) apply at once: a write replaces config.APP and calls on_change. A write
 changes only the lines of the keys it sets: comments, blank lines, other keys and other sections stay as they are.
 The new text is parsed again before it replaces the file, and the replace is atomic (a temp file, then os.replace).
 Nothing here holds a secret. Writes pass the server's same-origin check.
@@ -166,6 +166,7 @@ def snapshot() -> dict[str, Any]:
             **{k: getattr(config.APP, k) for k in config.APP_DEFAULTS},
             "defaults": config.APP_DEFAULTS,
             "idle_choices": list(config.IDLE_CHOICES),
+            "profiles": list(config.PROFILES),
         },
         "llm": {"idle_stop_s": llm.idle_stop()},
         "about": {

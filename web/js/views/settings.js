@@ -1,6 +1,7 @@
-// Settings: theme, prompt help provider, the local LLM, the Jobs switches, the model paths in config.toml, and where
-// things live. Every change goes to config.toml through PUT /api/settings. The app reads paths and the provider only
-// when it starts, so such a change shows a restart note. The Jobs switches ([app]) apply at once and save on change.
+// Settings: theme, profile, prompt help provider, the local LLM, the Jobs switches, the model paths in config.toml, and
+// where things live. Every change goes to config.toml through PUT /api/settings. The app reads paths and the provider
+// only when it starts, so such a change shows a restart note. The profile and the Jobs switches ([app]) apply at once
+// and save on change. The chat profile leaves out prompt help, the job switches and the paths Chat does not use.
 
 import {h, icon, toast, confirm, errorBox, getTheme, setTheme, onTheme} from '../ui.js';
 
@@ -11,7 +12,9 @@ const README = [
   ['how-it-works', 'How it works'],
   ['model-licences', 'Model licences'],
   ['security', 'Security'],
+  ['chat-only', 'Chat only'],
 ];
+const PROFILE_TEXT = {full: 'Full: every section', chat: 'Chat only: Chat, Models and Settings'};
 // the same rules as app/settings_api.py: a TOML basic string cannot hold these as they are
 const BAD_CHARS = /["\\\u0000-\u001f\u007f]/;
 const MAX_PATH = 1024;
@@ -25,8 +28,14 @@ function mount(root, ctx) {
   s.notice = h('div', {class: 'set-notice', role: 'status'});
   s.body = h('div', {class: 'set-body'}, h('p', {class: 'muted'}, 'Loading the settings...'));
   root.append(h('div', {class: 'settings'}, s.notice, appearance(), s.body));
-  s.offs.push(onTheme(renderTheme), ctx.store.on('llm', renderLlm));
+  s.offs.push(onTheme(renderTheme), ctx.store.on('llm', renderLlm), ctx.store.on('profile', () => {
+    if (s.data) build();
+  }));
   load();
+}
+
+function chatOnly() {
+  return s.ctx.store.profile() === 'chat';
 }
 
 function unmount() {
@@ -63,7 +72,9 @@ function section(id, title, intro, ...body) {
 }
 
 function build() {
-  s.body.replaceChildren(promptHelp(), localLlm(), jobs(), modelPaths(), about());
+  s.appCtl = {};
+  s.body.replaceChildren(...[profile(), chatOnly() ? null : promptHelp(), localLlm(), jobs(), modelPaths(), about()]
+    .filter(Boolean));
   renderNotice();
   renderLlm();
 }
@@ -160,11 +171,13 @@ function localLlm() {
 
 function llmState(l) {
   const gb = Math.round(l.peak_gb);
-  if (!l.installed) return ['Not installed', 'idle', 'Install it on the Models screen to use prompt help and chat.'];
+  const uses = chatOnly() ? 'chat' : 'prompt help and chat';
+  if (!l.installed) return ['Not installed', 'idle', 'Install it on the Models screen to use ' + uses + '.'];
   if (l.state === 'loading') return ['Loading', 'run', 'It is loading the weights from disk.'];
   if (l.state === 'ready' && l.busy) return ['Answering', 'run', 'It is writing an answer now.'];
   if (l.state === 'ready') return ['Loaded', 'ok', 'It uses about ' + gb + ' GB of memory while it is loaded.'];
-  return ['Not loaded', 'idle', 'It loads when you press Improve or send a chat message. Now it uses no memory.'];
+  return ['Not loaded', 'idle', 'It loads when you ' + (chatOnly() ? '' : 'press Improve or ') +
+    'send a chat message. Now it uses no memory.'];
 }
 
 function renderLlm() {
@@ -187,9 +200,11 @@ function renderLlm() {
   L.text.textContent = text + waits;
   // the saved setting: the llm poll may still show the value from before a change
   const idle = s.data.app.llm_idle_minutes;
+  const chat = chatOnly();
   L.idle.textContent = idle > 0
-    ? 'It unloads after ' + minutes(idle * 60) + ' without use (Jobs, below), and before a job that needs its memory.'
-    : 'It stays loaded until you press Unload, or until a job needs its memory.';
+    ? 'It unloads after ' + minutes(idle * 60) + ' without use (' + (chat ? 'Memory' : 'Jobs') + ', below)' +
+      (chat ? '.' : ', and before a job that needs its memory.')
+    : 'It stays loaded until you press Unload' + (chat ? '.' : ', or until a job needs its memory.');
   L.unload.disabled = l.state === 'off' || !l.installed;
   L.models.hidden = Boolean(l.installed);
 }
@@ -234,23 +249,41 @@ function idleText(m) {
   return 'After ' + m + (m === 1 ? ' minute' : ' minutes');
 }
 
+// One [app] value: label, help, error line and its control (a switch or a select).
+function rowFor(key, label, help, control) {
+  const id = 'set-app-' + key;
+  const err = h('p', {class: 'field-err', id: id + '-err', role: 'alert', hidden: true});
+  s.appCtl[key] = {control, err};
+  control.id = id;
+  control.setAttribute('aria-labelledby', id + '-label');
+  control.setAttribute('aria-describedby', id + '-help ' + id + '-err');
+  renderAppErr(key);
+  return h('div', {class: 'set-row'},
+    h('div', null, h('span', {class: 'label', id: id + '-label'}, label), h('p', {class: 'help', id: id + '-help'}, help), err),
+    control.type === 'checkbox' ? h('label', {class: 'switch', for: id}, control, h('span', {class: 'track'})) : control);
+}
+
+// The profile: what the sidebar shows. A window opened with ?profile= keeps its own, so it cannot change it here.
+function profile() {
+  const a = s.data.app;
+  const pinned = s.ctx.store.profilePinned();
+  const shown = s.ctx.store.profile();
+  const select = h('select', {class: 'select set-select', disabled: pinned || Boolean(s.data.config.error) || s.appSaving === 'profile',
+    onchange: (e) => saveApp('profile', e.target.value)},
+  a.profiles.map((p) => h('option', {value: p, selected: p === (pinned ? shown : a.profile)}, PROFILE_TEXT[p] || p)));
+  const help = pinned
+    ? 'This window opened next to the running app and always shows ' + (shown === 'chat' ? 'Chat only' : 'every section') +
+      '. Change the profile in the app\'s own window.'
+    : 'Chat only hides Create, Jobs and Library, for a Mac with only the local LLM. It applies at once and is the ' +
+      'profile for the next start. start.py --chat and Workstation Chat.app always start in Chat only.';
+  return section('set-pf', 'Profile', null, h('div', {class: 'card set-card'}, rowFor('profile', 'Sections', help, select)));
+}
+
 function jobs() {
   const a = s.data.app;
   const locked = Boolean(s.data.config.error);
-  s.appCtl = {};
-  const rowFor = (key, label, help, control) => {
-    const id = 'set-app-' + key;
-    const err = h('p', {class: 'field-err', id: id + '-err', role: 'alert', hidden: true});
-    s.appCtl[key] = {control, err};
-    control.id = id;
-    control.setAttribute('aria-labelledby', id + '-label');
-    control.setAttribute('aria-describedby', id + '-help ' + id + '-err');
-    renderAppErr(key);
-    return h('div', {class: 'set-row'},
-      h('div', null, h('span', {class: 'label', id: id + '-label'}, label), h('p', {class: 'help', id: id + '-help'}, help), err),
-      control.type === 'checkbox' ? h('label', {class: 'switch', for: id}, control, h('span', {class: 'track'})) : control);
-  };
-  const rows = SWITCHES.map(([key, label, help]) => rowFor(key, label, help,
+  const chat = chatOnly();
+  const rows = chat ? [] : SWITCHES.map(([key, label, help]) => rowFor(key, label, help,
     h('input', {type: 'checkbox', role: 'switch', checked: a[key], disabled: locked || s.appSaving === key,
       onchange: (e) => saveApp(key, e.target.checked)})));
   const choices = a.idle_choices.includes(a.llm_idle_minutes) ? a.idle_choices : [...a.idle_choices, a.llm_idle_minutes];
@@ -258,8 +291,10 @@ function jobs() {
     onchange: (e) => saveApp('llm_idle_minutes', Number(e.target.value))},
   choices.map((m) => h('option', {value: String(m), selected: m === a.llm_idle_minutes}, idleText(m))));
   rows.push(rowFor('llm_idle_minutes', 'Unload the chat model when idle',
-    'Frees its memory after this long without a prompt help or chat request. It loads again on the next one.', select));
-  return section('set-jobs', 'Jobs', 'These apply at once, without a restart.', h('div', {class: 'card set-card'}, rows));
+    'Frees its memory after this long without a ' + (chat ? '' : 'prompt help or ') + 'chat request. ' +
+      'It loads again on the next one.', select));
+  return section('set-jobs', chat ? 'Memory' : 'Jobs', chat ? 'This applies at once, without a restart.' : 'These apply at once, without a restart.',
+    h('div', {class: 'card set-card'}, rows));
 }
 
 function renderAppErr(key) {
@@ -288,6 +323,7 @@ async function saveApp(key, value) {
   renderAppErr(key);
   try {
     await put({app: {[key]: value}});  // rebuilds the screen with the saved value
+    if (key === 'profile') await s.ctx.store.refresh('system');  // the sidebar changes now, not at the next poll
     toast('Saved. The app uses it now.');
   } catch (e) {
     if (!s || e.name === 'AbortError') return;
@@ -310,7 +346,8 @@ async function saveApp(key, value) {
 function modelPaths() {
   const d = s.data;
   s.rows = {};
-  const rows = d.paths.map(pathRow);
+  // the chat profile shows only the paths Chat uses; the other drafts stay as they are
+  const rows = d.paths.filter((r) => !chatOnly() || r.used_by.features.includes('Chat')).map(pathRow);
   s.saveBtn = h('button', {type: 'button', class: 'btn btn-primary', onclick: savePaths}, 'Save');
   s.resetBtn = h('button', {type: 'button', class: 'btn', onclick: resetDraft}, 'Undo changes');
   s.saveMsg = h('p', {class: 'help', 'aria-live': 'polite'});
@@ -420,7 +457,7 @@ function renderSave() {
 function resetDraft() {
   for (const r of s.data.paths) {
     s.draft[r.key] = r.value;
-    s.rows[r.key].input.value = r.value;
+    if (s.rows[r.key]) s.rows[r.key].input.value = r.value;
   }
   s.errors = {};
   s.formErr.hidden = true;
@@ -506,9 +543,10 @@ function about() {
     h('div', {class: 'set-row stack'}, h('dl', {class: 'kv'},
       version ? row('Version', version) : null,
       row('Settings file', mono(c.path), c.exists ? null : faint(' (not made yet: every path uses its default)')),
-      row('Outputs', mono(a.outputs), h('br'), faint('Each job writes to outputs/<job id>/. Chats are in outputs/chats/.')),
+      row('Outputs', mono(a.outputs), h('br'),
+        faint((chatOnly() ? '' : 'Each job writes to outputs/<job id>/. ') + 'Chats are in outputs/chats/.')),
       row('Logs', mono('outputs/llm.log'), faint(' (local LLM)'), h('br'), mono('outputs/app.log'),
-        faint(' (when started from Workstation.app)')),
+        faint(' (when started from Workstation.app or Workstation Chat.app)')),
       row('Server', mono(location.host), faint(' on this Mac only. The app sends no data anywhere.')),
     )),
     h('div', {class: 'set-row stack'},
@@ -521,7 +559,8 @@ function about() {
 export default {
   id: 'settings',
   title: 'Settings',
-  subtitle: 'Jobs, paths, prompt help and appearance',
+  subtitle: (ctx) => (ctx.store.profile() === 'chat' ? 'Profile, the local LLM, paths and appearance' :
+    'Profile, jobs, paths, prompt help and appearance'),
   mount,
   unmount,
 };

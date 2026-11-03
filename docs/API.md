@@ -140,7 +140,12 @@ other name. The job stays in the job list, also when it has no outputs left.
 
 ## System
 
-`GET /api/system` returns `{"mem_total_gb": 48.0, "mem_free_gb": 37.5, "swap_used_gb": 2.8, "running": "job id or null", "queued": 1}`.
+`GET /api/system` returns `{"mem_total_gb": 48.0, "mem_free_gb": 37.5, "swap_used_gb": 2.8, "running": "job id or null", "queued": 1, "profile": "full"}`.
+
+`profile` is what the UI shows: `"full"` (every section) or `"chat"` (Chat, Models and Settings). It is `[app] profile`
+in `config.toml`, or `"chat"` when the app was started with `start.py --chat`. A change in Settings applies at once.
+The profile changes only the UI: every endpoint works in both profiles, the job endpoints too. `start.py` also reads
+this endpoint when the port is in use, to find out whether the Workstation runs there and in which profile.
 
 ## Models
 
@@ -156,6 +161,7 @@ other name. The job stays in the job list, also when it has no outputs left.
       "kind": "download | manual",
       "used_by": ["Text to Video", "Image to Video"],
       "tools": ["video.t2v", "video.i2v"],
+      "features": [],
       "repo": "dgrauet/ltx-2.5-mlx-q8",
       "revision": "746ca9aacb697d2c739f544d68b584214dedcc75",
       "size_gb": 54.1,
@@ -190,6 +196,8 @@ other name. The job stays in the job list, also when it has no outputs left.
 - `kind: "download"` entries are weights the app downloads. `kind: "manual"` entries are model environments and
   checkouts: `install` holds the README commands, and `repo`, `size_gb`, `peak_gb`, `fits` and `disk_free_gb` are
   `null`.
+- `features` lists the app features outside the tool list that need the entry (`"Prompt help"`, `"Chat"`). The chat
+  profile shows only the entries whose `features` hold `"Chat"`. `used_by` is the tool labels plus `features`.
 - `path_key` is the `config.toml` key of the install path; `null` means the Hugging Face cache.
 - `fits` is true when `peak_gb` plus `mem_reserve_gb` is at most `mem_total_gb`.
 - `needs` names an entry to install first. `download` is `null` unless this model is queued, downloading, or was
@@ -357,9 +365,9 @@ turns that fit in 32K tokens.
     "providers": [{"id": "local", "label": "Local LLM", "description": "...", "available": true,
                    "model": "Qwen3.8 27B (4-bit)", "llm": {}}]
   },
-  "app": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10,
-          "defaults": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10},
-          "idle_choices": [5, 10, 30, 60, 0]},
+  "app": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full",
+          "defaults": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full"},
+          "idle_choices": [5, 10, 30, 60, 0], "profiles": ["full", "chat"]},
   "llm": {"idle_stop_s": 600.0},
   "about": {"version": "0.1.0", "commit": "8172e42 2026-11-02", "root": "/Users/me/mlx-media-workstation",
             "outputs": "/Users/me/mlx-media-workstation/outputs",
@@ -378,10 +386,11 @@ turns that fit in 32K tokens.
 - `about.commit` is `null` when git or the git checkout is not there.
 - `restart_required` is true when `config.toml` holds other `[paths]` or `[assist]` values than the ones the app read
   at start.
-- `app` holds the `[app]` values the app uses now (Settings > Jobs): `keep_awake` (no system sleep while a job is
-  queued or running), `notify` (a macOS notification when a job is done or failed; none for a cancelled job) and
-  `llm_idle_minutes` (minutes without use before the local LLM unloads; 0 = never). `idle_choices` are the minutes
-  the screen offers.
+- `app` holds the `[app]` values the app uses now (Settings > Profile and Settings > Jobs): `keep_awake` (no system
+  sleep while a job is queued or running), `notify` (a macOS notification when a job is done or failed; none for a
+  cancelled job), `llm_idle_minutes` (minutes without use before the local LLM unloads; 0 = never) and `profile`
+  (one of `profiles`; see [System](#system)). `idle_choices` are the minutes the screen offers. After
+  `start.py --chat`, `profile` is `"chat"` although `config.toml` may say `"full"`.
 
 `PUT /api/settings` takes JSON with the values to change: `{"paths": {"ltx_model": "/Volumes/Models/ltx-2.5-mlx-q8"},
 "assist": {"provider": "local"}, "app": {"notify": false, "llm_idle_minutes": 30}}`. Each part is optional. It writes `config.toml` and returns the same object as
@@ -395,7 +404,8 @@ turns that fit in 32K tokens.
   (`restart_required`). An `[app]` value applies at once: the running app uses it as soon as the request returns.
 - Errors: HTTP 400 with `{"detail": {"message": "...", "fields": {"paths.ltx_model": "message"}}}` for an unknown
   key, an unknown provider, an empty path, a path with a double quote, a backslash or a line break, an `[app]` switch
-  that is not `true` or `false`, or `llm_idle_minutes` that is not a whole number from 0 to 1440. HTTP 409
+  that is not `true` or `false`, `llm_idle_minutes` that is not a whole number from 0 to 1440, or a `profile` that
+  is not `"full"` or `"chat"`. HTTP 409
   when `config.toml` is not valid TOML or sets the key in a form this endpoint cannot edit (for example an inline
   table); the file is then not changed.
 - Settings hold no secrets.
@@ -407,6 +417,13 @@ views.
 
 - Sidebar: six sections (Create, Jobs, Chat, Library, Models, Settings, also Cmd-1 to Cmd-6), a dock with the running
   job's stage and time left, and a memory meter (job, local LLM, other apps, swap). Narrow windows get a top tab bar.
+- Chat profile (`profile` of `GET /api/system`, or `?profile=chat` in the page address): the sidebar and the tab bar
+  show Chat, Models and Settings (Cmd-1 to Cmd-3), and the app opens on Chat. A route to Create, Jobs or Library
+  opens Chat. There is no job dock, no job toast and no job count in the window title; the memory meter shows a job
+  only while one runs. Models and its setup card show only the entries whose `features` hold `"Chat"`. Settings
+  leaves out prompt help, the job switches and the paths that Chat does not use.
+- `?profile=full` or `?profile=chat` in the page address fixes the profile of that window. `start.py` opens such a
+  window when the app on the port runs in the other profile.
 - Create: the tool picker with time, peak memory and fit; the selected tool's form with prompt help ("Improve", with
   Cancel while it waits, loads or writes, and Undo and Redo after it); an "On this Mac" card with peak memory, time
   and queue wait; Generate ("Add to queue" while a job runs). Choosing another tool cancels the open tool's running

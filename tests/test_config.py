@@ -97,6 +97,14 @@ def test_app_switches_from_the_file(tmp_path: Path) -> None:
     )
 
 
+def test_app_profile_from_the_file(tmp_path: Path) -> None:
+    assert config.load_app(tmp_path / "missing.toml").profile == "full"
+    file = write(tmp_path, '[app]\nprofile = "chat"\n')
+    assert config.load_app(file) == config.App(
+        keep_awake=True, notify=True, llm_idle_minutes=10, profile="chat"
+    )
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -104,6 +112,8 @@ def test_app_switches_from_the_file(tmp_path: Path) -> None:
         "notify = 1",
         "llm_idle_minutes = 2.5",
         "llm_idle_minutes = -5",
+        'profile = "media"',
+        "profile = true",
     ],
 )
 def test_bad_app_values_are_refused(tmp_path: Path, line: str) -> None:

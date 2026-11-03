@@ -2,6 +2,7 @@
 
 import os
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -261,8 +262,15 @@ def test_get_reports_the_switches(client: TestClient, cfg: Path) -> None:
         "keep_awake": True,
         "notify": True,
         "llm_idle_minutes": 10,
-        "defaults": {"keep_awake": True, "notify": True, "llm_idle_minutes": 10},
+        "profile": "full",
+        "defaults": {
+            "keep_awake": True,
+            "notify": True,
+            "llm_idle_minutes": 10,
+            "profile": "full",
+        },
         "idle_choices": [5, 10, 30, 60, 0],
+        "profiles": ["full", "chat"],
     }
     assert data["llm"] == {"idle_stop_s": 600.0}
 
@@ -327,6 +335,9 @@ def test_put_same_switch_applies_without_a_write(
         ("llm_idle_minutes", 24 * 60 + 1),
         ("llm_idle_minutes", True),
         ("llm_idle_minutes", "10"),
+        ("profile", "media"),
+        ("profile", "Chat"),
+        ("profile", True),
         ("theme", "dark"),
     ],
 )
@@ -338,6 +349,35 @@ def test_put_refuses_bad_switch_values(
     assert list(r.json()["detail"]["fields"]) == [f"app.{key}"]
     assert cfg.read_text() == USER_FILE
     assert config.APP == config.App(**config.APP_DEFAULTS)
+
+
+def test_put_profile_applies_at_once(client: TestClient, cfg: Path) -> None:
+    r = put(client, {"app": {"profile": "chat"}})
+    assert r.status_code == 200
+    assert r.json()["changed"] == ["app.profile"]
+    assert r.json()["app"]["profile"] == "chat"
+    assert r.json()["restart_required"] is False
+    assert cfg.read_text() == USER_FILE + '\n[app]\nprofile = "chat"\n'
+    assert config.APP.profile == "chat"
+    assert config.load_app(cfg).profile == "chat"
+    assert client.get("/api/system").json()["profile"] == "chat"
+
+
+def test_put_switch_keeps_the_profile_of_this_run(
+    client: TestClient, cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # started with --chat: the file says nothing about the profile, and another switch does not change it
+    monkeypatch.setattr(config, "APP", replace(config.APP, profile="chat"))
+    assert client.get("/api/settings").json()["app"]["profile"] == "chat"
+    put(client, {"app": {"notify": False}})
+    assert config.APP.profile == "chat"
+    assert "profile" not in cfg.read_text()
+    # choosing "full" in Settings applies now and is saved for the next start
+    assert put(client, {"app": {"profile": "full"}}).json()["changed"] == [
+        "app.profile"
+    ]
+    assert config.APP.profile == "full"
+    assert config.load_app(cfg).profile == "full"
 
 
 def test_put_switch_over_an_int_that_means_true(client: TestClient, cfg: Path) -> None:

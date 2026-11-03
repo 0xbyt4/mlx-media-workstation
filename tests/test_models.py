@@ -252,6 +252,12 @@ def test_view_reports_status_and_machine(paths, monkeypatch):
     v = {m["id"]: m for m in c["models"]}
     assert v[QWEN.id]["installed"] and v[QWEN.id]["fits"]
     assert v[QWEN.id]["used_by"] == ["Prompt help", "Chat"]
+    # the chat profile shows the entries whose features hold "Chat": the LLM environment and its weights
+    assert [m["id"] for m in c["models"] if "Chat" in m["features"]] == [
+        "qwen-venv",
+        QWEN.id,
+    ]
+    assert v[LTX.id]["features"] == []
     assert not v[LTX.id]["installed"] and v[LTX.id]["fits"] is False
     assert v[LTX.id]["disk_free_gb"] > 0
     assert v["mflux"]["kind"] == "manual" and v["mflux"]["fits"] is None

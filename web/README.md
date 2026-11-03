@@ -18,7 +18,7 @@ The design is in `docs/DESIGN.md` and `docs/design/mock.html`. The endpoints are
 | `js/api.js` | Fetch wrappers for every endpoint, `ApiError`, the SSE reader, `poll()`. |
 | `js/store.js` | Shared state, events and the one polling loop. |
 | `js/ui.js` | DOM helper `h()`, icons, formatters, toasts, dialogs, menus, the fit rule, media, theme. |
-| `js/router.js` | Hash routes and the Cmd-1 to Cmd-6 shortcuts. |
+| `js/router.js` | Hash routes, the sections of each profile and the Cmd-1 to Cmd-6 shortcuts. |
 | `js/handoff.js` | "Send to", "Use in" and "Use these settings" between views. |
 | `js/views/<view>.js` | One view: `create`, `jobs`, `chat`, `library`, `models`, `settings`. |
 
@@ -67,6 +67,7 @@ export default {
 | `assist` | `GET /api/assist` | every 60 s, and when the model is installed or removed |
 | `models` | `GET /api/models` | every 60 s, every 2 s while a download runs |
 | `offline` | `true` or `false` | when the server stops or comes back |
+| `profile` | `'full'` or `'chat'` | with the first `GET /api/system` answer, and when the profile changes |
 | `job:finished` | the job | a job goes from queued or running to done, failed or cancelled |
 | `tick` | none | every second, for live clocks |
 
@@ -77,6 +78,21 @@ Other store functions:
 - `store.toolPeak(id)`, `store.toolInstalled(id)`, `store.toolModels(id)`, `store.toolTime(id)` give the facts of a tool.
 - `store.memTotal()`, `store.reserve()`, `store.runningJob()`, `store.queuedJobs()`, `store.queueSeconds()`,
   `store.liveElapsed(job)` and `store.llmUnloadsFor(peakGb)` give the facts of this Mac and the queue.
+- `store.profile()` gives the profile, `store.profilePinned()` tells whether it comes from the page address, and
+  `store.shownModel(m)` tells whether the profile shows an entry of `GET /api/models`.
+
+## Profiles
+
+The profile picks the sections. `full` shows all six. `chat` shows Chat, Models and Settings, opens on Chat and has
+no job dock. The server sends the profile in `GET /api/system`; `?profile=full` or `?profile=chat` in the page
+address overrides it for that window (`start.py` opens such a window next to a running app).
+
+- `main.js` starts the router only when the profile is known, so no hidden section shows for a moment. Without a
+  server it starts with `full`.
+- `router.views()` lists the sections of the profile, and the shortcuts follow that list. `router.setProfile(p)`
+  switches; when the open section is not in the new profile, the router opens the profile's home.
+- A view that shows media tools or jobs checks `store.profile()` and listens to the `profile` event. Models and
+  Settings do. In the chat profile, nothing may link to Create, Jobs or Library.
 
 ## Handoff
 
