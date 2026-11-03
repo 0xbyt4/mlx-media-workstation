@@ -55,8 +55,8 @@ IMAGE_SIZES = [
     ("1344x768", "16:9 (1344x768)"),
 ]
 VIDEO_SIZES = [
-    ("576x1024", "9:16 (576x1024)"),
-    ("704x1280", "9:16 sharper (704x1280), about 2x slower"),
+    ("704x1280", "9:16 (704x1280), sharper faces"),
+    ("576x1024", "9:16 fast (576x1024), about 2x faster, softer faces"),
     ("1024x576", "16:9 (1024x576)"),
     ("768x768", "1:1 (768x768)"),
 ]
@@ -120,6 +120,7 @@ TOOLS: list[dict[str, Any]] = [
                 "prompt",
                 "Prompt",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="One paragraph of about 100-200 words: subject, outfit, pose, framing, lens, light, place, style. English. Keep it under about 400 tokens: longer prompts give a black image (mflux bug 920).",
@@ -168,6 +169,7 @@ TOOLS: list[dict[str, Any]] = [
                 "prompt",
                 "Prompt",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help='Put any text to render in double quotes, e.g. a sign that reads "PUSH".',
@@ -197,6 +199,7 @@ TOOLS: list[dict[str, Any]] = [
                 "prompt",
                 "Prompt",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="Name them <ref_image_0>, <ref_image_1>, ... in upload order; put the background first. Give each one role and say what must stay unchanged. Add a head-and-shoulders reference for faces.",
@@ -217,6 +220,7 @@ TOOLS: list[dict[str, Any]] = [
                 "text",
                 "Script",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="Speakers: <|speaker:0|> ... <|speaker:1|> ... Cues in brackets mid-sentence: [laughs], "
@@ -296,6 +300,7 @@ TOOLS: list[dict[str, Any]] = [
                 "caption",
                 "Description",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="Genre, mood, instruments, tempo feel, use (e.g. 'tense escape room thriller underscore, ticking clock').",
@@ -305,6 +310,7 @@ TOOLS: list[dict[str, Any]] = [
                 "lyrics",
                 "Lyrics",
                 "textarea",
+                assist=True,
                 default="",
                 help="Only when not instrumental. Use [verse], [chorus] tags.",
             ),
@@ -335,25 +341,34 @@ TOOLS: list[dict[str, Any]] = [
         "id": "video.t2v",
         "group": "Video",
         "label": "Text to Video",
-        "description": "LTX-2.5 from a prompt, with sound. About 1.5-4 min for 5 s at 576x1024.",
+        "description": "LTX-2.5 from a prompt, with sound. About 3 min for 5 s at 704x1280, 2 min at 576x1024.",
         "fields": [
             field(
                 "prompt",
                 "Prompt",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="4-8 sentences: shot, place and light, action, character, camera (say how the frame ends), "
                 "and every sound; dialogue in quotes.",
             ),
             field(
-                "size", "Size", "select", default="576x1024", options=opts(VIDEO_SIZES)
+                "size", "Size", "select", default="704x1280", options=opts(VIDEO_SIZES)
             ),
             field(
                 "seconds", "Length (s)", "number", default=5, min=1, max=10, step=0.5
             ),
             field("audio", "Generate sound", "checkbox", default=True),
             SEED,
+            field(
+                "hq_decoder",
+                "Final-quality decoder",
+                "checkbox",
+                default=False,
+                advanced=True,
+                help="LTX-2.5's diffusion decoder: slightly cleaner skin and faces, about 2.5x slower in total.",
+            ),
         ],
     },
     {
@@ -370,15 +385,30 @@ TOOLS: list[dict[str, Any]] = [
                 required=True,
                 help="Cropped to the video size; use the same aspect ratio.",
             ),
-            field("prompt", "Prompt", "textarea", default="", required=True),
             field(
-                "size", "Size", "select", default="576x1024", options=opts(VIDEO_SIZES)
+                "prompt",
+                "Prompt",
+                "textarea",
+                assist=True,
+                default="",
+                required=True,
+            ),
+            field(
+                "size", "Size", "select", default="704x1280", options=opts(VIDEO_SIZES)
             ),
             field(
                 "seconds", "Length (s)", "number", default=5, min=1, max=10, step=0.5
             ),
             field("audio", "Generate sound", "checkbox", default=True),
             SEED,
+            field(
+                "hq_decoder",
+                "Final-quality decoder",
+                "checkbox",
+                default=False,
+                advanced=True,
+                help="LTX-2.5's diffusion decoder: slightly cleaner skin and faces, about 2.5x slower in total.",
+            ),
         ],
     },
     {
@@ -407,6 +437,7 @@ TOOLS: list[dict[str, Any]] = [
                 "prompt",
                 "Who and how",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="e.g. 'A medium shot of a woman in a navy uniform in a dim museum gallery, facing the lens. "
@@ -445,6 +476,7 @@ TOOLS: list[dict[str, Any]] = [
                 "prompt",
                 "What happens next",
                 "textarea",
+                assist=True,
                 default="",
                 required=True,
                 help="4-8 sentences. Repeat the words that describe the person, outfit and place in the first clip. "
@@ -924,6 +956,8 @@ def plan(
         ]
         if str(params.get("audio", "true")).lower() != "true":
             cmd.append("--no-audio")
+        if str(params.get("hq_decoder", "false")).lower() == "true":
+            cmd += ["--video-decoder", "diffusion"]
         if tool == "video.i2v":
             img = files.get("image", [None])[0]
             if img is None:

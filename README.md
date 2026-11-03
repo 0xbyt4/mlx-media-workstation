@@ -17,7 +17,7 @@ path; the other tools keep working.
 | Image | Klein Edit | FLUX.3 Klein with 1-10 reference images | about 1-4 min |
 | Voice | Fish Drama 3 | Fish Audio Drama 3 (mlx-audio, 4-bit); Qwen3-ASR checks each take | about 2x real time; 30-39 GB |
 | Music | ACE-Step 1.5 | ACE-Step 1.5 turbo (MLX DiT and LM) | two 20 s takes in about 30 s; about 23 GB |
-| Video | Text to Video | LTX-2.5 distilled (ltx-2-mlx, q8), with sound | 5 s at 576x1024 in about 2 min; 25-29 GB |
+| Video | Text to Video | LTX-2.5 distilled (ltx-2-mlx, q8), with sound | 5 s at 704x1280 in about 3 min, at 576x1024 in about 2 min; 25-29 GB |
 | Video | Image to Video | LTX-2.5 from a start image | 4 s in about 2 min |
 | Video | Voice to Video | LTX-2.5 audio-to-video: a person from an image speaks the audio | 7 s in about 3.5 min; about 28 GB |
 | Video | Extend Video | LTX-2.5 extend: continues a clip from its last second | 5 s more in about 2.5 min; 29-35 GB |
@@ -70,7 +70,7 @@ started from a terminal, it writes the log there.
 
 These steps put everything under `~/mlx-media`, the default in `config.example.toml`. The versions are the ones we
 tested; newer versions can change command-line options. Some weights are gated on Hugging Face: accept the licence on
-the model page first, then log in with `hf auth login`.
+the model page first, then log in from the app folder with `.venv/bin/hf auth login`.
 
 Read each model's licence before you use its output (see [Model licences](#model-licences)).
 
@@ -158,6 +158,21 @@ commercial use. A short summary follows; read the full text on each model page:
 
 Each model runs as its own process group from its own environment, with `HF_HUB_OFFLINE=1`. A finished or cancelled
 job gives all its memory back.
+
+## Development
+
+The tests run no model and need no network. Install the development tools into the app's environment, then run the
+checks:
+
+```sh
+uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev.txt
+.venv/bin/ruff check
+.venv/bin/ruff format --check
+.venv/bin/python -m pytest
+```
+
+GitHub Actions runs the same checks on macOS for each push to `main` and each pull request
+(`.github/workflows/ci.yml`).
 
 ## Security
 

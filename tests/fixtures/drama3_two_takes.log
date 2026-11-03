@@ -1,0 +1,6 @@
+$ /opt/mlx-media/venv-drama/bin/python /opt/workstation/app/runners/drama3.py /opt/workstation/outputs/job/voice_job.json
+take 1 seed 670883: 10.7 s, ok | The quick brown fox jumps over the lazy dog.
+take 2 seed 670983: 10.0 s, ok | The quick brown fox jumps over the lazy dog.
+2/2 takes passed the check; peak 30.7 GB
+       16.68 real         6.64 user         8.14 sys
+         31916968584  peak memory footprint

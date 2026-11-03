@@ -1,0 +1,29 @@
+$ /opt/mlx-media/venv-ltx/bin/ltx-2-mlx generate --distilled --model /opt/mlx-media/models/ltx-2.5-mlx-q8 --prompt=A quiet street at dawn, a cyclist passes, birds sing. -W 576 -H 1024 -f 121 --frame-rate 24 -o /opt/workstation/outputs/job/video.mp4
+[Loading text encoder (Gemma)] ...
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+[Loading text encoder (Gemma)] done in 1.2s
+[Encoding prompt] ...
+[Encoding prompt] done in 2.9s
+[Loading transformer (transformer-distilled.safetensors)] ...
+[Loading transformer (transformer-distilled.safetensors)] done in 2.5s
+[estimate] denoising (ancestral): 8 steps x 1 passes over 2304 video + 126 audio tokens = 8 forwards
+Mode: Distilled Two-Stage (half-res + upscale + distilled refine)
+  Model: /opt/mlx-media/models/ltx-2.5-mlx-q8
+Denoising (ancestral):   0%|          | 0/8 [00:00<?, ?it/s]                                                            [estimate] denoising (ancestral): ~26 s remaining (3.7 s/forward) (first step includes warm-up)
+Denoising (ancestral):   0%|          | 0/8 [00:03<?, ?it/s]Denoising (ancestral):  12%|█▎        | 1/8 [00:03<00:26,  3.74s/it]                                                                    [estimate] denoising (ancestral): ~21 s remaining (3.5 s/forward) (refined)
+Denoising (ancestral):  12%|█▎        | 1/8 [00:07<00:26,  3.74s/it]Denoising (ancestral):  25%|██▌       | 2/8 [00:07<00:21,  3.60s/it]Denoising (ancestral):  38%|███▊      | 3/8 [00:10<00:18,  3.64s/it]Denoising (ancestral):  50%|█████     | 4/8 [00:14<00:14,  3.61s/it]Denoising (ancestral):  62%|██████▎   | 5/8 [00:18<00:10,  3.58s/it]Denoising (ancestral):  75%|███████▌  | 6/8 [00:21<00:07,  3.57s/it]Denoising (ancestral):  88%|████████▊ | 7/8 [00:25<00:03,  3.57s/it]Denoising (ancestral):  88%|████████▊ | 7/8 [00:28<00:04,  4.12s/it]
+[estimate] denoising (ancestral): 3 steps x 1 passes over 9216 video + 126 audio tokens = 3 forwards
+Denoising (ancestral):   0%|          | 0/3 [00:00<?, ?it/s]                                                            [estimate] denoising (ancestral): ~33 s remaining (16.7 s/forward) (first step includes warm-up)
+Denoising (ancestral):   0%|          | 0/3 [00:16<?, ?it/s]Denoising (ancestral):  33%|███▎      | 1/3 [00:16<00:33, 16.67s/it]                                                                    [estimate] denoising (ancestral): ~16 s remaining (16.5 s/forward) (refined)
+Denoising (ancestral):  33%|███▎      | 1/3 [00:33<00:33, 16.67s/it]Denoising (ancestral):  67%|██████▋   | 2/3 [00:33<00:16, 16.55s/it]Denoising (ancestral):  67%|██████▋   | 2/3 [00:50<00:25, 25.04s/it]
+[Loading decoders (VAE + audio + vocoder)] ...
+[Loading decoders (VAE + audio + vocoder)] done in 0.0s
+[Decoding video + audio + muxing] ...
+[vae-decode tiling] frames=48/8 est. 21.0 GB budget=24.0 GB
+[vae-decode tiling] peak Metal memory 21.20 GB
+[Decoding video + audio + muxing] done in 17.2s
+
+Saved to: /opt/workstation/outputs/job/video.mp4
+Time: 104.1s
+      104.44 real         7.25 user        28.57 sys
+         25175571744  peak memory footprint

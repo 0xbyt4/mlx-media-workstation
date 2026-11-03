@@ -9,6 +9,7 @@ next job until that whole group is gone; a cancel stops the group (SIGTERM, then
 stops the queue and every model before the app exits; a group left over from a crash is killed at the next start.
 """
 
+import asyncio
 import json
 import math
 import os
@@ -17,8 +18,10 @@ import secrets
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,8 +30,20 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
-from app import tools
+from app import (
+    assist,
+    chat,
+    library,
+    llm,
+    models,
+    models_api,
+    progress,
+    settings_api,
+    tools,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs"
@@ -58,6 +73,8 @@ INPUT_NAMES = {
 MAX_UPLOAD = 200 * 1024 * 1024
 MAX_REQUEST = 1024 * 1024 * 1024
 KILL_AFTER = 10.0  # seconds between SIGTERM and SIGKILL
+# a prompt-help request id that the client makes
+REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 app = FastAPI(title="Workstation", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
@@ -66,11 +83,12 @@ wake = threading.Event()
 stopping = threading.Event()
 jobs: dict[str, dict[str, Any]] = {}
 procs: dict[str, subprocess.Popen] = {}
+claiming: set[str] = set()  # the queued job whose memory claim waits for LLM answers
 
 
 @app.middleware("http")
 async def same_origin_writes(request: Request, call_next):
-    """Changes (POST, DELETE) only from this app's own page, and no oversized bodies."""
+    """Changes (every method but GET and HEAD) only from this app's own page, and no oversized bodies."""
     if request.method not in ("GET", "HEAD"):
         origin = request.headers.get("origin")
         if origin is not None and origin not in ORIGINS:
@@ -81,6 +99,10 @@ async def same_origin_writes(request: Request, call_next):
             return JSONResponse({"detail": "Request too large"}, status_code=413)
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
+    if not request.url.path.startswith(
+        "/api/"
+    ):  # the page's own files: check for a newer copy after an update
+        response.headers.setdefault("Cache-Control", "no-cache")
     return response
 
 
@@ -122,6 +144,8 @@ def load_jobs() -> None:
             job = json.loads(meta.read_text())
         except (OSError, json.JSONDecodeError):
             continue
+        if not isinstance(job, dict) or job.get("id") != meta.parent.name:
+            continue  # not a job file this app wrote (the id names the folder that delete removes)
         if job.get("status") in (
             "queued",
             "running",
@@ -226,12 +250,27 @@ def worker() -> None:
                 key=lambda j: j["created"],
             )
             job = queued[0] if queued else None
-            if job:
-                job["status"], job["started"] = "running", now()
-                save(job)
-        if job:
-            run_job(job)
-            wake.set()
+        if not job:
+            continue
+        try:
+            # before the job counts as running: prompt help and chat answers sent before it finish first
+            with lock:
+                claiming.add(job["id"])
+            go = llm.claim(
+                models.tool_peak(job["tool"]),
+                lambda j=job: j["status"] != "queued" or stopping.is_set(),
+            )
+            with lock:
+                claiming.discard(job["id"])
+                go = go and job["status"] == "queued" and not stopping.is_set()
+                if go:
+                    job["status"], job["started"] = "running", now()
+                    save(job)
+            if go:
+                run_job(job)
+        finally:
+            llm.release()
+        wake.set()
 
 
 def shutdown() -> None:
@@ -245,6 +284,8 @@ def shutdown() -> None:
         pgids = [p.pid for p in procs.values()]
     for pgid in pgids:
         stop_group(pgid)
+    models.stop()
+    llm.close("The app was closed.")
     wake.set()
 
 
@@ -264,6 +305,10 @@ def view(job: dict[str, Any]) -> dict[str, Any]:
         "log_tail",
     )
     v = {k: job.get(k) for k in keys}
+    if (
+        job["id"] in claiming
+    ):  # first in line, but answers of prompt help or chat finish first
+        v["waiting"] = "Waiting for the prompt help or chat answer to finish."
     v["outputs"] = v["outputs"] or []
     if job["status"] == "running" and job.get("started"):
         v["elapsed"] = round(
@@ -271,6 +316,11 @@ def view(job: dict[str, Any]) -> dict[str, Any]:
         )
     else:
         v["elapsed"] = job.get("elapsed")
+    v["progress"] = (
+        progress.estimate(job, jobs.values(), OUT, time.time())
+        if job["status"] == "running" and job.get("started")
+        else None
+    )
     v["position"] = 0
     if job["status"] == "queued":
         queued = sorted(
@@ -286,7 +336,8 @@ def check_value(f: dict[str, Any], value: str | None) -> str | None:
     if value is None or value == "":
         if f.get("required"):
             raise HTTPException(400, f"{f['label']} is required")
-        return None
+        # a text field the user cleared stays empty; a missing one, or an empty number or choice, takes the default
+        return value if f["type"] in ("text", "textarea") else None
     if f.get("required") and not value.strip():
         raise HTTPException(400, f"{f['label']} is required")
     if f["type"] == "number":
@@ -297,9 +348,11 @@ def check_value(f: dict[str, Any], value: str | None) -> str | None:
         if not math.isfinite(x):
             raise HTTPException(400, f"{f['label']} must be a finite number")
         if ("min" in f and x < f["min"]) or ("max" in f and x > f["max"]):
-            raise HTTPException(
-                400, f"{f['label']} must be between {f.get('min')} and {f.get('max')}"
-            )
+            if "min" in f and "max" in f:
+                bound = f"between {f['min']} and {f['max']}"
+            else:
+                bound = f"at least {f['min']}" if "min" in f else f"at most {f['max']}"
+            raise HTTPException(400, f"{f['label']} must be {bound}")
         if f["name"] == "seed" and not 0 <= x < 2**32:
             raise HTTPException(400, "Seed must be between 0 and 4294967295")
     if f["type"] == "select" and value not in {o["value"] for o in f["options"]}:
@@ -456,6 +509,114 @@ def get_file(job_id: str, name: str) -> FileResponse:
     return FileResponse(path)
 
 
+@app.get("/api/assist")
+def assist_status() -> dict[str, Any]:
+    return assist.status()
+
+
+async def until_disconnect(
+    request: Request, fn: Callable[[], Any], on_disconnect: Callable[[], None]
+) -> Any:
+    """Run fn in a thread; call on_disconnect when the client goes away first, then still wait for fn to end.
+
+    Waits on receive() instead of polling request.is_disconnected(): behind @app.middleware("http") the poll never
+    sees the disconnect, while receive() returns http.disconnect once the body has been read and the client is gone.
+    """
+    work = asyncio.ensure_future(run_in_threadpool(fn))
+    gone = asyncio.ensure_future(request.receive())
+    try:
+        await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
+        # after the body, receive() returns only when the client is gone
+        if not work.done():
+            on_disconnect()
+        return await work
+    finally:
+        if gone.done():
+            gone.exception()  # retrieved, so asyncio does not log it
+        gone.cancel()
+        # this coroutine was cancelled: stop the thread's request too
+        if not work.done():
+            on_disconnect()
+
+
+@app.post("/api/assist/enhance")
+async def assist_enhance(request: Request) -> dict[str, Any]:
+    """The same form as a job, plus `field` and `request_id`: the prompt helper writes that field's text. Images and
+    video frames go along. POST /api/assist/cancel with the same request_id cancels it (HTTP 409 "Cancelled.")."""
+    form = await request.form()
+    tool = tools.BY_ID.get(str(form.get("tool", "")))
+    if tool is None:
+        raise HTTPException(400, "Unknown tool")
+    field_name = str(form.get("field", ""))
+    if not any(f["name"] == field_name and f.get("assist") for f in tool["fields"]):
+        raise HTTPException(400, "This field has no prompt help")
+    request_id = str(form.get("request_id") or "") or secrets.token_hex(8)
+    if not REQUEST_ID.fullmatch(request_id):
+        raise HTTPException(400, "Bad request_id: 1 to 64 letters, digits, - or _")
+    values = {
+        f["name"]: str(form.get(f["name"]) or "").replace("\r\n", "\n")
+        for f in tool["fields"]
+        if f["type"] not in ("file", "files")
+    }
+    uploads: list[tuple[dict[str, Any], int, bytes]] = []
+    for f in tool["fields"]:
+        if f["type"] not in ("file", "files") or not f.get("accept", "").startswith(
+            ("image/", "video/")
+        ):
+            continue
+        parts = [
+            u for u in form.getlist(f["name"]) if hasattr(u, "filename") and u.filename
+        ]
+        for i, up in enumerate(parts[: f.get("max", 1)]):
+            if (up.size or 0) > MAX_UPLOAD:
+                raise HTTPException(400, f"{f['label']}: file too large (max 200 MB)")
+            uploads.append((f, i, await up.read()))
+
+    try:
+        end_at = float(values["end_at"]) if values.get("end_at") else None
+    except ValueError:
+        raise HTTPException(400, "'Use the clip up to' must be a number") from None
+
+    def run(req: assist.Running) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            images = []
+            for f, i, data in uploads:
+                src = Path(tmp) / f"in_{f['name']}_{i}"
+                src.write_bytes(data)
+                video = f["accept"].startswith("video/")
+                label = f["label"] + (
+                    f" #{i} in upload order" if f["type"] == "files" else ""
+                )
+                if video:
+                    label += " (the frame where the clip ends)"
+                    try:  # the same checks as a job: a clear message, not ffmpeg's
+                        tools.check_extend_source(src, end_at)
+                    except ValueError as e:
+                        raise assist.AssistError(str(e)) from None
+                images.append(
+                    (label, assist.still(src, src.with_suffix(".jpg"), video, end_at))
+                )
+            return assist.enhance(tool, field_name, values, images, req)
+
+    try:
+        with assist.track(request_id) as req:
+            return await until_disconnect(request, lambda: run(req), req.cancel)
+    except assist.Cancelled as e:
+        raise HTTPException(409, str(e)) from None
+    except assist.AssistError as e:
+        raise HTTPException(400, str(e)) from None
+
+
+class AssistCancel(BaseModel):
+    request_id: str
+
+
+@app.post("/api/assist/cancel")
+def assist_cancel(body: AssistCancel) -> dict[str, str]:
+    """Cancel a prompt-help request while it waits for memory, loads the model or runs."""
+    return {"status": "cancelling" if assist.cancel(body.request_id) else "idle"}
+
+
 @app.get("/api/system")
 def system() -> dict[str, Any]:
     page = 16384
@@ -493,6 +654,11 @@ def start() -> None:
     OUT.mkdir(exist_ok=True)
     load_jobs()
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=llm.watch_idle, daemon=True).start()
 
 
+app.include_router(models_api.router)
+app.include_router(chat.router)
+app.include_router(settings_api.router)
+app.include_router(library.router)
 app.mount("/", StaticFiles(directory=WEB, html=True), name="web")

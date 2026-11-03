@@ -1,0 +1,197 @@
+/* Jobs view (owned by js/views/jobs.js). Everything is scoped under .v-jobs. */
+
+.v-jobs .jobs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  max-width: 980px;
+}
+.v-jobs .jobs-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+.v-jobs .jobs-sum {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.v-jobs .jobs-empty:empty {
+  display: none;
+}
+.v-jobs .jobs-sec {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.v-jobs .jobs-sec > h2 {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-2);
+}
+.v-jobs .jobs-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+.v-jobs .job {
+  padding: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+.v-jobs .job-top {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.v-jobs .job-title {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.v-jobs .job-title h3 {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.v-jobs .job-prompt {
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 80ch;
+  overflow-wrap: anywhere;
+}
+.v-jobs .job-side {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  text-align: right;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.v-jobs .job-running {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.v-jobs .stage-line {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  align-items: baseline;
+}
+.v-jobs .stage-line strong {
+  font-weight: 600;
+}
+.v-jobs .stage-line .left {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.v-jobs .job-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.v-jobs .job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.v-jobs .job-actions .spacer {
+  flex: 1;
+}
+.v-jobs .q-list {
+  display: grid;
+}
+.v-jobs .q-item {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+.v-jobs .q-item:first-child {
+  border-top: 0;
+}
+.v-jobs .q-pos {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--sunken);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-2);
+  flex: none;
+}
+.v-jobs .q-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+}
+.v-jobs .q-main .job-prompt {
+  -webkit-line-clamp: 1;
+  font-size: var(--fs-sm);
+}
+.v-jobs .q-when {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.v-jobs .outputs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 220px));
+  gap: 12px;
+  align-items: start;
+}
+.v-jobs .outputs.wide {
+  grid-template-columns: minmax(0, 1fr);
+}
+.v-jobs .outputs .media-video,
+.v-jobs .outputs .media-audio {
+  grid-column: span 2;
+}
+.v-jobs .outputs.wide .media-audio {
+  grid-column: auto;
+}
+
+@media (max-width: 720px) {
+  .v-jobs .job-top {
+    flex-wrap: wrap;
+  }
+  .v-jobs .job-side {
+    justify-items: start;
+    text-align: left;
+    width: 100%;
+    grid-auto-flow: column;
+    justify-content: start;
+    gap: 10px;
+  }
+  .v-jobs .q-item {
+    flex-wrap: wrap;
+  }
+  .v-jobs .q-main {
+    flex-basis: calc(100% - 80px);
+  }
+  .v-jobs .q-when {
+    white-space: normal;
+    flex: 1;
+    padding-left: 34px;
+  }
+  .v-jobs .outputs {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+  .v-jobs .outputs .media-video,
+  .v-jobs .outputs .media-audio {
+    grid-column: 1 / -1;
+  }
+}

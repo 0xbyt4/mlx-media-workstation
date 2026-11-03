@@ -1,0 +1,108 @@
+# Web UI
+
+The interface is plain HTML, CSS and JavaScript modules. There is no build step and no framework. The page loads
+nothing from the network. `app/server.py` serves this folder at `/`.
+
+The design is in `docs/DESIGN.md` and `docs/design/mock.html`. The endpoints are in `docs/API.md`.
+
+## File layout
+
+| File | Contents |
+|---|---|
+| `index.html` | App frame: sidebar, toolbar, `<main id="view">`, the icon sprite, all stylesheets. |
+| `css/tokens.css` | Design tokens for light and dark. `[data-theme]` overrides the system setting. |
+| `css/base.css` | Shared components. The class names are listed at the top of the file. |
+| `css/shell.css` | Sidebar, job dock, memory meter, toolbar, narrow layouts. |
+| `css/views/<view>.css` | The styles of one view. |
+| `js/main.js` | Boot: theme, store, router, sidebar, toolbar, view mounting. |
+| `js/api.js` | Fetch wrappers for every endpoint, `ApiError`, the SSE reader, `poll()`. |
+| `js/store.js` | Shared state, events and the one polling loop. |
+| `js/ui.js` | DOM helper `h()`, icons, formatters, toasts, dialogs, menus, the fit rule, media, theme. |
+| `js/router.js` | Hash routes and the Cmd-1 to Cmd-6 shortcuts. |
+| `js/handoff.js` | "Send to", "Use in" and "Use these settings" between views. |
+| `js/views/<view>.js` | One view: `create`, `jobs`, `chat`, `library`, `models`, `settings`. |
+
+## Ownership rules
+
+1. A view changes only its own files: `js/views/<view>.js` and `css/views/<view>.css`.
+2. Scope every rule in a view stylesheet under `.v-<view>` (for example `.v-library .grid`).
+3. Use the shared classes in `css/base.css` and the helpers in `js/ui.js` before you add new ones.
+4. Change a shared file (`index.html`, `css/tokens.css`, `css/base.css`, `css/shell.css`, `js/*.js`) only through
+   the integrator. If a view needs a shared change, write down what it needs and why.
+5. Use only colours from `css/tokens.css`. Media placeholders are the one exception.
+
+## View contract
+
+Each view module has this default export:
+
+```js
+export default {
+  id: 'library',
+  title: 'Library',
+  subtitle: 'Every output in outputs/',  // a string, or (ctx) => string
+  mount(root, ctx, params) {},          // build into root (a <section class="view">)
+  update(params) {},                    // optional: the route changed while this view is open
+  unmount() {},                         // remove listeners, timers and open requests
+};
+```
+
+- `root` is empty when `mount` runs. Add the class `v-<view>` to it. Add `view-full` for a view that fills the height
+  and scrolls inside (Chat).
+- `params` are the route params, for example `{tool: 'video.extend'}` for `#/create?tool=video.extend`.
+- Without `update`, a route change to the same view does nothing. With it, the view gets the new params.
+- `ctx` is `{api, store, ui, router, handoff, shell}`. `shell.setTitle(text)` and `shell.setSubtitle(text)` change the
+  toolbar.
+- `unmount` must call every unsubscribe function that `store.on()` returned.
+
+## Store
+
+`store.get(key)` returns the latest value. `store.on(event, fn)` subscribes and returns the unsubscribe function.
+
+| Event | Value | Polling |
+|---|---|---|
+| `tools` | `GET /api/tools` | at start, retried until it works |
+| `jobs` | `GET /api/jobs` | every 2 s while a job is queued or running, else every 10 s |
+| `system` | `GET /api/system` | every 5 s |
+| `llm` | `GET /api/llm` | every 5 s (1.5 s while a view asks with `store.fast('llm')`) |
+| `assist` | `GET /api/assist` | every 60 s, and when the model is installed or removed |
+| `models` | `GET /api/models` | every 60 s, every 2 s while a download runs |
+| `offline` | `true` or `false` | when the server stops or comes back |
+| `job:finished` | the job | a job goes from queued or running to done, failed or cancelled |
+| `tick` | none | every second, for live clocks |
+
+Other store functions:
+
+- `store.refresh(key)` fetches a source now, for example after a submit or a download start.
+- `store.fast(key)` asks for faster polling and returns the function that ends the request.
+- `store.toolPeak(id)`, `store.toolInstalled(id)`, `store.toolModels(id)`, `store.toolTime(id)` give the facts of a tool.
+- `store.memTotal()`, `store.reserve()`, `store.runningJob()`, `store.queuedJobs()`, `store.queueSeconds()`,
+  `store.liveElapsed(job)` and `store.llmUnloadsFor(peakGb)` give the facts of this Mac and the queue.
+
+## Handoff
+
+The handoff API moves work between views. Each call opens Create with the target tool. Create takes the items when it
+shows that tool.
+
+```js
+handoff.send({tool: 'video.i2v', field: 'image', file: {url, name, kind}});  // an output file to a file field
+handoff.useText({tool: 'video.i2v', field: 'prompt', text});                // a text to a text field
+handoff.useSettings(job);                                                   // a job's params, not its files
+handoff.targets(kind);  // [{tool, field, label, sub}]: the "Send to" menu for 'image', 'audio' or 'video'
+handoff.take(toolId);   // Create only: the waiting items for that tool
+```
+
+`send` accepts only URLs under `/files/` or `/api/chats/`. A single file field replaces its file. A multi-file field
+adds the file, up to its limit.
+
+## API helpers
+
+- Every `api.*` call throws `ApiError` on failure. `message` is the server's `detail`. `offline` is true when the
+  server did not answer.
+- `api.sendMessage(chatId, formData, onEvent, signal)` and `api.resumeStream(chatId, onEvent, signal)` read the chat
+  event stream. They call `onEvent` with each `data:` object and resolve with the last one.
+- `api.poll(task, delay)` runs `task` and then again after `delay(result, error)` ms. It returns `{kick, stop}`.
+
+## Saved in the browser
+
+Only per-viewer conveniences go to `localStorage`: `ws.theme`, `ws.view`, `ws.lastTool`, `ws.advancedOpen`,
+`ws.jobsFilter` and the form values per tool (`ws.form.<tool id>`). Chosen files stay in memory for the session.
