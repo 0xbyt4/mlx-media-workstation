@@ -8,7 +8,7 @@ import {
   inlineConfirm, emptyState, errorBox, menu, media, downloadLink, lightbox,
 } from '../ui.js';
 
-const FILTERS = [['all', 'All'], ['active', 'Active'], ['done', 'Done'], ['failed', 'Failed']];
+const FILTERS = [['all', 'All'], ['active', 'Active'], ['done', 'Done'], ['failed', 'Failed or cancelled']];
 const STATUS = {
   queued: ['Queued', 'idle'], running: ['Running', 'run'], done: ['Done', 'ok'], failed: ['Failed', 'err'],
   cancelled: ['Cancelled', 'idle'],
@@ -114,7 +114,7 @@ function render() {
   place(s.finSec.body, shownFinished, seen);
   const finEmpty = s.finSec.body.querySelector(':scope > .empty');
   if (!shownFinished.length && !finEmpty) {
-    s.finSec.body.append(emptyState({icon: 'check', title: s.filter === 'failed' ? 'No failed jobs' : 'No finished jobs',
+    s.finSec.body.append(emptyState({icon: 'check', title: s.filter === 'failed' ? 'No failed or cancelled jobs' : 'No finished jobs',
       text: s.filter === 'failed' ? 'Every job so far has worked.' : 'Finished jobs appear here with their results.'}));
   }
   if (shownFinished.length && finEmpty) finEmpty.remove();
