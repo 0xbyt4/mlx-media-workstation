@@ -523,7 +523,8 @@ function buildFinished(job) {
   });
   const side = h('div', {class: 'job-side'}, pill(job.status),
     h('span', {class: 'num'}, fmtTime(job.finished || job.created) + (typeof job.elapsed === 'number' && job.elapsed > 0 ? ' · took ' + fmtClock(job.elapsed) : '')),
-    typeof job.peak_gb === 'number' ? h('span', {class: 'num'}, 'peak ' + fmtGb(job.peak_gb)) : null);
+    // a process that stops at once reports a peak of about 0 GB, which says nothing
+    typeof job.peak_gb === 'number' && job.peak_gb >= 0.1 ? h('span', {class: 'num'}, 'peak ' + fmtGb(job.peak_gb)) : null);
   const el = h('article', {class: 'card job', 'aria-label': label + ', ' + (STATUS[job.status] || [job.status])[0]},
     jobTop(job, side), body,
     params.length ? trackedDetails(job, 'params', 'All settings',
