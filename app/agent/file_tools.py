@@ -135,9 +135,11 @@ def looks_text(sample: bytes) -> bool:
 
 
 def open_file(path: str, root: str) -> tuple[int, os.stat_result]:
-    """A regular file inside the folder, opened read-only with O_NOFOLLOW (and O_NONBLOCK, so a FIFO cannot block),
-    and its stat. The path of the open file is checked again: a link swapped in after resolve() is refused. Raises
-    ToolError; the caller closes the descriptor."""
+    """An open descriptor of a regular file inside the folder, and its stat. The caller closes it.
+
+    The file is opened read-only with O_NOFOLLOW (and O_NONBLOCK, so a FIFO cannot block), and the path of the open
+    descriptor is checked again. Raises ToolError for a link at the last part, a non-regular file, or a path that
+    leaves the folder or reaches a hidden or secret file after opening (a link swapped in after resolve())."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as e:

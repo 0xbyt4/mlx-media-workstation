@@ -57,6 +57,7 @@ The sidebar has six sections. Cmd-1 to Cmd-6 open them. The chat profile shows o
 | Image | FLUX.3 Klein | FLUX.3 Klein (mflux, 8-bit) | about 40 s; 12-14 GB |
 | Image | Klein Edit | FLUX.3 Klein with 1-10 reference images | about 1-4 min |
 | Voice | Fish Drama 3 | Fish Audio Drama 3 (mlx-audio, 4-bit); Qwen3-ASR checks each take | about 2x real time; 30-39 GB |
+| Voice | Transcribe | Qwen3-ASR 0.6B (mlx-audio, 8-bit): speech to text, a time for about every 30 s | 40 s of speech in about 2 s; about 3 GB |
 | Music | ACE-Step 1.5 | ACE-Step 1.5 turbo (MLX DiT and LM) | two 20 s takes in about 30 s; about 23 GB |
 | Video | Text to Video | LTX-2.5 distilled (ltx-2-mlx, q8), with sound | 5 s at 704x1280 in about 3 min, at 576x1024 in about 2 min; 25-29 GB |
 | Video | Image to Video | LTX-2.5 from a start image | 4 s in about 2 min |

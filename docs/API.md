@@ -70,7 +70,7 @@ checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Erro
     "position": 0,
     "params": {"prompt": "...", "size": "768x1344"},
     "outputs": [
-      {"url": "/files/20261023-231500-ab12/image.png", "kind": "image | audio | video", "name": "image.png",
+      {"url": "/files/20261023-231500-ab12/image.png", "kind": "image | audio | video | text", "name": "image.png",
        "note": "optional text, e.g. what the speech check heard"}
     ],
     "peak_gb": 21.9,
@@ -90,6 +90,8 @@ checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Erro
 - `elapsed` counts from `started` while the job runs; after it, it is the time the job took.
 - `log_tail` holds the last 25 lines of `job.log`. While the job runs, it is read from the file on each request.
 - Only one job runs at a time (each model needs most of the memory of a 32-48 GB Mac).
+- `kind: "text"` is a `.txt` output: the transcript of a `voice.transcribe` job.
+- A job that an agent chat queued has `"chat": "<chat id>"` in its `job.json`. `GET /api/jobs` does not show it.
 
 `POST /api/jobs/{id}/cancel` cancels a queued or running job and returns `{"status": "cancelled"}`, or the job's
 status when it has already ended. `DELETE /api/jobs/{id}` removes a finished job from the list and deletes its folder
@@ -117,7 +119,7 @@ for another `to`.
     "job": "20261023-231500-ab12",
     "tool": "video.t2v",
     "tool_label": "Text to Video",
-    "kind": "image | audio | video",
+    "kind": "image | audio | video | text",
     "name": "video.mp4",
     "url": "/files/20261023-231500-ab12/video.mp4",
     "note": "",
@@ -506,9 +508,10 @@ When the model calls tools, the server runs them (or asks the user first) and se
 The chat's agent state is in `chat.json` under `agent`:
 
 ```json
-{"tools": ["list_workstation_tools", "job_status", "search_library", "create_job", "list_files", "read_file",
-           "search_files", "write_file", "edit_file", "copy_to_workspace", "export_from_workspace", "media_info",
-           "view_image", "web_search", "fetch_url"],
+{"tools": ["update_plan", "list_workstation_tools", "job_status", "search_library", "create_job", "list_jobs",
+           "wait_for_job", "cancel_job", "transcribe_audio", "list_files", "read_file", "search_files", "write_file",
+           "edit_file", "copy_to_workspace", "export_from_workspace", "media_info", "view_image", "web_search",
+           "fetch_url"],
  "folder": null, "grants": [], "tainted": false}
 ```
 
@@ -569,12 +572,14 @@ Events. The message stream of an agent chat has these events besides `waiting`, 
   `write_file`), at most 400 lines, with hiding characters written as `\uXXXX` and tabs kept, or `null`. The page
   shows each line as text, never as HTML.
 - `{"event": "approval_done", "id", "decision"}` with `once`, `chat`, `deny`, `timeout` or `stopped`.
-- `{"event": "tool_result", "id", "name", "status", "content", "truncated", "files", "seconds", "approval", "risk"}`.
-  `status` is `ok`, `error`, `cancelled`, `denied`, `refused`, `skipped` or `repeat` (the same call a second time: it
-  did not run). `content` is the first 4,000 characters. `files` are `{path, url, kind}`. `kind` is `image` or `file`
-  for a file in the workspace (`url` under `.../ws/`), `image` for a `view_image` copy (`url` under `.../files/`), or
+- `{"event": "tool_result", "id", "name", "status", "content", "truncated", "files", "seconds", "approval", "risk"}`,
+  plus `"job": "<job id>"` when the call queued or read a media job (`create_job`, `transcribe_audio`). `status` is
+  `ok`, `error`, `cancelled`, `denied`, `refused`, `skipped` or `repeat` (the same call a second time: it did not
+  run). `content` is the first 4,000 characters. `files` are `{path, url, kind}`. `kind` is `image` or `file` for a
+  file in the workspace (`url` under `.../ws/`), `image` for a `view_image` copy (`url` under `.../files/`), or
   `saved` for a file written in the granted folder (`path` relative to it, `url` empty: the page shows it with a
-  "Show in Finder" button).
+  "Show in Finder" button). The page shows a card for `job` with the job's live status from `GET /api/jobs`, a link
+  to the Jobs view and the outputs when the job is done.
 - `{"event": "plan", "id", "items": [{"step", "status"}]}` after an `update_plan` call that ran, before its
   `tool_result`. `status` is `pending`, `in_progress` or `done`. Each event has the whole plan: the page replaces the
   checklist of the answer and shows no card for such a call.
@@ -601,8 +606,10 @@ Rules of the loop (`app/chat.py`, `Turn`):
 5. The same call (name and arguments) a second time in one answer does not run: its tool message (`status: "repeat"`)
    says that the first result is above. A third time ends the answer with a note.
 6. An approval waits at most 10 minutes (less when the answer's time runs out). No answer counts as a denial.
-7. `create_job` queues the job and returns its id at once. It never waits for the job, because the job waits for the
-   answer's memory lease.
+7. `create_job` queues the job and returns its id at once. `wait_for_job` and `transcribe_audio` wait only for a job
+   that fits next to the model. A job that needs the model's memory (or a job behind one in the queue) waits for the
+   answer's memory lease, so the wait returns at once and says that the job starts after the answer. A wait takes at
+   most 300 s, ends at Stop and leaves the answer's last 60 s for its next steps. It counts against the 10 minutes.
 8. Every call of a step gets a tool message, also when the answer ends before the call runs.
 9. When the app closes, every running answer gets Stop, as with the Stop button. The server waits a few
    seconds for the answers to save what they have.
@@ -616,10 +623,10 @@ Rules of the loop (`app/chat.py`, `Turn`):
 
 The answer's messages are saved when it ends. The assistant messages keep their `tool_calls`. The tool messages are
 `{"role": "tool", "tool_call_id", "name", "label", "status", "content", "describe", "files", "seconds", "approval",
-"risk", "time"}`, plus `images` for a `view_image` result, with `content` cut at 100,000 characters. An
-`update_plan` message also has `plan` (its items), so a saved answer shows its last plan. The message of the last
-step has `nudge`, the app's note that the model got as a user message before it; the next turns send it in the same
-place. The model gets at most 12,000 characters of each result.
+"risk", "time"}`, plus `images` for a `view_image` result and `job` as in `tool_result`, with `content` cut at
+100,000 characters. An `update_plan` message also has `plan` (its items), so a saved answer shows its last plan. The
+message of the last step has `nudge`, the app's note that the model got as a user message before it; the next turns
+send it in the same place. The model gets at most 12,000 characters of each result.
 When the history does not fit the context budget, old tool results are shortened first, oldest first, and then the
 oldest turns are dropped. The budget counts the system prompt and the tool schemas.
 

@@ -3,6 +3,7 @@ numpy, scipy) are replaced with small stand-ins, so the scripts load without any
 
 import contextlib
 import importlib.util
+import json
 import runpy
 import sys
 from collections.abc import Iterator
@@ -172,3 +173,87 @@ def test_drama_missing_share(
     drama: ModuleType, expected: str, heard: str, share: float
 ) -> None:
     assert drama.missing_share(expected, heard) == share
+
+
+# Transcribe
+
+
+class FakeAsr:
+    """Stands in for Qwen3-ASR: one result per part, the language as the model names it."""
+
+    sample_rate = 10
+
+    def __init__(self, texts: list[str], language: str) -> None:
+        self.texts, self.language = list(texts), language
+        self.calls: list[dict[str, Any]] = []
+
+    def generate(self, part: Any, **kw: Any) -> Any:
+        self.calls.append(kw)
+        language = kw["language"] or self.language
+        return type("R", (), {"text": self.texts.pop(0), "language": [language]})
+
+
+@pytest.fixture
+def asr(monkeypatch: pytest.MonkeyPatch) -> FakeAsr:
+    model = FakeAsr(["Hello  there.", "", "How are\nyou?"], "English")
+    stub(
+        monkeypatch,
+        {
+            "mlx.core": {
+                "set_cache_limit": lambda n: None,
+                "clear_cache": lambda: None,
+            },
+            "numpy": {"array": list},
+            "mlx_audio.stt.utils": {
+                "load_model": lambda name: model,
+                "load_audio": lambda path, sr: (
+                    [0.0] * 950
+                ),  # 95 s at 10 samples a second
+            },
+            "mlx_audio.stt.models.qwen3_asr.qwen3_asr": {
+                "split_audio_into_chunks": lambda audio, sr, chunk_duration: [
+                    ("a", 0.0),
+                    ("b", 29.5),
+                    ("c", 61.0),
+                ]
+            },
+        },
+    )
+    return model
+
+
+def test_transcribe_writes_timed_lines_and_the_language(
+    asr: FakeAsr, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps({"audio": "speech.wav", "language": None, "out": str(tmp_path)})
+    )
+    monkeypatch.setattr(sys, "argv", ["transcribe.py", str(job)])
+    load("transcribe").main()
+    assert (tmp_path / "transcript.txt").read_text() == (
+        "Language: English\n\n[0:00-0:29] Hello there.\n[1:01-1:35] How are you?\n"
+    )
+    assert json.loads((tmp_path / "notes.json").read_text()) == {
+        "transcript.txt": "English, 1:35"
+    }
+    assert capsys.readouterr().out.splitlines() == [
+        "part 1/3: 0:00-0:29",
+        "part 2/3: 0:29-1:01",
+        "part 3/3: 1:01-1:35",
+    ]
+    # a token budget for each part that its length cannot run out of
+    assert [c["max_tokens"] for c in asr.calls] == [418, 442, 472]
+
+
+def test_transcribe_with_a_given_language(
+    asr: FakeAsr, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps({"audio": "s.wav", "language": "German", "out": str(tmp_path)})
+    )
+    monkeypatch.setattr(sys, "argv", ["transcribe.py", str(job)])
+    load("transcribe").main()
+    assert {c["language"] for c in asr.calls} == {"German"}
+    assert (tmp_path / "transcript.txt").read_text().startswith("Language: German\n")

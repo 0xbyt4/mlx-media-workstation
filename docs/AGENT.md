@@ -1,8 +1,8 @@
 # Agent mode
 
-In an agent chat the local model can call tools. It can read the Workstation's state, queue media jobs, read and
-write files in one folder, read media facts, look at images, search the web, read web pages and run Python in a
-sandbox. The code is in `app/agent/`. The chat loop
+In an agent chat the local model can call tools. It can read the Workstation's state, queue, wait for and cancel media
+jobs, transcribe speech, read and write files in one folder, read media facts, look at images, search the web, read
+web pages and run Python in a sandbox. The code is in `app/agent/`. The chat loop
 that uses it is in `app/chat.py`. The endpoints and events are in `docs/API.md` under "Agent mode".
 
 ## Tools and risk levels
@@ -13,7 +13,7 @@ Each tool has a risk level. `app/agent/policy.py` decides from that level whethe
 |---|---|---|
 | R0 | Reads app state only. | Runs. |
 | R1 | Reads the user's files in the granted folder, or copies one into the chat's work folder. | Runs when the chat has a granted folder. Refused without one. The grant is the consent. `media_info` and `view_image` also run without a folder: they read the chat's work folder and the Library too. |
-| R2 | Sends text off this Mac, queues minutes of compute, or writes a new file in the granted folder. | Asks on the first use in a chat. The user can answer "Allow in this chat", except for a tool whose result taints the chat (web_search, fetch_url): after its first result it asks every time, so a chat-wide grant would do nothing. When the chat is tainted, every R2 call asks, also with that grant. |
+| R2 | Sends text off this Mac, queues minutes of compute, cancels a job, or writes a new file in the granted folder. | Asks on the first use in a chat. The user can answer "Allow in this chat", except for a tool whose result taints the chat (web_search, fetch_url, transcribe_audio): after its first result it asks every time, so a chat-wide grant would do nothing. When the chat is tainted, every R2 call asks, also with that grant. |
 | R3 | Runs code, changes an existing file, or has effects the app cannot check. | Asks every time. "Allow in this chat" is not offered. |
 
 A tool that is off in the chat's Tools menu is refused. An unknown tool name is refused. The model gets the reason as
@@ -23,9 +23,13 @@ the tool's result, so it can answer the user.
 |---|---|---|
 | `update_plan` | R0 | Writes or updates the answer's plan: a checklist of at most 10 steps, each `pending`, `in_progress` or `done` (at most one `in_progress`). The page shows it at the top of the answer. |
 | `list_workstation_tools` | R0 | Lists the media tools, their fields and whether their models are installed. |
-| `job_status` | R0 | Shows one job: status, progress, outputs, error. |
+| `job_status` | R0 | Shows one job: status, progress, outputs (with their file references), error. |
 | `search_library` | R0 | Finds finished outputs by text, tool or file name. Its result is untrusted. |
-| `create_job` | R2 | Queues a media job with text fields and returns the job id at once. A tool that needs an uploaded file is refused. |
+| `create_job` | R2 | Queues a media job and returns the job id at once. A file field takes file references (see [Input files](#input-files)). |
+| `list_jobs` | R0 | Lists the queued and running jobs and the newest finished ones (10 by default, at most 30), one line each. |
+| `wait_for_job` | R0 | Waits until a job ends (120 s by default, at most 300 s), then shows it as `job_status` does. |
+| `cancel_job` | R2 | Cancels a queued or running job that this chat queued. |
+| `transcribe_audio` | R2 | Speech to text for an audio or video file (Qwen3-ASR 0.6B as a media job): the text with a time for about every 30 s, and the language. Its result is untrusted. |
 | `list_files` | R1 | Lists a folder inside the granted folder (at most 500 lines). |
 | `read_file` | R1 | Reads a text file inside the granted folder (the first 1 MB), by line range (`start_line`, `end_line`). The result gives the line count and where to read on. It stops before the 12,000-character cap of a result. |
 | `search_files` | R1 | Searches the text files of the granted folder (at most 5,000 files and 15 s). |
@@ -41,6 +45,66 @@ the tool's result, so it can answer the user.
 
 The Workstation tools exist only in the full profile. The chat profile has no Workstation, so its registry has none
 of them.
+
+### Input files
+
+A file field of `create_job` (`"type": "file"`) takes one file reference. A `files` field takes a list of them (at
+most 10). `transcribe_audio` takes one in `audio`. A reference has one of these forms:
+
+| Reference | The file |
+|---|---|
+| `library:<job id>/<file name>` | An output of a finished job, as `search_library` and `job_status` show it. Inputs (`in_*`) are not outputs. |
+| `work:<path>` | A file in the chat's work folder (`outputs/chats/<id>/ws`), where `run_python` writes. |
+| `folder:<path>` | A file in the granted folder. Refused when no folder is granted. |
+
+- The `work:` and `folder:` files follow the rules of the file tools: no hidden or secret names, the real path must
+  stay inside the folder, a link at the last part is refused (`O_NOFOLLOW`), and the open file's real path is checked
+  again (`F_GETPATH`). A work folder that is a link is refused.
+- The tool opens the file and checks its size once. The server copies that open file into the job folder with the
+  checks of an upload (`prepare_job` in `app/server.py`, shared with `POST /api/jobs`): at most 200 MB, the count of
+  the field, and the name `in_<field>_<n><suffix>`. Only the suffix of the file's name is kept.
+- The agent path also checks the type: the suffix must be a media type that the field accepts (`image/*` takes
+  `.png`, `.jpg`, `.jpeg` and `.webp`; `audio/*` takes `.wav`, `.mp3`, `.flac` and `.m4a`; `video/*` takes `.mp4`
+  and `.mov`). A browser upload of another type is kept as `.bin`; the agent's is refused.
+- The approval card lists the input files with the other fields. The risk stays R2: the job uses this Mac for
+  minutes.
+- The job stores the chat that queued it (`"chat"` in `job.json`).
+
+### Waiting for a job
+
+`create_job` returns at once. `wait_for_job` and `transcribe_audio` wait for a job. The answer holds the model's
+memory lease. A job that fits next to the model (an image, a transcription on a 48 GB Mac) runs during the answer. A
+job that does not fit (a video, for example) waits for the lease, so it starts only after the answer.
+
+- The wait does not wait for such a job, or for a job behind one in the queue. It returns at once, and the model
+  tells the user that the job runs after the answer. The answer does not give its lease up to such a job: the model
+  would then wait for the whole job before its next step.
+- A wait takes at most 300 s. It ends early when the job ends or the user presses Stop.
+- The wait counts against the answer's 10 minutes. It stops 60 s before the answer's time ends, so the model can
+  still answer. With less time left it does not wait and says so.
+- A job that still runs after the wait goes on in the background. The page shows its live card.
+
+### Cancelling a job
+
+`cancel_job` cancels only a job that this chat queued. Another job is refused, also when the user would approve: the
+user cancels it in the Jobs view. A web page or a file could tell the model to cancel the user's other work, and the
+card would show only a job id. It asks like every R2 tool ("Allow in this chat" is offered until the chat is
+tainted).
+
+### Transcription
+
+`transcribe_audio` queues a `voice.transcribe` job: the Transcribe tool, which the Create page shows too. The job runs
+`app/runners/transcribe.py` with the Drama 3 environment's Python and Qwen3-ASR 0.6B, the speech check of Drama 3. So
+it gets the queue, the memory claim, the progress ("part i/n") and Cancel of every job. The plan turns the sound
+track into 16 kHz mono first, so a video works too.
+
+- The output is `transcript.txt`: a `Language:` line, then one line per part of at most 30 s with its time
+  (`[0:00-0:28] ...`). The model has no word times. With `language` `auto`, it names the language of each part.
+- Its peak was 2.6 GB for 40 s of speech, so it runs next to the chat model.
+- When the job ends in the wait, the tool returns the transcript. Else it returns the job id; the model reads the
+  text later with `transcribe_audio` and `job_id`.
+- When Qwen3-ASR or the Drama 3 environment is not installed, the tool is refused with a note to install them in
+  Models. It downloads nothing.
 
 A new agent chat has every tool on except `run_python`. A chat saved before `update_plan` existed keeps its own list,
 so the plan is off there until the user turns it on. The model writes `run_python`'s code, and the code can carry
@@ -139,9 +203,9 @@ go to the model, so the context stays small.
 
 Taint is a flag per chat. It is stored in `chat.json` with the grants.
 
-- These tools set it when they run: `search_library`, `list_files`, `read_file`, `search_files`,
-  `copy_to_workspace`, `media_info`, `view_image`, `web_search`, `fetch_url` and `run_python`. Their results can hold
-  text from outside the app (an image can hold written text too).
+- These tools set it when they run: `search_library`, `transcribe_audio`, `list_files`, `read_file`,
+  `search_files`, `copy_to_workspace`, `media_info`, `view_image`, `web_search`, `fetch_url` and `run_python`. Their
+  results can hold text from outside the app (an image can hold written text too).
 - Once set, it stays set for the rest of the chat. A new answer does not clear it, because the text is still in the
   model's context.
 - While it is set, every R2 call asks, and "Allow in this chat" is not offered. A web page could tell the model to
@@ -272,8 +336,10 @@ registry per media flag, so at most one per profile: with the media tools (the f
    moment the wait timed out. The card shows `describe` and the arguments with bidi, zero-width, tag and control
    characters written as `\uXXXX`, and for `fetch_url` the host as the network sees it (IDNA, `xn--...`) on its own
    line.
-6. Run the call with `registry.call(name, args, Context(chat_id, folder, abort, work_dir, preview))`. Then update
-   the taint flag with `taints(tool, tainted)`. The images of a result (`view_image`) go into its tool message.
+6. Run the call with `registry.call(name, args, Context(chat_id, folder, abort, work_dir, deadline, preview))`.
+   `deadline` is when the answer must end, so a tool that waits stops in time. `preview` is the diff the user
+   approved. Then update the taint flag with `taints(tool, tainted)`. The images of a result (`view_image`) go into
+   its tool message.
 7. Add a tool message with the result and go to the next step. For `update_plan`, also send the checked items to the
    page (a `plan` event) and keep them in the tool message.
 8. An answer has at most 12 steps (`MAX_STEPS`) and 10 minutes. The time a step waits for memory (a media job runs)
@@ -303,7 +369,8 @@ changes only when the user changes the tools or the folder, and when the date ch
 so the first answer after midnight reads the chat again.
 
 All steps run in one `llm.session()`. Its time limit counts from the moment it first holds the memory. `create_job`
-never waits for its job, because the job waits for that session. When the app closes, every running answer gets
+never waits for its job, because the job waits for that session. `wait_for_job` and `transcribe_audio` wait only for a
+job that can run next to the model (see [Waiting for a job](#waiting-for-a-job)). When the app closes, every running answer gets
 Stop (a waiting approval ends as stopped) and a few seconds to save what it has. `docs/API.md` lists all rules of the loop.
 
 Each model request of an answer uses the thinking level of the message (`app/effort.py`; docs/API.md, "Thinking

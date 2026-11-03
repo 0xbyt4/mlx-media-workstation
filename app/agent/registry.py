@@ -57,6 +57,8 @@ class Context:
     folder: Path | None  # the folder the user granted to this chat, or None
     abort: threading.Event  # set by Stop: a tool checks it and ends early
     work_dir: Path  # the chat's workspace (outputs/chats/<id>/ws): run_python reads and writes only here
+    # when the answer must end (time.monotonic()), so a tool that waits stops in time; None = no limit
+    deadline: float | None = None
     # the preview the user approved on the approval card (Tool.preview), or None when the call did not ask: a tool
     # that writes refuses to run when its preview is different now (the file changed after the user looked)
     preview: str | None = None
@@ -135,6 +137,9 @@ class Output:
     files: list[str] = field(default_factory=list)
     images: list[str] = field(default_factory=list)
     saved: list[str] = field(default_factory=list)
+    job: str | None = (
+        None  # the media job the call queued or waited for: the page shows its card
+    )
 
 
 @dataclass
@@ -150,6 +155,7 @@ class Result:
     )  # the checked arguments (defaults filled in); None when they were invalid
     images: list[str] = field(default_factory=list)
     saved: list[str] = field(default_factory=list)
+    job: str | None = None  # Output.job
 
 
 def cap(text: str, limit: int = MAX_RESULT) -> tuple[str, bool]:
@@ -197,6 +203,7 @@ class Registry:
                 checked,
                 out.images if out else [],
                 out.saved if out else [],
+                out.job if out else None,
             )
 
         if tool is None:

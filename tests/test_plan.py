@@ -746,3 +746,38 @@ def test_mix_needs_both_files(
     del mix_files[missing]
     with pytest.raises(ValueError, match="Add a video and a music file."):
         tools.plan("edit.mix", params("edit.mix"), mix_files, tmp_path)
+
+
+def test_transcribe_makes_16k_mono_speech_and_a_job_file(
+    tmp_path: Path, media: FakeMedia
+) -> None:
+    clip = tmp_path / "in_audio_0.mp4"
+    plan = tools.plan(
+        "voice.transcribe", params("voice.transcribe"), {"audio": [clip]}, tmp_path
+    )
+    speech, spec = tmp_path / "speech.wav", tmp_path / "transcribe_job.json"
+    assert media.prepped == [
+        ["ffmpeg", "-v", "error", "-y", "-i", str(clip), "-vn", "-ac", "1", "-ar", "16000", str(speech)]
+    ]  # fmt: skip
+    assert plan.commands == [
+        [
+            str(MODELS / "drama/bin/python"),
+            str(tools.APP / "runners/transcribe.py"),
+            str(spec),
+        ]
+    ]
+    assert plan.env == OFFLINE
+    assert json.loads(spec.read_text()) == {
+        "audio": str(speech),
+        "language": None,
+        "out": str(tmp_path),
+    }
+    tools.plan(
+        "voice.transcribe",
+        params("voice.transcribe", language="Turkish"),
+        {"audio": [clip]},
+        tmp_path,
+    )
+    assert json.loads(spec.read_text())["language"] == "Turkish"
+    with pytest.raises(ValueError, match="Add an audio or video file"):
+        tools.plan("voice.transcribe", params("voice.transcribe"), {}, tmp_path)

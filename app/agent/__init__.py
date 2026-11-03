@@ -8,7 +8,7 @@ The chat loop uses this interface:
     tool = registry.get(call.name)
     verdict = decide(tool, grants, tainted, enabled)    # run, ask (approval card) or refuse
     explain = tool.describe(args) if tool else ""       # one line for the approval card
-    ctx = Context(chat_id, grants.folder, abort, work_dir)
+    ctx = Context(chat_id, grants.folder, abort, work_dir, deadline)
     ctx.preview = tool.show(args, ctx)                  # on "ask": the card's diff; ToolError = do not ask
     result = registry.call(call.name, call.arguments, ctx)  # result.images: pictures for the next request
     tainted = taints(tool, tainted)                     # after the call ran

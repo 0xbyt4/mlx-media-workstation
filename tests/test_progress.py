@@ -369,3 +369,12 @@ def test_view_and_api_expose_progress(
     assert by_id["old"]["progress"] is None
     for key in ("id", "status", "elapsed", "position", "params", "outputs", "log_tail"):
         assert key in by_id["run"]
+
+
+# ---------- Transcribe ----------
+
+
+def test_transcribe_counts_its_parts() -> None:
+    assert progress.parse("voice.transcribe", {}, "loading\n") == (None, None)
+    text = "part 1/4: 0:00-0:29\npart 2/4: 0:29-0:58\n"
+    assert progress.parse("voice.transcribe", {}, text) == ("Transcribing", 0.5)
