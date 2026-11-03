@@ -423,7 +423,8 @@ return HTTP 404 for an unknown chat.
 - `PATCH /api/chats/{id}` with the JSON body `{"mode": "..."}` changes the mode of a chat that has no messages yet
   and returns its summary. HTTP 409 after the first message, HTTP 400 for an unknown mode.
 - `DELETE /api/chats/{id}` deletes it (HTTP 409 while it answers).
-- `GET /api/chats/{id}/files/{name}` serves an image of the chat (`img_N.png`, `.jpg` or `.webp`).
+- `GET /api/chats/{id}/files/{name}` serves an image of the chat: one sent in it (`img_N.png`, `.jpg` or `.webp`) or
+  a copy that `view_image` made for the model (`view_<12 hex digits>.png`). A symlink gives HTTP 404.
 - `POST /api/chats/{id}/messages` takes `multipart/form-data`: `text`, `effort` (a thinking level: `off`, `low`,
   `medium`, `high`, `xhigh` or `max`; see [Thinking levels](#thinking-levels)), up to 4 `images` (PNG, JPEG or
   WebP, 20 MB each), or `regenerate=true` to answer the last user message again. The older field `thinking` still
@@ -497,7 +498,8 @@ take at most 10 minutes (an agent answer's limit; a waiting media job also stops
 
 ### Agent mode
 
-An agent chat can call tools: the Workstation tools, the file tools, the web tools and `run_python`. `docs/AGENT.md`
+An agent chat can call tools: the Workstation tools, the file tools (read and write), the media tools, the web tools
+and `run_python`. `docs/AGENT.md`
 describes each tool, its risk level and when it asks. An answer is a loop of steps. Each step is one model request.
 When the model calls tools, the server runs them (or asks the user first) and sends the results back in the next step.
 
@@ -505,13 +507,16 @@ The chat's agent state is in `chat.json` under `agent`:
 
 ```json
 {"tools": ["list_workstation_tools", "job_status", "search_library", "create_job", "list_files", "read_file",
-           "search_files", "web_search", "fetch_url"],
+           "search_files", "write_file", "edit_file", "copy_to_workspace", "export_from_workspace", "media_info",
+           "view_image", "web_search", "fetch_url"],
  "folder": null, "grants": [], "tainted": false}
 ```
 
 - `tools` are the tools this chat offers. A new agent chat has every tool except `run_python`. `run_python` runs code
   that the model writes, so the user turns it on in the Tools menu.
-- `folder` is the folder that the file tools may read, or `null`.
+- `folder` is the folder that the file tools may use, or `null`. The tools that read or write the user's files are
+  offered only while a folder is granted. `media_info` and `view_image` are offered without one: they also read the
+  chat's work folder and the Library.
 - `grants` are the tools the user allowed "in this chat".
 - `tainted` is `true` after a tool returned untrusted text (a page, a file, program output). From then on every
   network or job call asks again.
@@ -538,6 +543,10 @@ with another one).
   the call that waits. It returns `{"status": "answered", "decision": "..."}`, and the call then runs with that
   answer, also when the wait timed out in the same moment. HTTP 409 when that call does not wait any more (the
   `approval_done` event was sent), HTTP 400 for `"chat"` when the approval did not offer it.
+- `POST /api/chats/{id}/reveal` with `{"path": "notes/plan.md"}` shows a file of the granted folder in Finder (`open
+  -R`). The page uses it for the files that `write_file`, `edit_file` and `export_from_workspace` wrote. The path gets
+  the file tools' checks. It returns `{"status": "shown"}`. HTTP 409 without a granted folder, HTTP 404 for a path
+  outside the folder, a hidden or secret part or a missing file, HTTP 500 when Finder fails.
 - `GET /api/chats/{id}/ws/{path}` serves a file that `run_python` wrote in the chat's workspace
   (`outputs/chats/<id>/ws`). PNG, JPEG, GIF and WebP come as images. `.txt`, `.csv`, `.tsv`, `.json`, `.md`, `.py`
   and `.log` come as `text/plain`. Every other file is a download (`Content-Disposition: attachment`). Each response
@@ -552,15 +561,20 @@ Events. The message stream of an agent chat has these events besides `waiting`, 
   `describe` is one line about what the call does, with bidi, zero-width and control characters written as
   `\uXXXX`. `risk` is 0 to 3, or `null` for an unknown tool. `arguments` are as the model sent them: the page writes
   those characters as `\uXXXX` when it shows them.
-- `{"event": "approval", "id", "name", "label", "arguments", "describe", "host", "reason", "risk", "chat_scope",
-  "timeout_s"}` when the call waits for the user. Offer "Allow in this chat" only when `chat_scope` is `true`.
-  `host` is the host that `fetch_url` contacts, as the network sees it (IDNA: `xn--...` for a non-ASCII name), or
-  `null` for other tools and for a URL without a valid host. The page shows it on its own line.
+- `{"event": "approval", "id", "name", "label", "arguments", "describe", "host", "reason", "risk", "network",
+  "chat_scope", "timeout_s", "preview"}` when the call waits for the user. Offer "Allow in this chat" only when
+  `chat_scope` is `true`. `host` is the host that `fetch_url` contacts, as the network sees it (IDNA: `xn--...` for a
+  non-ASCII name), or `null` for other tools and for a URL without a valid host. The page shows it on its own line.
+  `network` says whether the tool sends data off this Mac. `preview` is the change as a unified diff (`edit_file`,
+  `write_file`), at most 400 lines, with hiding characters written as `\uXXXX` and tabs kept, or `null`. The page
+  shows each line as text, never as HTML.
 - `{"event": "approval_done", "id", "decision"}` with `once`, `chat`, `deny`, `timeout` or `stopped`.
 - `{"event": "tool_result", "id", "name", "status", "content", "truncated", "files", "seconds", "approval", "risk"}`.
   `status` is `ok`, `error`, `cancelled`, `denied`, `refused`, `skipped` or `repeat` (the same call a second time: it
-  did not run). `content` is the first 4,000 characters. `files` are `{path, url, kind}` with `kind` `image` or
-  `file`.
+  did not run). `content` is the first 4,000 characters. `files` are `{path, url, kind}`. `kind` is `image` or `file`
+  for a file in the workspace (`url` under `.../ws/`), `image` for a `view_image` copy (`url` under `.../files/`), or
+  `saved` for a file written in the granted folder (`path` relative to it, `url` empty: the page shows it with a
+  "Show in Finder" button).
 - `{"event": "plan", "id", "items": [{"step", "status"}]}` after an `update_plan` call that ran, before its
   `tool_result`. `status` is `pending`, `in_progress` or `done`. Each event has the whole plan: the page replaces the
   checklist of the answer and shows no card for such a call.
@@ -592,12 +606,20 @@ Rules of the loop (`app/chat.py`, `Turn`):
 8. Every call of a step gets a tool message, also when the answer ends before the call runs.
 9. When the app closes, every running answer gets Stop, as with the Stop button. The server waits a few
    seconds for the answers to save what they have.
+10. Before a call asks, the loop makes the tool's preview (`edit_file`'s diff) from the files as they are. When the
+    call cannot run (invalid arguments, `old_text` not found, a file that exists), the error goes back to the model
+    at once and the user is not asked. After the approval, `edit_file` makes the diff again and writes nothing when it
+    differs from the one the user saw.
+11. A `view_image` result names a copy of the image in the chat's folder. The tool message keeps it in `images`, and
+    the next model requests get it as an image part before the result text. Only the newest 2 tool images go to the
+    model; an older result gets a note instead.
 
 The answer's messages are saved when it ends. The assistant messages keep their `tool_calls`. The tool messages are
 `{"role": "tool", "tool_call_id", "name", "label", "status", "content", "describe", "files", "seconds", "approval",
-"risk", "time"}`, with `content` cut at 100,000 characters. An `update_plan` message also has `plan` (its items), so a
-saved answer shows its last plan. The message of the last step has `nudge`, the app's note that the model got as a
-user message before it; the next turns send it in the same place. The model gets at most 12,000 characters of each result.
+"risk", "time"}`, plus `images` for a `view_image` result, with `content` cut at 100,000 characters. An
+`update_plan` message also has `plan` (its items), so a saved answer shows its last plan. The message of the last
+step has `nudge`, the app's note that the model got as a user message before it; the next turns send it in the same
+place. The model gets at most 12,000 characters of each result.
 When the history does not fit the context budget, old tool results are shortened first, oldest first, and then the
 oldest turns are dropped. The budget counts the system prompt and the tool schemas.
 

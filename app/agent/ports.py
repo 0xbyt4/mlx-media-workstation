@@ -5,6 +5,7 @@ POST /api/jobs (a shared function, not an HTTP call) and must return at once: th
 memory lease, so waiting for it inside the turn would deadlock (docs/AGENT.md).
 """
 
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -21,6 +22,11 @@ class WorkstationPort(Protocol):
     def search_library(self, query: str, limit: int) -> list[dict[str, Any]]:
         """Finished outputs whose text, tool or file name contains the query, newest first: dicts with job, tool,
         tool_label, kind, name, created and text."""
+        ...
+
+    def output_file(self, job_id: str, name: str) -> Path | None:
+        """The path of one listed output of a finished job (as the Library shows it), or None: no such job or
+        output, a job that still runs, an input file, or a link."""
         ...
 
     def create_job(self, tool: str, fields: dict[str, str]) -> str:

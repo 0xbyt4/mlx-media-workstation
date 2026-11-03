@@ -683,6 +683,13 @@ class Workstation:
                     break
         return found
 
+    def output_file(self, job_id: str, name: str) -> Path | None:
+        with lock:
+            try:
+                return library.output_path(job_id, name)[1]
+            except HTTPException:
+                return None
+
     def create_job(self, tool_id: str, fields: dict[str, str]) -> str:
         if stopping.is_set():
             raise ValueError("The app is closing.")

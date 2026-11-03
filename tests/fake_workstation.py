@@ -1,6 +1,7 @@
 """A WorkstationPort stand-in for the agent tool tests: two tools, a few jobs and Library entries, and recorded
 create_job calls."""
 
+from pathlib import Path
 from typing import Any
 
 TOOLS: list[dict[str, Any]] = [
@@ -55,6 +56,9 @@ TOOLS: list[dict[str, Any]] = [
 class FakeWorkstation:
     def __init__(self) -> None:
         self.created: list[tuple[str, dict[str, str]]] = []
+        self.outputs: dict[
+            tuple[str, str], Path
+        ] = {}  # (job, name) -> the output's path; tests add files
         self.jobs: dict[str, dict[str, Any]] = {
             "20261103-120000-abcd": {
                 "id": "20261103-120000-abcd",
@@ -111,6 +115,9 @@ class FakeWorkstation:
             if q in i["text"].lower() or q in i["tool"] or q in i["name"]
         ]
         return hits[:limit]
+
+    def output_file(self, job_id: str, name: str) -> Path | None:
+        return self.outputs.get((job_id, name))
 
     def create_job(self, tool: str, fields: dict[str, str]) -> str:
         if fields.get("steps") == "999":

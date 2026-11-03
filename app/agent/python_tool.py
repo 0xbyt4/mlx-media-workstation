@@ -55,10 +55,12 @@ def build(sandbox: Sandbox, limits: Limits, packages: str) -> Tool:
         name="run_python",
         description=(
             f"Run Python 3 code in a sandbox and return its printed output. {packages} No network, no "
-            "subprocesses, no access to the user's files: the granted folder is not there, so read a file with "
-            "read_file and put the data you need into the code. The current folder is this chat's work folder: the "
+            "subprocesses, no access to the user's files: the granted folder is not there, so copy a file into the "
+            "work folder with copy_to_workspace, or read it with read_file and put the data you need into the code. "
+            "The current folder is this chat's work folder: the "
             "code can read and write files there, and they stay for later calls in this chat. The user gets the "
-            "files it writes as links in the chat (read_file cannot open them). Print the results "
+            "files it writes as links in the chat (read_file cannot open them; export_from_workspace saves one in "
+            "the granted folder). Print the results "
             f"you need. Limits: {limits.wall_s:.0f} s, {limits.memory_mb} MB of memory, "
             f"{limits.file_mb} MB per file."
         ),

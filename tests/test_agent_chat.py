@@ -255,11 +255,12 @@ def test_the_next_turn_sends_the_history_as_the_template_needs_it(client, reg):
     assert tool["tool_call_id"] == step["tool_calls"][0]["id"]
     assert "status: running" in tool["content"]
     assert llm.model_messages(sent) == sent  # already in the template's shape
-    # the tools of the request: the enabled ones, without run_python (off) and the file tools (no folder)
+    # the tools of the request: the enabled ones, without run_python (off) and the file tools (no folder); the media
+    # tools need no folder (they also read the work folder and the Library)
     names = [t["function"]["name"] for t in seen["tools"]]
     assert names == [
-        "update_plan", "list_workstation_tools", "job_status", "search_library", "create_job", "web_search",
-        "fetch_url",
+        "update_plan", "list_workstation_tools", "job_status", "search_library", "create_job", "media_info",
+        "view_image", "web_search", "fetch_url",
     ]  # fmt: skip
     system = sent[0]["content"]
     assert "untrusted data" in system and "emoji" in system
@@ -354,7 +355,7 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
     # no folder: the file tools are on but not offered
     assert (
         "You can call tools: update_plan, list_workstation_tools, job_status, search_library, create_job, "
-        "web_search, fetch_url.\n" in prompt
+        "media_info, view_image, web_search, fetch_url.\n" in prompt
     )
     assert "You reach the internet only through" in prompt
     assert "These tools are off in this chat: run_python. Never call them." in prompt
@@ -366,8 +367,8 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
     assert "You can call tools: job_status.\n" in prompt
     assert (
         "These tools are off in this chat: update_plan, list_workstation_tools, search_library, create_job, "
-        "list_files, read_file, search_files, web_search, fetch_url, run_python."
-        in prompt
+        "list_files, read_file, search_files, write_file, edit_file, copy_to_workspace, export_from_workspace, "
+        "media_info, view_image, web_search, fetch_url, run_python." in prompt
     )
     assert "Tools menu" in prompt and "no internet access in this chat" in prompt
     assert "You reach the internet" not in prompt and "short plan" not in prompt

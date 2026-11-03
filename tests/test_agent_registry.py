@@ -195,8 +195,26 @@ def test_risk_levels_of_the_tools() -> None:
     assert risks["web_search"] == risks["fetch_url"] == Risk.R2
     if "run_python" in risks:
         assert risks["run_python"] == Risk.R3
+    assert risks["write_file"] == risks["export_from_workspace"] == Risk.R2
+    assert risks["edit_file"] == Risk.R3
+    assert risks["copy_to_workspace"] == risks["media_info"] == Risk.R1
+    assert risks["view_image"] == Risk.R1
     assert reg.get("web_search").network and reg.get("fetch_url").network
     assert not reg.get("create_job").network
+    writers = {n for n in reg.names() if reg.get(n).writes}
+    assert writers == {"write_file", "edit_file", "export_from_workspace"}
+    assert not any(reg.get(n).network for n in writers)
+    # the tools that need a granted folder: the file tools; the media tools also read the work folder and the Library
+    folder = {n for n in reg.names() if reg.get(n).folder_needed()}
+    assert folder == {
+        "list_files",
+        "read_file",
+        "search_files",
+        "write_file",
+        "edit_file",
+        "copy_to_workspace",
+        "export_from_workspace",
+    }
     untrusted = {n for n in reg.names() if reg.get(n).untrusted_output}
     assert untrusted == {
         "search_library",
@@ -205,6 +223,9 @@ def test_risk_levels_of_the_tools() -> None:
         "search_files",
         "web_search",
         "fetch_url",
+        "copy_to_workspace",
+        "media_info",
+        "view_image",
     } | ({"run_python"} if "run_python" in risks else set())
 
 

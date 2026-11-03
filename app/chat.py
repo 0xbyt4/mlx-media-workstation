@@ -24,6 +24,7 @@ import re
 import secrets
 import shutil
 import stat
+import subprocess
 import threading
 import time
 from datetime import datetime
@@ -44,6 +45,7 @@ from app.agent import (
     Risk,
     Settings,
     Tool,
+    ToolError,
     WorkstationPort,
     build_registry,
     decide,
@@ -58,7 +60,8 @@ from app.config import ROOT
 
 CHATS = ROOT / "outputs" / "chats"
 ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{4}")
-IMAGE = re.compile(r"img_\d+\.(png|jpg|jpeg|webp)")
+# images sent in the chat (img_<n>) and the copies view_image made for the model (view_<hex>.png)
+IMAGE = re.compile(r"img_\d+\.(png|jpg|jpeg|webp)|view_[0-9a-f]{12}\.png")
 IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 MAX_IMAGES = 4  # per message
 MAX_IMAGE = 20 * 1024 * 1024
@@ -66,6 +69,9 @@ MAX_TEXT = 20000  # characters per message
 # the 16 full-attention layers take 64 KiB of KV cache per token: 32K tokens is 2 GiB on top of the weights
 CONTEXT_TOKENS = 32768
 IMAGE_TOKENS = 1100  # an image at the worker's 1024x1024 pixel cap
+MAX_TOOL_IMAGES = (
+    2  # images of tool results (view_image) in one model request: the newest ones
+)
 PROMPT_FENCE = "prompt"  # a fenced block "```prompt <tool id> [field]" gets a "Use in <tool>" button in the app
 MODES = ("workstation", "general", "agent")
 DEFAULT_MODE = "workstation"  # also the mode of a chat saved before modes existed
@@ -114,6 +120,12 @@ LABELS = {
     "web_search": "Web search",
     "fetch_url": "Read a web page",
     "run_python": "Python",
+    "write_file": "Write a file",
+    "edit_file": "Change a file",
+    "copy_to_workspace": "Copy to work folder",
+    "export_from_workspace": "Save to your folder",
+    "media_info": "Media facts",
+    "view_image": "View an image",
 }
 # workspace files the page shows inline (images) or as text; anything else is a download
 INLINE_TYPES = {
@@ -225,7 +237,8 @@ def agent_prompt(chat: dict[str, Any]) -> str:
         else "You have no internet access in this chat."
     )
     files = (
-        f"The user granted this chat the folder {folder}. The file tools read only inside it; give paths relative to it."
+        f"The user granted this chat the folder {folder}. The file tools read and write only inside it; give paths "
+        "relative to it."
         if folder
         else "No folder is granted to this chat. To read files, the user must grant one in this chat's Tools menu."
     )
@@ -368,12 +381,14 @@ def offered(state: dict[str, Any], reg: Registry) -> list[str]:
     return [
         n
         for n in reg.names()
-        if n in state["tools"] and (state["folder"] or reg.tools[n].risk != Risk.R1)
+        if n in state["tools"] and (state["folder"] or not reg.tools[n].folder_needed())
     ]
 
 
 def risk_text(tool: Tool) -> str:
     """What a tool may do and when it asks, in plain words, for the Tools menu."""
+    if tool.effect:
+        return tool.effect
     if tool.risk == Risk.R0:
         return "Reads the app's own state. Runs without asking."
     if tool.risk == Risk.R1:
@@ -442,7 +457,8 @@ def model_input(
     The budget counts the system prompt and the tool schemas. A tool result goes in capped at MAX_RESULT characters;
     when the turns do not fit, older tool results are replaced by a short note first (not those of the newest step),
     then whole turns are dropped, oldest first. A turn (a user message and every message up to the next one) is kept
-    or dropped as a whole, so an assistant's tool calls always come with their results.
+    or dropped as a whole, so an assistant's tool calls always come with their results. A tool result with images
+    (view_image) carries them as image parts before its text; only the newest MAX_TOOL_IMAGES of them are sent.
 
     An agent answer's last step gets the app's note that no tool can be called (NUDGE) as a user message: in the
     running step as a user message with "app": True (it starts no turn), in the saved chat as the "nudge" of the
@@ -469,6 +485,29 @@ def model_input(
                     "content": cap(str(msg.get("content", "")), MAX_RESULT)[0],
                 }
             turns[-1].append(msg)
+    # the images of tool results (view_image) that are still on disk; the newest MAX_TOOL_IMAGES are sent
+    kept = 0
+    for turn in reversed(turns):
+        for i in reversed(range(len(turn))):
+            if turn[i]["role"] != "tool" or not turn[i].get("images"):
+                continue
+            names = [
+                n
+                for n in turn[i]["images"]
+                if IMAGE.fullmatch(n) and (CHATS / chat["id"] / n).is_file()
+            ]
+            keep = names[: max(0, MAX_TOOL_IMAGES - kept)]
+            kept += len(keep)
+            note = (
+                "\n[The image is no longer attached; call view_image again to see it.]"
+                if len(keep) < len(turn[i]["images"])
+                else ""
+            )
+            turn[i] = {
+                **turn[i],
+                "images": keep,
+                "content": turn[i]["content"] + note,
+            }
     total = sum(tokens(m) for turn in turns for m in turn)
     if total > budget:
         flat = [m for turn in turns for m in turn]
@@ -485,7 +524,7 @@ def model_input(
             if total <= budget:
                 break
             before = tokens(turns[t][i])
-            turns[t][i] = {**turns[t][i], "content": SHORTENED}
+            turns[t][i] = {**turns[t][i], "content": SHORTENED, "images": []}
             total -= before - tokens(turns[t][i])
     while total > budget and len(turns) > 1:
         total -= sum(tokens(m) for m in turns.pop(0))
@@ -498,12 +537,18 @@ def model_input(
             images += [str(CHATS / chat["id"] / name) for name in msg["images"]]
             messages.append({"role": "user", "content": parts})
         elif msg["role"] == "tool":
+            content: str | list[dict[str, Any]] = msg["content"]
+            seen = [str(CHATS / chat["id"] / name) for name in msg.get("images") or []]
+            if seen:
+                content = [{"type": "image"} for _ in seen]
+                content.append({"type": "text", "text": msg["content"]})
+                images += seen
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": msg.get("tool_call_id", ""),
                     "name": msg.get("name", ""),
-                    "content": msg["content"],
+                    "content": content,
                 }
             )
         else:
@@ -831,10 +876,25 @@ class Turn:
                 reason = f"There is no tool {name!r}. The tools of this chat: {names}."
             self.result(call, "refused", reason, describe)
             return None
+        ctx = Context(
+            self.chat_id, grants.folder, self.run.abort, work_dir(CHATS, self.chat_id)
+        )
         approval = None
         if verdict.action == Action.ASK:
+            try:  # the change the card shows (edit_file's diff); the call runs only while it is still true
+                ctx.preview = tool.show(args, ctx)
+            except Exception as e:  # noqa: BLE001 - a call that cannot run goes back to the model, unasked
+                why = str(e) if isinstance(e, ToolError) else f"The tool failed: {e}"
+                self.result(call, "error", why, describe)
+                return None
             approval = self.ask(
-                call, tool, describe, host, verdict.reason, verdict.chat_scope
+                call,
+                tool,
+                describe,
+                host,
+                verdict.reason,
+                verdict.chat_scope,
+                ctx.preview,
             )
             if approval == "stopped":
                 self.result(
@@ -856,9 +916,6 @@ class Turn:
             if approval == "chat":
                 state = self.state()
                 self.change(grants=sorted(set(state["grants"]) | {name}))
-        ctx = Context(
-            self.chat_id, grants.folder, self.run.abort, work_dir(CHATS, self.chat_id)
-        )
         res = self.reg.call(name, args, ctx)
         if res.status in ("ok", "error"):  # it ran: its text is in the context now
             tainted = self.state()["tainted"]
@@ -873,10 +930,11 @@ class Turn:
             res.status,
             res.full,
             describe,
-            files=self.files(res.files),
+            files=self.files(res.files, res.images, res.saved),
             seconds=res.seconds,
             approval=approval,
             plan=plan,
+            images=res.images,
         )
         return ("cancelled", "") if res.status == "cancelled" else None
 
@@ -888,6 +946,7 @@ class Turn:
         host: str | None,
         reason: str,
         chat_scope: bool,
+        preview: str | None = None,
     ) -> str:
         """Show the approval card and wait for the answer: "once", "chat", "deny", "timeout" or "stopped"."""
         ap = Approval(call["id"], chat_scope)
@@ -904,8 +963,10 @@ class Turn:
                 "host": host,
                 "reason": reason,
                 "risk": int(tool.risk),
+                "network": tool.network,
                 "chat_scope": chat_scope,
                 "timeout_s": round(wait),
+                "preview": preview,
             }
         )
         # Stop sets run.stop before it looks at run.approval: one of the two sees the other
@@ -936,9 +997,11 @@ class Turn:
         seconds: float | None = None,
         approval: str | None = None,
         plan: list[dict[str, str]] | None = None,
+        images: list[str] | None = None,
     ) -> None:
         """The call's tool message (saved with the answer) and its tool_result event. An update_plan call's message
-        keeps its checked items ("plan"), so a saved answer shows its last plan."""
+        keeps its checked items ("plan"), so a saved answer shows its last plan. images: the files in the chat's
+        folder that the model sees with this result (view_image)."""
         name = str(call.get("name") or "")
         stored, _ = cap(text, MAX_STORED)
         preview, cut = cap(text, PREVIEW)
@@ -960,6 +1023,7 @@ class Turn:
                 "describe": describe,
                 **extra,
                 **({"plan": plan} if plan is not None else {}),
+                **({"images": images} if images else {}),
                 "time": now(),
             }
         )
@@ -991,9 +1055,20 @@ class Turn:
             )
             self.result(call, "skipped", text, "")
 
-    def files(self, paths: list[str]) -> list[dict[str, str]]:
-        """The files a tool wrote, as links into GET /api/chats/{id}/ws/{path}."""
-        out = []
+    def files(
+        self,
+        paths: list[str],
+        images: list[str] | None = None,
+        saved: list[str] | None = None,
+    ) -> list[dict[str, str]]:
+        """The files a tool wrote, as links into GET /api/chats/{id}/ws/{path}; the images the model sees (GET
+        /api/chats/{id}/files/{name}); the files it wrote in the granted folder (no link: POST .../reveal shows one
+        in Finder)."""
+        out = [
+            {"path": n, "url": f"/api/chats/{self.chat_id}/files/{n}", "kind": "image"}
+            for n in images or []
+        ]
+        out += [{"path": p, "url": "", "kind": "saved"} for p in saved or []]
         for path in paths:
             if any(part.startswith(".") for part in path.split("/")):
                 continue
@@ -1513,3 +1588,31 @@ def workspace_file(chat_id: str, path: str) -> Response:
     name = quote(parts[-1])
     headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{name}"
     return Response(data, media_type="application/octet-stream", headers=headers)
+
+
+class Reveal(BaseModel):
+    path: str  # relative to the chat's granted folder
+
+
+@router.post("/chats/{chat_id}/reveal")
+def reveal_file(chat_id: str, body: Reveal, request: Request) -> dict[str, str]:
+    """Show a file of the chat's granted folder in Finder (one that write_file, edit_file or export_from_workspace
+    wrote). The path gets the file tools' checks: inside the folder, no hidden or secret part."""
+    same_origin(request)
+    with lock:
+        state = agent_of(agent_chat(chat_id))
+    if not state["folder"]:
+        raise HTTPException(409, "No folder is granted to this chat.")
+    ctx = Context(
+        chat_id, Path(state["folder"]), threading.Event(), work_dir(CHATS, chat_id)
+    )
+    try:
+        path = file_tools.resolve(file_tools._root(ctx), body.path)
+    except ToolError as e:
+        raise HTTPException(404, str(e)) from None
+    done = subprocess.run(
+        ["open", "-R", path], capture_output=True, timeout=10, check=False
+    )
+    if done.returncode != 0:
+        raise HTTPException(500, "Finder could not show the file")
+    return {"status": "shown"}
