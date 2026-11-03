@@ -643,12 +643,14 @@ function blockedWhy(m, byId) {
   return null;
 }
 
+// The weights that fit this Mac. Weights whose runtime is missing are left out: they cannot run after the download.
 function defaultPicks(d) {
   const byId = new Map(d.models.map((m) => [m.id, m]));
   const picks = new Set();
   for (const m of d.models) {
     // the full profile leaves out what no tool uses (the LLM); in the chat profile the LLM is the point
     if (m.kind !== 'download' || blockedWhy(m, byId) || (!(m.tools || []).length && !chatOnly())) continue;
+    if (missingEnvs(m, d).length) continue;
     const f = fit(m.peak_gb, d.machine.mem_total_gb, d.machine.mem_reserve_gb);
     if (f && f.k !== 'no') picks.add(m.id);
   }
@@ -822,6 +824,7 @@ function pickStep(d) {
     h('div', {class: 'setup-items'}, ms.map((m) => pickItem(m, d, byId)))));
 
   const anyMissing = all.some((m) => !m.installed);
+  const noEnv = all.some((m) => !m.installed && missingEnvs(m, d).length);
   live.total = h('p', {class: 'setup-total num', id: 'setup-total'});
   live.say = h('span', {class: 'sr-only', 'aria-live': 'polite'});
   live.go = h('button', {type: 'button', class: 'btn btn-primary', 'data-k': 'setup-go', 'aria-describedby': 'setup-total',
@@ -829,7 +832,8 @@ function pickStep(d) {
   const intro = anyMissing ?
     'Workstation runs open models on this Mac and uploads nothing. The models are not included: you download each one once. ' +
       'The picks below fit ' + (mem ? Math.round(mem) + ' GB' : 'this Mac') +
-      (chatOnly() ? ' and are what Chat needs.' : ' and are used by a tool. Change them if you like.') :
+      (chatOnly() ? ' and are what Chat needs.' : ' and are used by a tool. Change them if you like.') +
+      (noEnv ? ' A model whose environment is missing is not picked: install the environment below first.' : '') :
     'Every model that Workstation can download is installed.';
   return setupShell('Set up this Mac', 'Pick the models for this Mac', 1,
     h('p', {class: 'setup-intro'}, intro),
