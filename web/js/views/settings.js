@@ -151,8 +151,9 @@ function promptHelp() {
 async function saveProvider(id) {
   s.provErr.hidden = true;
   try {
-    await put({assist: {provider: id}});
-    toast('Prompt help saved. Restart the app to use it.');
+    const data = await put({assist: {provider: id}});
+    toast(data.assist.provider !== data.assist.active ? 'Prompt help saved. Restart the app to use it.' :
+      'Prompt help saved. The app uses it now.');
   } catch (e) {
     if (!s || e.name === 'AbortError') return;
     const fields = e.detail && e.detail.fields;
@@ -496,7 +497,7 @@ function renderAgent() {
   s.agentResetBtn.hidden = !n;
   if (s.agentSaving) s.agentMsg.textContent = 'Saving...';
   else if (n) s.agentMsg.textContent = n === 1 ? '1 value changed.' : n + ' values changed.';
-  else if (a.restart_required) s.agentMsg.textContent = 'Saved. Until the restart the agent uses the values from the start.';
+  else if (a.restart_required) s.agentMsg.textContent = 'Saved. The agent uses the new values after a restart.';
   else s.agentMsg.textContent = 'No changes.';
 }
 
@@ -541,8 +542,9 @@ async function saveAgent() {
   s.agentSaving = true;
   renderAgent();
   try {
-    await put({agent: todo});
-    toast('Agent settings saved to config.toml. Restart the app to use them.');
+    const data = await put({agent: todo});
+    toast(data.agent.restart_required ? 'Agent settings saved to config.toml. Restart the app to use them.' :
+      'Agent settings saved to config.toml. The app uses them now.');
   } catch (e) {
     if (!s || e.name === 'AbortError') return;
     const fields = (e.detail && e.detail.fields) || {};
@@ -741,8 +743,9 @@ async function savePaths() {
   s.saving = true;
   renderSave();
   try {
-    await put({paths: todo});
-    toast('Paths saved to config.toml. Restart the app to use them.');
+    const data = await put({paths: todo});
+    toast(data.paths.some((r) => r.path !== r.active) ? 'Paths saved to config.toml. Restart the app to use them.' :
+      'Paths saved to config.toml. The app uses them now.');
   } catch (e) {
     if (!s || e.name === 'AbortError') return;
     const fields = (e.detail && e.detail.fields) || {};
