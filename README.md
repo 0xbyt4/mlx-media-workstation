@@ -23,9 +23,12 @@ The sidebar has six sections. Cmd-1 to Cmd-6 open them. The chat profile shows o
 - **Jobs**: the running job with its progress, the queue, and the finished jobs with their results. You can move a
   queued job up or down. "Use these settings" fills the form again. "Send to" puts an output into a file field of another tool.
 - **Chat**: talk with the local LLM. You can attach up to 4 images to a message and turn on thinking. A new chat is
-  in Workstation mode or General mode. In Workstation mode the model knows the app's tools, and when it writes a
+  in Workstation, General or Agent mode. In Workstation mode the model knows the app's tools, and when it writes a
   prompt for a tool, the answer shows a "Use in" card that copies the text into that tool's form. General mode is a
-  plain assistant. The mode is fixed after the first message.
+  plain assistant. In Agent mode the model can call tools: search the web, read a web page, read files in a folder
+  you grant, run Python in a sandbox, search the Library and queue jobs. A call that sends data off the Mac, queues
+  a job or runs code shows an approval card first. The Tools menu turns tools on or off and grants the folder
+  (`docs/AGENT.md`). The mode is fixed after the first message.
 - **Library**: every output of the finished jobs, with search and filters. A card opens a larger preview with "Use
   these settings", "Send to", "Show in Finder", download and delete.
 - **Models**: what each tool needs, what is installed, the download size, the peak memory and whether it fits this
@@ -388,8 +391,10 @@ locally before you push.
 - The server listens on `127.0.0.1` only. It checks the Host and Origin headers, so other web pages in your browser
   cannot send jobs to it.
 - Uploaded files get fixed names, and the server sends back only media files.
-- The app has no accounts and sends no data anywhere. It connects to the network only for the downloads that you
-  start on the Models screen.
+- The app has no accounts. It connects to the network for the downloads that you start on the Models screen, and
+  in an Agent chat for the web tools after you allow the call.
+- Agent mode runs model-written Python only in a sandbox without network or access to your files, and only after
+  you approve each run. `docs/AGENT.md` lists what the sandbox does not protect.
 
 ## Licence
 

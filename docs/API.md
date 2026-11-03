@@ -403,6 +403,7 @@ return HTTP 404 for an unknown chat.
   - `{"event": "reasoning", "text": "..."}` and `{"event": "content", "text": "..."}` deltas;
   - `{"event": "done", "finish": "stop" | "length" | "cancelled", "content": "...", "reasoning": "...", "stats": {...}}`
     or `{"event": "error", "message": "..."}` at the end.
+  - An agent chat has more events: see [Agent mode](#agent-mode).
   - `stats` has `seconds`, and when the model ran, `prompt_tokens`, `generation_tokens`, `cached_tokens`,
     `prompt_tps`, `generation_tps` and `peak_gb`.
   - `text` is at most 20,000 characters. An answer is at most 4,096 tokens, or 8,192 with thinking on.
@@ -420,7 +421,7 @@ The mode of a chat sets its system prompt:
 |---|---|---|
 | `workstation` | The app's tools with their prompt-help fields, and the `prompt` block rule below. | yes |
 | `general` | A short assistant prompt with today's date. It does not list the tools. | no |
-| `agent` | Reserved for tool use. For now it gets the `general` prompt, and the UI does not offer it. | no |
+| `agent` | The `general` prompt without the "no internet" line, plus the agent rules and the granted folder. The model gets the chat's tools (see [Agent mode](#agent-mode)). | no |
 
 Every mode tells the model to answer in the user's language and not to use emoji. A chat saved before modes existed has
 no `mode` in `chat.json` and is a `workstation` chat. The mode is fixed after the first message, because a different
@@ -433,6 +434,89 @@ field.
 
 The answer runs on the server whether or not a page listens, and it is saved when it ends. The model sees the newest
 turns that fit in 32K tokens.
+
+### Agent mode
+
+An agent chat can call tools: the Workstation tools, the file tools, the web tools and `run_python`. `docs/AGENT.md`
+describes each tool, its risk level and when it asks. An answer is a loop of steps. Each step is one model request.
+When the model calls tools, the server runs them (or asks the user first) and sends the results back in the next step.
+
+The chat's agent state is in `chat.json` under `agent`:
+
+```json
+{"tools": ["list_workstation_tools", "job_status", "search_library", "create_job", "list_files", "read_file",
+           "search_files", "web_search", "fetch_url"],
+ "folder": null, "grants": [], "tainted": false}
+```
+
+- `tools` are the tools this chat offers. A new agent chat has every tool except `run_python`. `run_python` runs code
+  that the model writes, so the user turns it on in the Tools menu.
+- `folder` is the folder that the file tools may read, or `null`.
+- `grants` are the tools the user allowed "in this chat".
+- `tainted` is `true` after a tool returned untrusted text (a page, a file, program output). From then on every
+  network or job call asks again.
+
+Endpoints. The writes need an `Origin` header of the app's own page (HTTP 403 without it), so a script on this Mac
+cannot approve calls or grant folders through plain `curl`.
+
+- `GET /api/chats/{id}/agent` returns the state for the Tools menu: `folder`, `grants`, `tainted`, `enabled` (the
+  names), `limits` (`steps`, `seconds`, `approval_s`) and `tools`, a list of `{name, label, description, risk,
+  risk_text, network, enabled, granted}` for every tool this app has. HTTP 409 for a chat that is not an agent chat.
+- `PATCH /api/chats/{id}/agent` changes it and returns the new state. The JSON body has any of:
+  - `tools`: the names of the enabled tools (HTTP 400 for an unknown name);
+  - `folder`: a folder to grant, or `null` or `""` to revoke it;
+  - `revoke`: tools whose "allow in this chat" ends.
+  The changes apply from the next tool call, also while an answer runs. The folder must be an absolute path to an
+  existing folder. The server stores its resolved path. It refuses `/`, a folder directly under `/`, the home folder
+  and the folders above it, system folders (`/System`, `/Library`, `/usr`, `/private/etc`...), `~/Library` and any
+  path with a hidden part (`.ssh`). Each refusal is HTTP 400 with the reason.
+- `POST /api/chats/{id}/approve` with `{"call_id": "call_3f2a...", "decision": "once" | "chat" | "deny"}` answers
+  the call that waits. It returns `{"status": "answered", "decision": "..."}`. HTTP 409 when that call does not wait
+  any more, HTTP 400 for `"chat"` when the approval did not offer it.
+- `GET /api/chats/{id}/ws/{path}` serves a file that `run_python` wrote in the chat's workspace
+  (`outputs/chats/<id>/ws`). PNG, JPEG, GIF and WebP come as images. `.txt`, `.csv`, `.tsv`, `.json`, `.md`, `.py`
+  and `.log` come as `text/plain`. Every other file is a download (`Content-Disposition: attachment`). Each response
+  has `Content-Security-Policy: sandbox; default-src 'none'`. Symlinks, hidden names and files over 64 MB give
+  HTTP 404.
+
+Events. The message stream of an agent chat has these events besides `waiting`, `reasoning`, `content` and `error`:
+
+- `{"event": "step", "n": 2, "max": 8}` before each model request.
+- `{"event": "tool_call", "id", "name", "label", "arguments", "describe", "risk"}` for each call the model made.
+  `describe` is one line about what the call does. `risk` is 0 to 3, or `null` for an unknown tool.
+- `{"event": "approval", "id", "name", "label", "arguments", "describe", "reason", "risk", "chat_scope",
+  "timeout_s"}` when the call waits for the user. Offer "Allow in this chat" only when `chat_scope` is `true`.
+- `{"event": "approval_done", "id", "decision"}` with `once`, `chat`, `deny`, `timeout` or `stopped`.
+- `{"event": "tool_result", "id", "name", "status", "content", "truncated", "files", "seconds", "approval", "risk"}`.
+  `status` is `ok`, `error`, `cancelled`, `denied`, `refused` or `skipped`. `content` is the first 4,000 characters.
+  `files` are `{path, url, kind}` with `kind` `image` or `file`.
+- `done` as above, plus `note` (why the answer ended early, or `""`). `finish` can also be `steps` (the step limit),
+  `repeat` (the same call twice) or `timeout` (the time limit). `stats` adds `steps` and `generation_tokens` over all
+  steps; `seconds` is the whole answer.
+
+`GET /api/chats/{id}/stream` replays these events too. A page that comes back while a call waits sees its `approval`
+event without an `approval_done`, so it can show the card again. `POST /api/chats/{id}/stop` also answers a waiting
+call with `stopped`.
+
+Rules of the loop (`app/chat.py`, `Turn`):
+
+1. All steps run in one `llm.session()`, so a queued media job does not unload the model between steps.
+2. An answer has at most 8 steps and 10 minutes. A call in step 8 does not run, because its result would never reach
+   the model.
+3. Stop is checked before each step, before each call, while a call waits for approval and inside the tools.
+4. A malformed call, an unknown or disabled tool, a refusal and a denial each give the model a tool message. The
+   answer goes on.
+5. The same call (name and arguments) twice in one answer ends the answer with a note.
+6. An approval waits at most 10 minutes (less when the answer's time runs out). No answer counts as a denial.
+7. `create_job` queues the job and returns its id at once. It never waits for the job, because the job waits for the
+   answer's memory lease.
+8. Every call of a step gets a tool message, also when the answer ends before the call runs.
+
+The answer's messages are saved when it ends. The assistant messages keep their `tool_calls`. The tool messages are
+`{"role": "tool", "tool_call_id", "name", "label", "status", "content", "describe", "files", "seconds", "approval",
+"risk", "time"}`, with `content` cut at 100,000 characters. The model gets at most 12,000 characters of each result.
+When the history does not fit the context budget, old tool results are shortened first, oldest first, and then the
+oldest turns are dropped. The budget counts the system prompt and the tool schemas.
 
 
 ## Settings

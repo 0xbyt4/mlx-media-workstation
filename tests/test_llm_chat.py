@@ -621,8 +621,13 @@ def test_system_prompt_follows_the_mode(monkeypatch):
     assert "Tuesday 3 November 2026" in general and "emoji" in general
     assert "video.t2v" not in general and chat.PROMPT_FENCE + " " not in general
     assert "Workstation" not in general
-    # agent mode gets the general prompt until it has tools
-    assert chat.system_prompt({"mode": "agent"}) == general
+    # agent mode: the general prompt, with internet only through the tools, plus the tool rules
+    agent = chat.system_prompt({"mode": "agent", "agent": {"tools": []}})
+    assert agent.startswith(general.removesuffix(" You have no internet access."))
+    assert "no internet access" not in agent and "untrusted data" in agent
+    assert "No folder is granted" in agent
+    folder = {"mode": "agent", "agent": {"tools": [], "folder": "/Users/me/notes"}}
+    assert "granted this chat the folder /Users/me/notes" in chat.system_prompt(folder)
 
 
 def test_model_input_counts_the_chat_s_own_system_prompt(monkeypatch):
