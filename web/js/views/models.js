@@ -426,12 +426,22 @@ function paintProgress(live, dl) {
   const doneText = dl.done_gb.toFixed(1) + ' of ' + dl.total_gb.toFixed(1) + ' GB';
   live.bar.setAttribute('aria-valuenow', String(Math.floor(dl.percent)));
   live.bar.setAttribute('aria-valuetext', doneText);
-  let speed = '';
-  if (typeof dl.speed_mbs === 'number') speed = ' · ' + (dl.speed_mbs >= 100 ? Math.round(dl.speed_mbs) : dl.speed_mbs.toFixed(1)) + ' MB/s';
-  live.done.textContent = doneText + ' (' + Math.floor(dl.percent) + '%)' + speed;
+  live.done.textContent = doneText + ' (' + Math.floor(dl.percent) + '%)' + fmtSpeed(dl.speed_mbs);
   if (typeof dl.eta_s === 'number') live.left.textContent = fmtLeft(dl.eta_s);
-  else if (dl.speed_mbs === 0) live.left.textContent = 'No new data for 10 s';
+  else if (dl.stalled) live.left.textContent = 'No data for ' + fmtIdle(dl.idle_s) + '. Check the network connection.';
+  else if (dl.speed_mbs === 0) live.left.textContent = 'Waiting for data...';
   else live.left.textContent = 'Working out the time left...';
+}
+
+// The speed after the GB done; nothing while it is unknown or 0 (the time-left text explains that).
+function fmtSpeed(mbs) {
+  if (typeof mbs !== 'number' || mbs <= 0) return '';
+  if (mbs < 1) return ' · ' + Math.max(1, Math.round(mbs * 1000)) + ' kB/s';
+  return ' · ' + (mbs >= 100 ? Math.round(mbs) : mbs.toFixed(1)) + ' MB/s';
+}
+
+function fmtIdle(sec) {
+  return sec < 120 ? sec + ' s' : Math.floor(sec / 60) + ' min';
 }
 
 function progressBlock(m, live, cls) {
