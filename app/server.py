@@ -28,6 +28,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -145,7 +146,11 @@ def now() -> str:
 
 
 def save(job: dict[str, Any]) -> None:
-    (OUT / job["id"] / "job.json").write_text(json.dumps(job, indent=1))
+    """Write job.json through a temporary file, so a failed or concurrent write never leaves half a file."""
+    path = OUT / job["id"] / "job.json"
+    tmp = path.with_name(f".job.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(job, indent=1))
+    os.replace(tmp, path)
 
 
 def queue_key(job: dict[str, Any]) -> tuple[float, str, str]:
@@ -315,37 +320,58 @@ def worker() -> None:
     while not stopping.is_set():
         wake.wait(2)
         wake.clear()
-        with lock:
-            if stopping.is_set():
-                return
-            queued = queued_jobs()
-            job = queued[0] if queued else None
-        if not job:
-            continue
-        go = False
+        job: dict[str, Any] | None = None
         try:
-            # before the job counts as running: prompt help and chat answers sent before it finish first
             with lock:
-                claiming.add(job["id"])
-            go = llm.claim(
-                models.tool_peak(job["tool"]),
-                lambda j=job: j["status"] != "queued" or stopping.is_set(),
-            )
+                if stopping.is_set():
+                    return
+                queued = queued_jobs()
+                job = queued[0] if queued else None
+            if job:
+                run_next(job)
+        except Exception as e:  # noqa: BLE001 - e.g. a full disk: this job fails, the queue keeps running
+            traceback.print_exc()
             with lock:
-                claiming.discard(job["id"])
-                go = go and job["status"] == "queued" and not stopping.is_set()
-                # a move during the claim may have put another job first: the next round picks that one
-                go = go and queued_jobs()[0] is job
-                if go:
-                    job["status"], job["started"] = "running", now()
-                    save(job)
+                if job is not None:
+                    claiming.discard(job["id"])
+                    if job["status"] in ("queued", "running"):
+                        job["status"], job["error"] = (
+                            "failed",
+                            f"{type(e).__name__}: {e}",
+                        )
+            sync_awake()
+            time.sleep(
+                1
+            )  # a disk that stays full must not turn this loop into a busy loop
+        if job:
+            wake.set()
+
+
+def run_next(job: dict[str, Any]) -> None:
+    """Claim the memory for the first queued job, run it and announce the end."""
+    go = False
+    try:
+        # before the job counts as running: prompt help and chat answers sent before it finish first
+        with lock:
+            claiming.add(job["id"])
+        go = llm.claim(
+            models.tool_peak(job["tool"]),
+            lambda j=job: j["status"] != "queued" or stopping.is_set(),
+        )
+        with lock:
+            claiming.discard(job["id"])
+            go = go and job["status"] == "queued" and not stopping.is_set()
+            # a move during the claim may have put another job first: the next round picks that one
+            go = go and queued_jobs()[0] is job
             if go:
-                run_job(job)
-        finally:
-            llm.release()
+                job["status"], job["started"] = "running", now()
+                save(job)
         if go:
-            ended(job)
-        wake.set()
+            run_job(job)
+    finally:
+        llm.release()
+    if go:
+        ended(job)
 
 
 def shutdown() -> None:
