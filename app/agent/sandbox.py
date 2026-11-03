@@ -184,14 +184,27 @@ def snapshot(workdir: Path) -> dict[str, tuple[int, int]]:
 
 
 def all_files(workdir: Path) -> set[str]:
-    """Every file and link under the work dir, hidden ones too (absolute paths; links are not followed)."""
+    """Every entry under the work dir: files, links and folders, hidden ones too (absolute paths; links are not
+    followed)."""
     found: set[str] = set()
     for here, dirs, files in os.walk(workdir):
-        found.update(os.path.join(here, name) for name in files)
-        found.update(
-            os.path.join(here, d) for d in dirs if os.path.islink(os.path.join(here, d))
-        )
+        found.update(os.path.join(here, name) for name in files + dirs)
     return found
+
+
+def remove_new(workdir: Path, before: set[str]) -> None:
+    """Remove the entries that are not in `before`, deepest first. The run has ended, so nothing writes any more; a
+    folder the code made read-only is opened up first. A link is removed, never its target."""
+    for path in sorted(all_files(workdir) - before, key=len, reverse=True):
+        try:
+            os.chmod(os.path.dirname(path), 0o700)
+            if os.path.isdir(path) and not os.path.islink(path):
+                os.chmod(path, 0o700)
+                os.rmdir(path)  # empty by now: its entries came first
+            else:
+                os.unlink(path)
+        except OSError:
+            pass  # what stays counts against the next run, which the watchdog stops in time
 
 
 def dir_size(workdir: Path) -> tuple[int, int]:
@@ -469,13 +482,11 @@ class SeatbeltSandbox:
         size, count = dir_size(Path(work))
         if size > limits.disk_mb * 1024 * 1024 or count > MAX_WORK_FILES:
             # the watchdog looks every DISK_EVERY seconds: code that wrote fast and ended in between loses what it
-            # wrote, hidden files too, so the folder is back under the limit for the next call
-            for path in sorted(all_files(Path(work)) - before_all, reverse=True):
-                Path(path).unlink(missing_ok=True)
-            for rel in changed:
-                (Path(work) / rel).unlink(missing_ok=True)
+            # added (hidden files and folders too), so the folder is back under the limit for the next call. Files
+            # from earlier calls stay, also when this run changed them.
+            remove_new(Path(work), before_all)
             killed = killed or "disk"
-            changed = []
+            changed = [rel for rel in changed if rel in before]
         stdout, stdout_cut = out.text(limits.output_chars)
         stderr, stderr_cut = err.text(limits.output_chars)
         return RunResult(
