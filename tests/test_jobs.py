@@ -16,7 +16,8 @@ from typing import Any
 
 import pytest
 
-from app import server, tools
+from app import config, llm, server, tools
+from tests.conftest import MacEffects
 
 Job = Callable[..., dict[str, Any]]
 macos_time = pytest.mark.skipif(
@@ -289,6 +290,99 @@ def test_worker_runs_queued_jobs_until_shutdown(
     for job_id in ("early", "late"):  # the worker may have started "late" too
         job = saved(state, job_id)
         assert (job["status"], job["error"]) == ("cancelled", "The app was closed.")
+
+
+def test_worker_takes_the_new_first_job_after_a_move_during_its_claim(
+    state: Path, make_job: Job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[str] = []
+    started = threading.Event()
+    claims: list[str] = []
+
+    def claim(peak: float, abort: Callable[[], bool] = lambda: False) -> bool:
+        claims.append(server.queued_jobs()[0]["id"])
+        if (
+            len(claims) == 1
+        ):  # the user moves "b" to the top while "a" waits for its memory
+            server.move_job("b", server.Move(to="top"))
+        return True
+
+    def fake_run(job: dict[str, Any]) -> None:
+        ran.append(job["id"])
+        job["status"] = "done"
+        started.set()
+
+    monkeypatch.setattr(llm, "claim", claim)
+    monkeypatch.setattr(server, "run_job", fake_run)
+    make_job("a", "queued", order=1)
+    make_job("b", "queued", order=2)
+    worker = threading.Thread(target=server.worker, daemon=True)
+    worker.start()
+    server.wake.set()
+    assert started.wait(5)
+    server.shutdown()
+    worker.join(5)
+    assert claims[:2] == ["a", "b"]
+    assert ran[0] == "b"
+
+
+@pytest.mark.parametrize(
+    ("status", "elapsed", "note"),
+    [
+        ("done", 125.4, "FLUX.3 Klein is done. It took 2:05."),
+        ("failed", 3.0, "FLUX.3 Klein failed. Open Jobs to see why."),
+        ("cancelled", 3.0, None),
+    ],
+)
+def test_ended_notifies_done_and_failed_jobs(
+    make_job: Job,
+    mac_effects: MacEffects,
+    status: str,
+    elapsed: float,
+    note: str | None,
+) -> None:
+    job = make_job("j1", status, elapsed=elapsed)
+    server.ended(job)
+    assert mac_effects.notes == ([(note, "Workstation")] if note else [])
+    assert mac_effects.awake.calls == [False]  # the queue is empty: the Mac may sleep
+
+
+def test_ended_without_notifications(
+    make_job: Job, mac_effects: MacEffects, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        config, "APP", config.App(**{**config.APP_DEFAULTS, "notify": False})
+    )
+    server.ended(make_job("j1", "done", elapsed=1.0))
+    assert mac_effects.notes == []
+
+
+def test_ended_keeps_awake_while_jobs_wait(
+    make_job: Job, mac_effects: MacEffects
+) -> None:
+    make_job("next", "queued")
+    server.ended(make_job("j1", "done", elapsed=1.0))
+    assert mac_effects.awake.held
+
+
+def test_worker_notifies_and_releases_after_the_last_job(
+    state: Path, make_job: Job, mac_effects: MacEffects, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(job: dict[str, Any]) -> None:
+        job["status"], job["elapsed"] = "done", 61.0
+
+    monkeypatch.setattr(server, "run_job", fake_run)
+    make_job("j1", "queued")
+    worker = threading.Thread(target=server.worker, daemon=True)
+    worker.start()
+    server.wake.set()
+    end = time.time() + 5
+    while not mac_effects.notes and time.time() < end:
+        time.sleep(0.02)
+    server.shutdown()
+    worker.join(5)
+    assert mac_effects.notes == [("FLUX.3 Klein is done. It took 1:01.", "Workstation")]
+    assert not mac_effects.awake.held
 
 
 def test_shutdown_leaves_finished_jobs(state: Path, make_job: Job) -> None:

@@ -121,6 +121,14 @@
 .v-jobs .q-item:first-child {
   border-top: 0;
 }
+.v-jobs .q-item:focus-visible {
+  outline-offset: -2px;
+}
+.v-jobs .q-actions {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
 .v-jobs .q-pos {
   width: 22px;
   height: 22px;

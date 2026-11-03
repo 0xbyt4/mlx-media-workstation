@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import server, tools
-from tests.conftest import FakeMedia
+from tests.conftest import FakeMedia, MacEffects
 
 Job = Callable[..., dict[str, Any]]
 JOB_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
@@ -487,3 +487,111 @@ def test_page_files_are_revalidated(client: TestClient) -> None:
     for path in ("/", "/js/main.js", "/css/tokens.css"):
         r = client.get(path)
         assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+
+
+# Queue order
+
+
+def move(client: TestClient, job_id: str, to: str) -> object:
+    return client.post(f"/api/jobs/{job_id}/move", json={"to": to})
+
+
+def queue(client: TestClient) -> list[str]:
+    queued = [j for j in client.get("/api/jobs").json() if j["status"] == "queued"]
+    return [j["id"] for j in sorted(queued, key=lambda j: j["position"])]
+
+
+def test_move_changes_the_queue_order(client: TestClient, state: Path) -> None:
+    a, b, c = (
+        post_job(client, "image.klein", {"prompt": str(i)}).json()["id"]
+        for i in range(3)
+    )
+    assert queue(client) == [a, b, c]
+    assert move(client, c, "up").json() == {"position": 2}
+    assert queue(client) == [a, c, b]
+    assert move(client, a, "down").json() == {"position": 2}
+    assert queue(client) == [c, a, b]
+    assert move(client, b, "top").json() == {"position": 1}
+    assert queue(client) == [b, c, a]
+    assert move(client, b, "bottom").json() == {"position": 3}
+    assert queue(client) == [c, a, b]
+    # at the ends nothing changes
+    assert move(client, c, "up").json() == {"position": 1}
+    assert move(client, b, "down").json() == {"position": 3}
+    assert queue(client) == [c, a, b]
+    # the order is in job.json, so the list read back from the folders has it too
+    server.jobs.clear()
+    for job_id in (a, b, c):
+        server.jobs[job_id] = saved(state, job_id)
+    assert [j["id"] for j in server.queued_jobs()] == [c, a, b]
+
+
+def test_new_jobs_go_after_moved_ones(client: TestClient) -> None:
+    a, b = (
+        post_job(client, "image.klein", {"prompt": str(i)}).json()["id"]
+        for i in range(2)
+    )
+    move(client, b, "top")
+    c = post_job(client, "image.klein", {"prompt": "c"}).json()["id"]
+    assert queue(client) == [b, a, c]
+
+
+def test_jobs_without_an_order_sort_by_creation_first(
+    client: TestClient, make_job: Job
+) -> None:
+    make_job("new", "queued", created="2026-11-02T09:00:00", order=1)
+    make_job("old2", "queued", created="2026-11-01T10:00:02")
+    make_job("old1", "queued", created="2026-11-01T10:00:01")
+    assert queue(client) == ["old1", "old2", "new"]
+    assert move(client, "new", "top").json() == {"position": 1}
+    assert queue(client) == ["new", "old1", "old2"]
+
+
+@pytest.mark.parametrize("status", ["running", "done", "failed", "cancelled"])
+def test_move_refuses_jobs_that_are_not_queued(
+    client: TestClient, make_job: Job, status: str
+) -> None:
+    make_job("j1", status)
+    r = move(client, "j1", "up")
+    assert (r.status_code, r.json()) == (409, {"detail": "Only a queued job can move"})
+
+
+def test_move_unknown_job_or_direction(client: TestClient, make_job: Job) -> None:
+    assert move(client, "nope", "up").status_code == 404
+    make_job("j1", "queued")
+    assert move(client, "j1", "sideways").status_code == 422
+    assert client.post("/api/jobs/j1/move", json={}).status_code == 422
+
+
+def test_move_needs_the_app_origin(client: TestClient, make_job: Job) -> None:
+    make_job("j1", "queued")
+    r = client.post(
+        "/api/jobs/j1/move",
+        json={"to": "up"},
+        headers={"origin": "http://evil.example"},
+    )
+    assert r.status_code == 403
+
+
+# Keep awake
+
+
+def test_keep_awake_follows_the_queue(
+    client: TestClient, mac_effects: MacEffects
+) -> None:
+    job_id = post_job(client, "image.klein", {"prompt": "x"}).json()["id"]
+    assert mac_effects.awake.held
+    client.post(f"/api/jobs/{job_id}/cancel")
+    assert not mac_effects.awake.held
+
+
+def test_keep_awake_off(
+    client: TestClient, mac_effects: MacEffects, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        server.config,
+        "APP",
+        server.config.App(**{**server.config.APP_DEFAULTS, "keep_awake": False}),
+    )
+    post_job(client, "image.klein", {"prompt": "x"})
+    assert mac_effects.awake.calls == [False]

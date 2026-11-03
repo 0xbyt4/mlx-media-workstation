@@ -7,6 +7,10 @@ job.log (the model's output) and the result files; the list is rebuilt from thos
 One model at a time: the worker starts a job's process (its own process group) under the lock, and does not take the
 next job until that whole group is gone; a cancel stops the group (SIGTERM, then SIGKILL after 10 s). shutdown()
 stops the queue and every model before the app exits; a group left over from a crash is killed at the next start.
+
+The queue runs in `order` (a number saved in job.json; POST /api/jobs/{id}/move changes it). Jobs from before that
+key have none and sort first, by `created`. While a job is queued or running, app/macos.py keeps the Mac awake, and a
+job that ends done or failed shows a notification (both switches are in Settings > Jobs, config.toml [app]).
 """
 
 import asyncio
@@ -24,7 +28,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -36,8 +40,10 @@ from starlette.concurrency import run_in_threadpool
 from app import (
     assist,
     chat,
+    config,
     library,
     llm,
+    macos,
     models,
     models_api,
     progress,
@@ -84,6 +90,7 @@ stopping = threading.Event()
 jobs: dict[str, dict[str, Any]] = {}
 procs: dict[str, subprocess.Popen] = {}
 claiming: set[str] = set()  # the queued job whose memory claim waits for LLM answers
+awake = macos.Awake()
 
 
 @app.middleware("http")
@@ -112,6 +119,45 @@ def now() -> str:
 
 def save(job: dict[str, Any]) -> None:
     (OUT / job["id"] / "job.json").write_text(json.dumps(job, indent=1))
+
+
+def queue_key(job: dict[str, Any]) -> tuple[float, str, str]:
+    return (job.get("order") or 0, job.get("created") or "", job["id"])
+
+
+def queued_jobs() -> list[dict[str, Any]]:
+    """The queued jobs in the order they run (call with the lock held)."""
+    return sorted((j for j in jobs.values() if j["status"] == "queued"), key=queue_key)
+
+
+def next_order() -> int:
+    """An order after every job (call with the lock held)."""
+    return 1 + max((int(j.get("order") or 0) for j in jobs.values()), default=0)
+
+
+def has_work() -> bool:
+    """Whether to keep the Mac awake: the switch is on and a job is queued or running."""
+    if not config.APP.keep_awake or stopping.is_set():
+        return False
+    with lock:
+        return any(j["status"] in ("queued", "running") for j in jobs.values())
+
+
+def sync_awake() -> None:
+    awake.sync(has_work)
+
+
+def ended(job: dict[str, Any]) -> None:
+    """After a job: the notification (done or failed, never cancelled) and the keep-awake state."""
+    if config.APP.notify and job["status"] in ("done", "failed"):
+        label = job.get("tool_label") or job["tool"]
+        if job["status"] == "done":
+            took = round(job.get("elapsed") or 0)
+            text = f"{label} is done. It took {took // 60}:{took % 60:02d}."
+        else:
+            text = f"{label} failed. Open Jobs to see why."
+        macos.notify(text)
+    sync_awake()
 
 
 def group_alive(pgid: int) -> bool:
@@ -245,13 +291,11 @@ def worker() -> None:
         with lock:
             if stopping.is_set():
                 return
-            queued = sorted(
-                (j for j in jobs.values() if j["status"] == "queued"),
-                key=lambda j: j["created"],
-            )
+            queued = queued_jobs()
             job = queued[0] if queued else None
         if not job:
             continue
+        go = False
         try:
             # before the job counts as running: prompt help and chat answers sent before it finish first
             with lock:
@@ -263,6 +307,8 @@ def worker() -> None:
             with lock:
                 claiming.discard(job["id"])
                 go = go and job["status"] == "queued" and not stopping.is_set()
+                # a move during the claim may have put another job first: the next round picks that one
+                go = go and queued_jobs()[0] is job
                 if go:
                     job["status"], job["started"] = "running", now()
                     save(job)
@@ -270,6 +316,8 @@ def worker() -> None:
                 run_job(job)
         finally:
             llm.release()
+        if go:
+            ended(job)
         wake.set()
 
 
@@ -282,6 +330,7 @@ def shutdown() -> None:
                 job["status"], job["error"] = "cancelled", "The app was closed."
                 save(job)
         pgids = [p.pid for p in procs.values()]
+    awake.release()
     for pgid in pgids:
         stop_group(pgid)
     models.stop()
@@ -323,11 +372,7 @@ def view(job: dict[str, Any]) -> dict[str, Any]:
     )
     v["position"] = 0
     if job["status"] == "queued":
-        queued = sorted(
-            (j for j in jobs.values() if j["status"] == "queued"),
-            key=lambda j: j["created"],
-        )
-        v["position"] = 1 + [j["id"] for j in queued].index(job["id"])
+        v["position"] = 1 + [j["id"] for j in queued_jobs()].index(job["id"])
     return v
 
 
@@ -457,8 +502,10 @@ async def create_job(request: Request) -> dict[str, str]:
         "log_tail": "",
     }
     with lock:
+        job["order"] = next_order()
         jobs[job_id] = job
         save(job)
+    sync_awake()
     wake.set()
     return {"id": job_id}
 
@@ -478,7 +525,38 @@ def cancel_job(job_id: str) -> dict[str, str]:
         threading.Thread(
             target=stop_group, args=(proc.pid,), daemon=True
         ).start()  # the worker waits for it to end
+    sync_awake()
     return {"status": "cancelled"}
+
+
+class Move(BaseModel):
+    to: Literal["up", "down", "top", "bottom"]
+
+
+@app.post("/api/jobs/{job_id}/move")
+def move_job(job_id: str, body: Move) -> dict[str, int]:
+    """Move a queued job one place up or down, or to the top or bottom of the queue. Under the lock, so the worker
+    picks either the old first job or the new one, never a half-made order."""
+    with lock:
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "No such job")
+        if job["status"] != "queued":
+            raise HTTPException(409, "Only a queued job can move")
+        queued = queued_jobs()
+        i = queued.index(job)
+        to = {"up": i - 1, "down": i + 1, "top": 0, "bottom": len(queued) - 1}[body.to]
+        to = max(0, min(to, len(queued) - 1))
+        if to != i:
+            queued.insert(to, queued.pop(i))
+            # number the queue again from its lowest order; next_order() stays above all of them
+            start = min(int(j.get("order") or 0) for j in queued)
+            for n, j in enumerate(queued, start):
+                if j.get("order") != n:
+                    j["order"] = n
+                    save(j)
+    wake.set()
+    return {"position": to + 1}
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -657,6 +735,7 @@ def start() -> None:
     threading.Thread(target=llm.watch_idle, daemon=True).start()
 
 
+settings_api.on_change.append(sync_awake)  # the keep-awake switch applies at once
 app.include_router(models_api.router)
 app.include_router(chat.router)
 app.include_router(settings_api.router)

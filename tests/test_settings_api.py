@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config, settings_api
+from app import config, llm, settings_api
 
 USER_FILE = """# My Mac's installs.
 # Keep this comment.
@@ -47,6 +47,7 @@ def cfg(tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(config, "FILE", file)
     monkeypatch.setattr(config, "PATHS", config.load(file))
     monkeypatch.setattr(config, "ASSIST", config.load_assist(file))
+    monkeypatch.setattr(config, "APP", config.load_app(file))
     return file
 
 
@@ -249,3 +250,99 @@ def test_symlinked_file_keeps_the_link(client: TestClient, cfg: Path) -> None:
 
 def test_labels_cover_every_path() -> None:
     assert set(settings_api.LABELS) == set(config.DEFAULTS)
+
+
+# The [app] switches: they apply without a restart
+
+
+def test_get_reports_the_switches(client: TestClient, cfg: Path) -> None:
+    data = client.get("/api/settings").json()
+    assert data["app"] == {
+        "keep_awake": True,
+        "notify": True,
+        "llm_idle_minutes": 10,
+        "defaults": {"keep_awake": True, "notify": True, "llm_idle_minutes": 10},
+        "idle_choices": [5, 10, 30, 60, 0],
+    }
+    assert data["llm"] == {"idle_stop_s": 600.0}
+
+
+def test_put_switches_apply_at_once(
+    client: TestClient, cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[bool] = []
+    monkeypatch.setattr(settings_api, "on_change", [lambda: calls.append(True)])
+    body = {"app": {"keep_awake": False, "notify": False, "llm_idle_minutes": 0}}
+    r = put(client, body)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["changed"] == ["app.keep_awake", "app.notify", "app.llm_idle_minutes"]
+    assert cfg.read_text() == USER_FILE + (
+        "\n[app]\nkeep_awake = false\nnotify = false\nllm_idle_minutes = 0\n"
+    )
+    assert config.APP == config.App(keep_awake=False, notify=False, llm_idle_minutes=0)
+    assert config.load_app(cfg) == config.APP
+    assert calls == [True]
+    assert llm.idle_stop() is None
+    assert data["llm"] == {"idle_stop_s": None}
+    assert data["app"]["keep_awake"] is False
+    assert data["restart_required"] is False  # unlike a path change
+
+
+def test_put_switch_keeps_the_line_and_its_comment(
+    client: TestClient, cfg: Path
+) -> None:
+    cfg.write_text("[app]\nnotify = true  # yes please\nllm_idle_minutes = 5\n")
+    assert put(client, {"app": {"notify": False, "llm_idle_minutes": 60}}).json()[
+        "changed"
+    ] == ["app.notify", "app.llm_idle_minutes"]
+    assert (
+        cfg.read_text()
+        == "[app]\nnotify = false  # yes please\nllm_idle_minutes = 60\n"
+    )
+    assert llm.idle_stop() == 3600.0
+
+
+def test_put_same_switch_applies_without_a_write(
+    client: TestClient, cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the file says false (a change by hand after the start); the app still uses true
+    cfg.write_text("[app]\nnotify = false\n")
+    calls: list[bool] = []
+    monkeypatch.setattr(settings_api, "on_change", [lambda: calls.append(True)])
+    r = put(client, {"app": {"notify": False}})
+    assert r.json()["changed"] == []
+    assert config.APP.notify is False
+    assert calls == [True]
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("keep_awake", "yes"),
+        ("keep_awake", 1),
+        ("notify", None),
+        ("llm_idle_minutes", 7.5),
+        ("llm_idle_minutes", -1),
+        ("llm_idle_minutes", 24 * 60 + 1),
+        ("llm_idle_minutes", True),
+        ("llm_idle_minutes", "10"),
+        ("theme", "dark"),
+    ],
+)
+def test_put_refuses_bad_switch_values(
+    client: TestClient, cfg: Path, key: str, value: object
+) -> None:
+    r = put(client, {"app": {key: value}})
+    assert r.status_code == 400
+    assert list(r.json()["detail"]["fields"]) == [f"app.{key}"]
+    assert cfg.read_text() == USER_FILE
+    assert config.APP == config.App(**config.APP_DEFAULTS)
+
+
+def test_put_switch_over_an_int_that_means_true(client: TestClient, cfg: Path) -> None:
+    # "keep_awake = 1" is not a TOML boolean (the app would not start with it), so it counts as a change
+    cfg.write_text("[app]\nkeep_awake = 1\n")
+    r = put(client, {"app": {"keep_awake": True}})
+    assert r.json()["changed"] == ["app.keep_awake"]
+    assert cfg.read_text() == "[app]\nkeep_awake = true\n"

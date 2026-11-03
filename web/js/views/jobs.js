@@ -1,5 +1,6 @@
-// Jobs: the running job with live progress, the queue, and finished jobs with their outputs, "Use these settings",
-// "Send to" and delete. Cards are rebuilt only when a job changes, so media keeps playing while the list polls.
+// Jobs: the running job with live progress, the queue (move up or down, remove), and finished jobs with their outputs,
+// "Use these settings", "Send to" and delete. Cards are rebuilt only when a job changes, so media keeps playing while
+// the list polls. A queue row keeps its card when only its position changes, so the focus stays on it.
 
 import {store} from '../store.js';
 import {
@@ -26,6 +27,7 @@ function mount(root, ctx) {
   s.seg = h('div', {class: 'seg', role: 'group', 'aria-label': 'Show jobs'},
     FILTERS.map(([k]) => h('button', {type: 'button', 'data-filter': k, onclick: () => setFilter(k)})));
   s.sum = h('span', {class: 'jobs-sum', 'aria-live': 'polite'});
+  s.live = h('span', {class: 'sr-only', role: 'status'});
   s.empty = h('div', {class: 'jobs-empty'});
   s.runSec = section('Running', 'h-run');
   s.queueSec = section('Up next', 'h-queue');
@@ -33,7 +35,7 @@ function mount(root, ctx) {
   s.queueSec.body.append(s.queueList);
   s.finSec = section('Finished', 'h-fin');
   root.append(h('div', {class: 'jobs'},
-    h('div', {class: 'jobs-head'}, s.seg, s.sum), s.empty, s.runSec.el, s.queueSec.el, s.finSec.el));
+    h('div', {class: 'jobs-head'}, s.seg, s.sum, s.live), s.empty, s.runSec.el, s.queueSec.el, s.finSec.el));
 
   const {on} = ctx.store;
   s.offs.push(
@@ -124,10 +126,13 @@ function render() {
     }
   }
   updateWhen(running[0], queued);
+  restoreFocus(queued);
 }
 
-// Puts the cards for `list` into `container` in order, rebuilding a card only when its job changed.
+// Puts the cards for `list` into `container` in order, rebuilding a card only when its job changed. Moving a card
+// in the DOM takes the focus away from it, so the focus goes back to the element that had it.
 function place(container, list, seen) {
+  const active = container.contains(document.activeElement) ? document.activeElement : null;
   list.forEach((job, i) => {
     seen.add(job.id);
     let card = s.cards.get(job.id);
@@ -142,11 +147,14 @@ function place(container, list, seen) {
     const items = [...container.children].filter((c) => !c.classList.contains('empty'));
     if (items[i] !== card.el) container.insertBefore(card.el, items[i] || null);
   });
+  if (active && active.isConnected && document.activeElement !== active) active.focus({preventScroll: true});
 }
 
-// Fields that change while a job runs are updated in place; anything else rebuilds the card.
+// Fields that change while a job runs are updated in place; anything else rebuilds the card. A queued card updates
+// its position in place.
 function jobSig(j) {
-  return JSON.stringify([j.status, j.position, j.tool_label, j.created, j.started, j.finished, j.outputs, j.error, j.params, j.peak_gb]);
+  const position = j.status === 'queued' ? null : j.position;
+  return JSON.stringify([j.status, position, j.tool_label, j.created, j.started, j.finished, j.outputs, j.error, j.params, j.peak_gb]);
 }
 
 function build(job, sig) {
@@ -305,22 +313,91 @@ function buildRunning(job) {
 function buildQueued(job) {
   const t = tool(job);
   const when = h('span', {class: 'q-when num'});
+  const pos = h('span', {class: 'q-pos num', 'aria-hidden': 'true'});
   const label = job.tool_label || t.label;
-  const el = h('div', {class: 'q-item'},
-    h('span', {class: 'q-pos num', 'aria-label': 'Position ' + job.position}, String(job.position)),
+  const card = {};
+  const moveBtn = (dir, text, keys) => h('button', {type: 'button', class: 'btn btn-ghost btn-icon btn-sm',
+    title: text + ' (' + keys + ')', 'data-move': dir, onclick: () => moveQueued(card.job, dir, dir)}, icon(dir, 'ic-sm'));
+  const up = moveBtn('up', 'Move up', 'Option-Up Arrow');
+  const down = moveBtn('down', 'Move down', 'Option-Down Arrow');
+  const el = h('div', {class: 'q-item', role: 'group', tabindex: '0', 'aria-keyshortcuts': 'Alt+ArrowUp Alt+ArrowDown',
+    onkeydown: (e) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      e.preventDefault();
+      const dir = e.key === 'ArrowUp' ? 'up' : 'down';
+      const on = e.target.closest('[data-move]');
+      moveQueued(card.job, dir, on ? on.dataset.move : 'row');
+    }},
+    pos,
     toolIcon(t.group, true),
     h('div', {class: 'q-main'}, h('b', null, label), h('span', {class: 'job-prompt'}, promptOf(job))),
     when,
-    h('button', {type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': 'Remove ' + label + ' from the queue',
-      onclick: () => removeQueued(job)}, icon('x', 'ic-sm')));
-  return {el, refs: {when}};
+    h('span', {class: 'q-actions'}, up, down,
+      h('button', {type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': 'Remove ' + label + ' from the queue',
+        onclick: () => removeQueued(card.job)}, icon('x', 'ic-sm'))));
+  Object.assign(card, {el, refs: {when, up, down}});
+  card.update = (j) => {
+    card.job = j;
+    pos.textContent = String(j.position);
+    up.setAttribute('aria-label', 'Move ' + label + ' up from position ' + j.position);
+    down.setAttribute('aria-label', 'Move ' + label + ' down from position ' + j.position);
+    el.setAttribute('aria-label', 'Position ' + j.position + ': ' + label + (promptOf(j) ? ', ' + promptOf(j) : '') +
+      '. Option-Up or Option-Down Arrow moves it.');
+  };
+  return card;
 }
 
-// Start estimates: the running job's time left plus the median time of each job before it.
+// Moves a queued job on the server. `focus` says what gets the focus when the list shows the new order: the same
+// move button ('up' or 'down'), or the row when that button is now disabled or the move came from the row.
+async function moveQueued(job, to, focus) {
+  if (!s || s.moving) return;
+  const queued = store.get('jobs').filter((j) => j.status === 'queued' && !removing.has(j.id));
+  if ((to === 'up' && job.position <= 1) || (to === 'down' && job.position >= queued.length)) return;
+  const label = job.tool_label || job.tool;
+  const ctx = s.ctx;
+  s.moving = true;
+  try {
+    const r = await ctx.api.request('/api/jobs/' + encodeURIComponent(job.id) + '/move', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({to}),
+    });
+    if (s) {
+      s.focusAfter = {id: job.id, position: r.position, focus};
+      s.live.textContent = label + ' moved to position ' + r.position + ' of ' + queued.length + '.';
+    }
+  } catch (e) {
+    toast('Could not move ' + label + ': ' + e.message, {kind: 'err'});
+  }
+  await store.refresh('jobs');
+  if (s) s.moving = false;
+}
+
+// After a move, once the list shows the job at its new place, focus its row or the move button that was used.
+function restoreFocus(queued) {
+  const f = s.focusAfter;
+  if (!f) return;
+  const job = queued.find((j) => j.id === f.id);
+  const card = s.cards.get(f.id);
+  if (!job || !card) {
+    s.focusAfter = null;
+    return;
+  }
+  if (job.position !== f.position) return;
+  s.focusAfter = null;
+  const btn = card.refs[f.focus];
+  (btn && !btn.disabled ? btn : card.el).focus({preventScroll: false});
+}
+
+// Start estimates: the running job's time left plus the median time of each job before it. Also the move buttons:
+// disabled at the ends of the queue.
 function updateWhen(run, queued) {
   let acc = run && run.progress && typeof run.progress.eta_s === 'number' ? run.progress.eta_s : run ? null : 0;
-  for (const j of queued) {
+  for (const [i, j] of queued.entries()) {
     const card = s.cards.get(j.id);
+    if (card) {
+      card.refs.up.disabled = i === 0;
+      card.refs.down.disabled = i === queued.length - 1;
+    }
     const t = store.toolTime(j.tool);
     let text;
     if (j.waiting) text = j.waiting;  // first in line, held by prompt help or chat answers

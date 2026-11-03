@@ -207,3 +207,9 @@
     flex-basis: calc(100% - 30px);
   }
 }
+
+/* jobs */
+.v-settings .set-select {
+  width: auto;
+  min-width: 150px;
+}

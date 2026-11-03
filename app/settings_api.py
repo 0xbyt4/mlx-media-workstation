@@ -1,6 +1,8 @@
-"""The Settings screen's endpoints: the model paths and the prompt help provider in config.toml, and facts about the app.
+"""The Settings screen's endpoints: the model paths, the prompt help provider and the [app] switches in config.toml, and
+facts about the app.
 
-The app reads config.toml once, at start (app/config.py), so a change here takes effect after a restart. A write
+The app reads [paths] and [assist] once, at start (app/config.py), so a change there takes effect after a restart. The
+[app] values (keep awake, notify, LLM idle unload) apply at once: a write replaces config.APP and calls on_change. A write
 changes only the lines of the keys it sets: comments, blank lines, other keys and other sections stay as they are.
 The new text is parsed again before it replaces the file, and the replace is atomic (a temp file, then os.replace).
 Nothing here holds a secret. Writes pass the server's same-origin check.
@@ -14,6 +16,8 @@ import subprocess
 import tempfile
 import threading
 import tomllib
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +28,9 @@ from app import assist, config, llm, models, tools
 
 router = APIRouter(prefix="/api/settings")
 lock = threading.Lock()
+on_change: list[
+    Callable[[], None]
+] = []  # called after an [app] value changed (the server re-checks keep-awake)
 
 REPO_URL = "https://github.com/0xbyt4/mlx-media-workstation"
 LABELS = {
@@ -55,6 +62,7 @@ MAX_PATH = 1024
 class Change(BaseModel):
     paths: dict[str, str] = {}
     assist: dict[str, str] = {}
+    app: dict[str, Any] = {}  # JSON types as sent: true/false and whole minutes
 
 
 def resolve(value: str) -> Path:
@@ -154,7 +162,12 @@ def snapshot() -> dict[str, Any]:
             "default": config.ASSIST_DEFAULTS["provider"],
             "providers": providers,
         },
-        "llm": {"idle_stop_s": llm.IDLE_STOP},
+        "app": {
+            **{k: getattr(config.APP, k) for k in config.APP_DEFAULTS},
+            "defaults": config.APP_DEFAULTS,
+            "idle_choices": list(config.IDLE_CHOICES),
+        },
+        "llm": {"idle_stop_s": llm.idle_stop()},
         "about": {
             **version(),
             "root": str(config.ROOT),
@@ -174,11 +187,21 @@ COMMENT = re.compile(r"^\s*(#.*)?$")
 
 
 def key_line(key: str) -> re.Pattern[str]:
-    """A `key = "value"` line: indent, key (bare or quoted), equals, a one-line string, then the rest (comment)."""
+    """A `key = value` line: indent, key (bare or quoted), equals, a one-line string, a boolean or an integer, then
+    the rest (comment)."""
     k = re.escape(key)
     return re.compile(
-        rf"""^(\s*)(?:{k}|"{k}"|'{k}')(\s*=\s*)(?:"(?:[^"\\\n]|\\.)*"|'[^'\n]*')(.*)$"""
+        rf"""^(\s*)(?:{k}|"{k}"|'{k}')(\s*=\s*)(?:"(?:[^"\\\n]|\\.)*"|'[^'\n]*'|true|false|[+-]?\d[\d_]*)(\s*(?:#.*)?)$"""
     )
+
+
+def toml_value(value: str | bool | int) -> str:
+    """The TOML text of a value check_value or config.check_app passed."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    return f'"{value}"'
 
 
 def check_value(value: str) -> str:
@@ -195,8 +218,8 @@ def check_value(value: str) -> str:
     return v
 
 
-def set_keys(text: str, section: str, values: dict[str, str]) -> str:
-    """text with section.key = "value" for each item: a key that is there gets its line replaced (indent and trailing
+def set_keys(text: str, section: str, values: dict[str, Any]) -> str:
+    """text with section.key = value for each item: a key that is there gets its line replaced (indent and trailing
     comment kept), a missing key goes after the section's last key, a missing section goes at the end."""
     lines = text.splitlines(keepends=True)
     start = next(
@@ -213,7 +236,7 @@ def set_keys(text: str, section: str, values: dict[str, str]) -> str:
         if lines and lines[-1].strip():
             lines.append("\n")
         lines.append(f"[{section}]\n")
-        lines += [f'{k} = "{v}"\n' for k, v in values.items()]
+        lines += [f"{k} = {toml_value(v)}\n" for k, v in values.items()]
         return "".join(lines)
     end = next(
         (
@@ -231,7 +254,9 @@ def set_keys(text: str, section: str, values: dict[str, str]) -> str:
             m = pattern.match(body)
             if m:
                 newline = lines[i][len(body) :]
-                lines[i] = f'{m.group(1)}{k}{m.group(2)}"{v}"{m.group(3)}{newline}'
+                lines[i] = (
+                    f"{m.group(1)}{k}{m.group(2)}{toml_value(v)}{m.group(3)}{newline}"
+                )
                 break
         else:
             missing[k] = v
@@ -242,7 +267,9 @@ def set_keys(text: str, section: str, values: dict[str, str]) -> str:
                 last = i
         if not lines[last].endswith("\n"):
             lines[last] += "\n"
-        lines[last + 1 : last + 1] = [f'{k} = "{v}"\n' for k, v in missing.items()]
+        lines[last + 1 : last + 1] = [
+            f"{k} = {toml_value(v)}\n" for k, v in missing.items()
+        ]
     return "".join(lines)
 
 
@@ -286,6 +313,14 @@ def update(change: Change) -> list[str]:
             )
         else:
             helper[key] = value
+    switches: dict[str, Any] = {}
+    for key, value in change.app.items():
+        if key not in config.APP_DEFAULTS:
+            errors[f"app.{key}"] = "Unknown setting."
+        elif error := config.check_app(key, value):
+            errors[f"app.{key}"] = error
+        else:
+            switches[key] = value
     if errors:
         raise HTTPException(
             400, {"message": "Some values are not valid.", "fields": errors}
@@ -299,34 +334,51 @@ def update(change: Change) -> list[str]:
         text = text or ""
         changed = []
         new = text
-        for section, values in (("paths", paths), ("assist", helper)):
+        sections = (("paths", paths), ("assist", helper), ("app", switches))
+        for section, values in sections:
             old = data.get(section, {})
             if not isinstance(old, dict):
                 raise HTTPException(
                     409, f"[{section}] in {file.name} is not a table. Fix it by hand."
                 )
-            todo = {k: v for k, v in values.items() if old.get(k) != v}
+            # same type too: in Python 1 == True, in TOML they differ
+            todo = {
+                k: v
+                for k, v in values.items()
+                if k not in old or type(old[k]) is not type(v) or old[k] != v
+            }
             if todo:
                 new = set_keys(new, section, todo)
                 changed += [f"{section}.{k}" for k in todo]
-        if not changed:
-            return []
-        # the new file must read back as the old data plus exactly these changes
-        expected = {k: dict(v) if isinstance(v, dict) else v for k, v in data.items()}
-        for section, values in (("paths", paths), ("assist", helper)):
-            if values:
-                expected.setdefault(section, {}).update(values)
-        try:
-            ok = tomllib.loads(new) == expected
-        except tomllib.TOMLDecodeError:
-            ok = False
-        if not ok:
-            raise HTTPException(
-                409,
-                f"{file.name} has a form this screen cannot edit safely. Change it by hand: {file}",
-            )
-        write_atomic(file, new)
-        return changed
+        if changed:
+            # the new file must read back as the old data plus exactly these changes
+            expected = {
+                k: dict(v) if isinstance(v, dict) else v for k, v in data.items()
+            }
+            for section, values in sections:
+                if values:
+                    expected.setdefault(section, {}).update(values)
+            try:
+                parsed = tomllib.loads(new)
+                ok = parsed == expected and all(
+                    type(parsed[s][k]) is type(v)
+                    for s, values in sections
+                    for k, v in values.items()
+                )
+            except tomllib.TOMLDecodeError:
+                ok = False
+            if not ok:
+                raise HTTPException(
+                    409,
+                    f"{file.name} has a form this screen cannot edit safely. Change it by hand: {file}",
+                )
+            write_atomic(file, new)
+        if switches:  # these apply now, also when the file already held them (an edit by hand after the start)
+            config.APP = replace(config.APP, **switches)
+    if switches:
+        for fn in on_change:
+            fn()
+    return changed
 
 
 @router.get("")

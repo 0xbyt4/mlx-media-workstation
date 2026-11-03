@@ -1,6 +1,6 @@
-// Settings: theme, prompt help provider, the local LLM, the model paths in config.toml, and where things live.
-// Path and provider changes go to config.toml through PUT /api/settings; the app reads that file only when it starts,
-// so a saved change shows a restart note instead of taking effect at once.
+// Settings: theme, prompt help provider, the local LLM, the Jobs switches, the model paths in config.toml, and where
+// things live. Every change goes to config.toml through PUT /api/settings. The app reads paths and the provider only
+// when it starts, so such a change shows a restart note. The Jobs switches ([app]) apply at once and save on change.
 
 import {h, icon, toast, confirm, errorBox, getTheme, setTheme, onTheme} from '../ui.js';
 
@@ -20,7 +20,8 @@ let s = null;
 
 function mount(root, ctx) {
   root.classList.add('v-settings');
-  s = {root, ctx, data: null, draft: {}, errors: {}, rows: {}, llm: {}, offs: [], abort: new AbortController(), saving: false};
+  s = {root, ctx, data: null, draft: {}, errors: {}, rows: {}, llm: {}, offs: [], abort: new AbortController(), saving: false,
+    appErrors: {}, appSaving: null};
   s.notice = h('div', {class: 'set-notice', role: 'status'});
   s.body = h('div', {class: 'set-body'}, h('p', {class: 'muted'}, 'Loading the settings...'));
   root.append(h('div', {class: 'settings'}, s.notice, appearance(), s.body));
@@ -62,7 +63,7 @@ function section(id, title, intro, ...body) {
 }
 
 function build() {
-  s.body.replaceChildren(promptHelp(), localLlm(), modelPaths(), about());
+  s.body.replaceChildren(promptHelp(), localLlm(), jobs(), modelPaths(), about());
   renderNotice();
   renderLlm();
 }
@@ -184,8 +185,11 @@ function renderLlm() {
   const waits = l.waiting ? ' ' + l.waiting + (l.waiting === 1 ? ' request waits' : ' requests wait') +
     ' for a media job to end.' : '';
   L.text.textContent = text + waits;
-  const idle = l.idle_stop_s || s.data.llm.idle_stop_s;
-  L.idle.textContent = 'It unloads after ' + minutes(idle) + ' without use, and before a job that needs its memory.';
+  // the saved setting: the llm poll may still show the value from before a change
+  const idle = s.data.app.llm_idle_minutes;
+  L.idle.textContent = idle > 0
+    ? 'It unloads after ' + minutes(idle * 60) + ' without use (Jobs, below), and before a job that needs its memory.'
+    : 'It stays loaded until you press Unload, or until a job needs its memory.';
   L.unload.disabled = l.state === 'off' || !l.installed;
   L.models.hidden = Boolean(l.installed);
 }
@@ -214,6 +218,91 @@ async function unload() {
     L.err.hidden = false;
   }
   if (s) s.ctx.store.refresh('llm');
+}
+
+// ---------- Jobs ([app] in config.toml; applies without a restart) ----------
+
+const SWITCHES = [
+  ['notify', 'Notify when a job ends', 'A macOS notification with the tool name when a job is done or failed.'],
+  ['keep_awake', 'Keep the Mac awake while jobs run',
+    'The Mac does not go to sleep while a job is queued or running. The display may still sleep.'],
+];
+
+function idleText(m) {
+  if (m === 0) return 'Never';
+  if (m % 60 === 0) return m / 60 === 1 ? 'After 1 hour' : 'After ' + m / 60 + ' hours';
+  return 'After ' + m + (m === 1 ? ' minute' : ' minutes');
+}
+
+function jobs() {
+  const a = s.data.app;
+  const locked = Boolean(s.data.config.error);
+  s.appCtl = {};
+  const rowFor = (key, label, help, control) => {
+    const id = 'set-app-' + key;
+    const err = h('p', {class: 'field-err', id: id + '-err', role: 'alert', hidden: true});
+    s.appCtl[key] = {control, err};
+    control.id = id;
+    control.setAttribute('aria-labelledby', id + '-label');
+    control.setAttribute('aria-describedby', id + '-help ' + id + '-err');
+    renderAppErr(key);
+    return h('div', {class: 'set-row'},
+      h('div', null, h('span', {class: 'label', id: id + '-label'}, label), h('p', {class: 'help', id: id + '-help'}, help), err),
+      control.type === 'checkbox' ? h('label', {class: 'switch', for: id}, control, h('span', {class: 'track'})) : control);
+  };
+  const rows = SWITCHES.map(([key, label, help]) => rowFor(key, label, help,
+    h('input', {type: 'checkbox', role: 'switch', checked: a[key], disabled: locked || s.appSaving === key,
+      onchange: (e) => saveApp(key, e.target.checked)})));
+  const choices = a.idle_choices.includes(a.llm_idle_minutes) ? a.idle_choices : [...a.idle_choices, a.llm_idle_minutes];
+  const select = h('select', {class: 'select set-select', disabled: locked || s.appSaving === 'llm_idle_minutes',
+    onchange: (e) => saveApp('llm_idle_minutes', Number(e.target.value))},
+  choices.map((m) => h('option', {value: String(m), selected: m === a.llm_idle_minutes}, idleText(m))));
+  rows.push(rowFor('llm_idle_minutes', 'Unload the chat model when idle',
+    'Frees its memory after this long without a prompt help or chat request. It loads again on the next one.', select));
+  return section('set-jobs', 'Jobs', 'These apply at once, without a restart.', h('div', {class: 'card set-card'}, rows));
+}
+
+function renderAppErr(key) {
+  const el = s.appCtl[key];
+  const msg = s.appErrors[key];
+  el.err.replaceChildren(...(msg ? [icon('alert', 'ic-sm'), msg] : []));
+  el.err.hidden = !msg;
+  el.control.setAttribute('aria-invalid', String(Boolean(msg)));
+}
+
+function showApp(c, value) {
+  if (c.type === 'checkbox') c.checked = value;
+  else c.value = String(value);
+}
+
+async function saveApp(key, value) {
+  const control = s.appCtl[key].control;
+  if (s.appSaving) {  // one save at a time: undo this change on screen
+    showApp(control, s.data.app[key]);
+    return;
+  }
+  const hadFocus = document.activeElement === control;
+  s.appSaving = key;
+  control.disabled = true;
+  delete s.appErrors[key];
+  renderAppErr(key);
+  try {
+    await put({app: {[key]: value}});  // rebuilds the screen with the saved value
+    toast('Saved. The app uses it now.');
+  } catch (e) {
+    if (!s || e.name === 'AbortError') return;
+    const fields = e.detail && e.detail.fields;
+    s.appErrors[key] = (fields && fields['app.' + key]) || e.message;
+    showApp(s.appCtl[key].control, s.data.app[key]);
+    renderAppErr(key);
+  } finally {
+    if (s) {
+      s.appSaving = null;
+      const c = s.appCtl[key].control;  // a new element when the save rebuilt the screen
+      c.disabled = Boolean(s.data.config.error);
+      if (hadFocus || s.appErrors[key]) c.focus();
+    }
+  }
 }
 
 // ---------- Model paths ----------
@@ -432,7 +521,7 @@ function about() {
 export default {
   id: 'settings',
   title: 'Settings',
-  subtitle: 'Paths, prompt help and appearance',
+  subtitle: 'Jobs, paths, prompt help and appearance',
   mount,
   unmount,
 };
