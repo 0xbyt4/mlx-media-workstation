@@ -55,6 +55,8 @@ def paths(tmp_path, monkeypatch):
         replace(models.PATHS, **{k: tmp_path / k for k in config.DEFAULTS}),
     )
     monkeypatch.setattr(models, "HF_HUB", tmp_path / "hub")
+    # a big disk, so the disk check never depends on the machine that runs the tests
+    monkeypatch.setattr(models, "disk_free", lambda m: 10**13)
     return tmp_path
 
 
