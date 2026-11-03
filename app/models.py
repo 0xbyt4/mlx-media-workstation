@@ -275,11 +275,21 @@ uv pip install --python ~/mlx-media/venv-ltx/bin/python \\
         repo="dgrauet/ltx-2.5-mlx-q8",
         revision="746ca9aacb697d2c739f544d68b584214dedcc75",
         size_gb=54.1,
-        licence="LTX-2 Community License",
-        licence_url="https://huggingface.co/dgrauet/ltx-2.5-mlx-q8/blob/746ca9aacb697d2c739f544d68b584214dedcc75/LICENSE",
+        licence="LTX-2.x Community License Agreement",
+        licence_url="https://github.com/Lightricks/LTX-2/blob/main/LICENSE-2_x",
         peak_gb=35.0,
         gated=True,
         ignore=("transformer-dev.safetensors",),
+    ),
+    Model(
+        id="qwen-venv",
+        label="Local LLM environment (mlx-vlm)",
+        tools=(),
+        path_key="qwen_python",
+        files=(),
+        install="""uv venv --python /opt/homebrew/bin/python3.12 ~/mlx-media/venv-qwen
+uv pip install --python ~/mlx-media/venv-qwen/bin/python "mlx-vlm==0.7.11" "mlx==0.32.4" "transformers==5.22.1\"""",
+        features=("Prompt help", "Chat"),
     ),
     # peak not measured yet: the 16.1 GB of weights plus a short-context KV cache
     Model(
@@ -298,7 +308,7 @@ uv pip install --python ~/mlx-media/venv-ltx/bin/python \\
         revision="10c35caafbb80f7dc6a7a432cdd11af10a6d4818",
         size_gb=16.1,
         licence="Apache-2.0",
-        licence_url="https://huggingface.co/mlx-community/Qwen3.8-27B-4bit",
+        licence_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
         peak_gb=18.0,
         features=("Prompt help", "Chat"),
     ),
