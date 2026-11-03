@@ -420,3 +420,38 @@ def test_special_tokens_in_message_text_are_broken():
         "reasoning_content"
         not in llm_worker.neutralize([{"role": "user", "content": "hi"}], specials)[0]
     )
+
+
+def test_a_chat_turn_keeps_the_token_ids_the_model_saw():
+    """Toy tokenizer: 1 is "ab" as one token, 97 and 98 are "a" and "b". The model sampled "a" + "b" where a fresh
+    tokenization gives "ab"; the new prompt must keep the sampled ids so the cache still fits."""
+    vocab = {1: "ab", 97: "a", 98: "b", 99: "c"}
+
+    def encode(text):
+        ids = []
+        while text:
+            if text.startswith("ab"):
+                ids, text = ids + [1], text[2:]
+            else:
+                ids, text = ids + [ord(text[0])], text[1:]
+        return ids
+
+    def decode(ids):
+        return "".join(vocab[i] for i in ids)
+
+    sampled = [99, 97, 98]  # "cab", not the canonical [99, 1]
+    assert llm_worker.extend_ids("cabcab", sampled, encode, decode) == [
+        99,
+        97,
+        98,
+        99,
+        1,
+    ]
+    assert (
+        llm_worker.extend_ids("cbbcab", sampled, encode, decode) is None
+    )  # an edited history
+    assert (
+        llm_worker.extend_ids("cab", sampled, encode, decode) is None
+    )  # nothing new to read
+    assert llm_worker.extend_ids("cab", None, encode, decode) is None
+    assert llm_worker.extend_ids("cab", [], encode, decode) is None

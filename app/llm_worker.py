@@ -153,6 +153,25 @@ def neutralize(
     return out
 
 
+def extend_ids(
+    prompt: str,
+    cached: list[int] | None,
+    encode: Callable[[str], list[int]],
+    decode: Callable[[list[int]], str],
+) -> list[int] | None:
+    """The new prompt as the cached ids plus the ids of the new text, or None when the prompt does not start with the
+    cached text. The model often samples a token split that a fresh tokenization of the same text does not give
+    (" **Ç" + "ok" against " **" + "Çok"). Re-tokenized, the old answer then differs from the cache in one token, and
+    Qwen3.8's linear-attention layers cannot rewind to that point, so the whole chat is read again. With the ids
+    the model saw, the cache always fits."""
+    if not cached:
+        return None
+    text = decode(cached)
+    if not prompt.startswith(text) or len(prompt) == len(text):
+        return None
+    return cached + encode(prompt[len(text) :])
+
+
 def parse_calls(
     blocks: list[tuple[str, bool]],
     parse: Callable[[str, Any], Any],
@@ -264,6 +283,18 @@ class Engine:
             if req["chat"] != self.chat:
                 self.chat, self.state = req["chat"], self.cache_state()
             state = self.state
+        if (
+            state is not None and not images
+        ):  # an image's tokens come from the processor, not the tokenizer
+            tok = self.processor.tokenizer
+            ids = extend_ids(
+                prompt,
+                state.token_ids,
+                lambda text: tok(text, add_special_tokens=False)["input_ids"],
+                lambda ids: tok.decode(ids, skip_special_tokens=False),
+            )
+            if ids is not None:
+                kwargs["input_ids"] = self.mx.array([ids])
         self.mx.reset_peak_memory()
         t0 = time.time()
         gen = self.stream(
