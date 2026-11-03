@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.config import FILE as CONFIG_FILE
 from app.config import PATHS
 
 APP = Path(__file__).resolve().parent
@@ -774,8 +773,8 @@ def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) ->
     missing = [p for p in REQUIRES.get(tool, []) if not p.exists()]
     if missing:
         raise ValueError(
-            f"Not installed: {', '.join(map(str, missing))}. Install the model (README.md) "
-            f"or set its path in {CONFIG_FILE.name}."
+            f"Not installed: {', '.join(map(str, missing))}. Open Models to install it, "
+            "or set its folder in Settings > Model paths."
         )
     if tool == "voice.drama3":
         for i in (0, 1):
