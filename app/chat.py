@@ -452,12 +452,12 @@ def model_input(
 
 def answer(chat_id: str, thinking: bool, run: Live) -> None:
     """The answer thread: run the model, collect the events, save the reply."""
-    with lock:
-        chat = load(chat_id)
     max_tokens = 8192 if thinking else 4096  # thinking counts against the limit
-    messages, images = model_input(chat, max_tokens)
     reply: dict[str, Any] = {"role": "assistant", "content": "", "reasoning": ""}
     try:
+        with lock:
+            chat = load(chat_id)
+        messages, images = model_input(chat, max_tokens)
         for ev in llm.generate(
             messages,
             images,
@@ -484,16 +484,33 @@ def answer(chat_id: str, thinking: bool, run: Live) -> None:
             elif ev["event"] == "error":
                 reply.update(finish="error", error=ev["message"])
             run.events.append(ev)
-    except llm.LLMError as e:
-        reply.update(finish="error", error=str(e))
-        run.events.append({"event": "error", "message": str(e)})
+    except Exception as e:  # noqa: BLE001 - LLMError, a worker that cannot start or a bug: the answer must still end
+        message = str(e) if isinstance(e, llm.LLMError) else f"{type(e).__name__}: {e}"
+        reply.update(finish="error", error=message)
+        run.events.append({"event": "error", "message": message})
     finally:
         reply["time"] = now()
+        end_answer(chat_id, run, [reply])
+
+
+def end_answer(chat_id: str, run: Live, messages: list[dict[str, Any]]) -> None:
+    """Save the messages of an answer and end its run. A failed save (a full disk) still ends the run, so the chat
+    does not stay "answering" until the app restarts."""
+    try:
         with lock:
             chat = load(chat_id)
-            chat["messages"].append(reply)
-            chat["updated"] = reply["time"]
+            chat["messages"] += messages
+            chat["updated"] = messages[-1]["time"]
             save(chat)
+    except Exception as e:  # noqa: BLE001 - the page must hear why the answer is gone
+        run.events.append(
+            {
+                "event": "error",
+                "message": f"The answer could not be saved: {type(e).__name__}: {e}",
+            }
+        )
+    finally:
+        with lock:
             live.pop(chat_id, None)
         run.done = True
 
@@ -895,13 +912,7 @@ def agent_answer(chat_id: str, thinking: bool, run: Live) -> None:
         run.events.append({"event": "error", "message": message})
     finally:
         reply["time"] = now()
-        with lock:
-            chat = load(chat_id)
-            chat["messages"] += (turn.new if turn else []) + [reply]
-            chat["updated"] = reply["time"]
-            save(chat)
-            live.pop(chat_id, None)
-        run.done = True
+        end_answer(chat_id, run, (turn.new if turn else []) + [reply])
 
 
 async def stream(request: Request, run: Live) -> Any:

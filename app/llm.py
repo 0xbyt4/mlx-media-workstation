@@ -300,22 +300,33 @@ def check_installed() -> None:
         )
 
 
-def start() -> Worker:
-    """The running worker, started first if needed; waits until the model is loaded."""
+def start(cancelled: threading.Event | None = None) -> Worker | None:
+    """The running worker, started first if needed; waits until the model is loaded. None when cancelled is set
+    during the load: the load goes on in the worker, so the next request finds the model ready."""
     global worker
     with start_lock:
         with lock:
             w = worker
         if w is None or not w.alive():
             check_installed()
-            w = Worker()
+            try:
+                w = Worker()
+            except OSError as e:  # a python that is not a program: a folder, no exec bit, the wrong CPU
+                raise LLMError(
+                    f"The LLM environment's python could not start ({PATHS.qwen_python}): {e.strerror}. "
+                    "Check qwen_python in Settings."
+                ) from e
             with lock:
                 if not closed:
                     worker = w
             if worker is not w:  # the app closed while it started
                 w.stop(CLOSED)
                 raise LLMError(CLOSED)
-        if not w.ready.wait(LOAD_TIMEOUT) or not w.alive():
+        deadline = time.monotonic() + LOAD_TIMEOUT
+        while not w.ready.wait(0.25) and w.alive() and time.monotonic() < deadline:
+            if cancelled is not None and cancelled.is_set():
+                return None
+        if not w.ready.is_set() or not w.alive():
             message = (
                 w.fatal or w.reason or "The model did not load. See outputs/llm.log."
             )
@@ -423,7 +434,16 @@ def run(
 ) -> Iterator[dict[str, Any]]:
     """The worker part of generate: send the request and yield its events."""
     global last_used
-    w = start()
+    w = start(cancelled)
+    if w is None:  # Stop while the model loaded
+        yield {
+            "event": "done",
+            "finish": "cancelled",
+            "reasoning": "",
+            "content": "",
+            "stats": {},
+        }
+        return
     q: queue.Queue = queue.Queue()
     with lock:
         w.pending[rid] = q

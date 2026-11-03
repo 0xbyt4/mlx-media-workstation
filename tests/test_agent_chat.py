@@ -976,3 +976,64 @@ def test_shutdown_ends_running_turns_and_saves_them(client, state):
     assert tool["tool_call_id"] == ask["id"] and tool["status"] == "cancelled"
     assert msgs[-1]["finish"] in ("cancelled", "error")
     t.join(5)
+
+
+# Failures around an answer: it always ends, and the page hears why
+
+
+def test_a_failed_final_save_still_ends_the_answer(client, monkeypatch):
+    cid = client.post("/api/chats", json={"mode": "general"}).json()["id"]
+    real = chat.save
+    writes = []
+
+    def full_disk(c):
+        writes.append(1)
+        if len(writes) >= 2:  # 1: the user message; 2: the answer
+            raise OSError(28, "No space left on device")
+        real(c)
+
+    monkeypatch.setattr(chat, "save", full_disk)
+    evs = events(client.post(f"/api/chats/{cid}/messages", data={"text": "hi"}))
+    assert evs[-1]["event"] == "error" and "could not be saved" in evs[-1]["message"]
+    assert cid not in chat.live
+    monkeypatch.setattr(
+        chat, "save", real
+    )  # the disk has room again: the chat takes a new message
+    assert (
+        events(client.post(f"/api/chats/{cid}/messages", data={"text": "again"}))[-1][
+            "event"
+        ]
+        == "done"
+    )
+
+
+def test_a_python_that_cannot_run_gives_an_error(client, monkeypatch, tmp_path):
+    bad = tmp_path / "python"
+    bad.write_text("not a program")  # it exists, but without the exec bit
+    monkeypatch.setattr(
+        llm, "PATHS", SimpleNamespace(qwen_python=bad, qwen_model=Path("ok"))
+    )
+    llm.stop("fresh")
+    cid = client.post("/api/chats", json={"mode": "general"}).json()["id"]
+    evs = events(client.post(f"/api/chats/{cid}/messages", data={"text": "hi"}))
+    assert evs[-1]["event"] == "error" and "could not start" in evs[-1]["message"]
+    assert saved(client, cid)["messages"][-1]["finish"] == "error"
+
+
+def test_stop_while_the_model_loads_ends_the_answer_at_once(
+    client, monkeypatch, tmp_path
+):
+    slow = tmp_path / "slow_worker.py"
+    slow.write_text(
+        f"import runpy, time\ntime.sleep(4)\nrunpy.run_path({str(FAKE)!r}, run_name='__main__')\n"
+    )
+    monkeypatch.setattr(llm, "WORKER", [str(slow)])
+    llm.stop("fresh")
+    cid = client.post("/api/chats", json={"mode": "general"}).json()["id"]
+    t, _ = start(client, cid, "hello")
+    assert wait_for(lambda: chat.live.get(cid) and chat.live[cid].rid)
+    t0 = time.monotonic()
+    client.post(f"/api/chats/{cid}/stop")
+    t.join(10)
+    assert time.monotonic() - t0 < 2
+    assert saved(client, cid)["messages"][-1]["finish"] == "cancelled"
