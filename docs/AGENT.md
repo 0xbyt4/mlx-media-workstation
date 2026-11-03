@@ -188,11 +188,12 @@ registry per media flag, so at most one per profile: with the media tools (the f
 
 All steps run in one `llm.session()`. Its time limit counts from the moment it first holds the memory. `create_job`
 never waits for its job, because the job waits for that session. When the app closes, every running answer gets
-Stop (a waiting approval is denied) and a few seconds to save what it has. `docs/API.md` lists all rules of the loop.
+Stop (a waiting approval ends as stopped) and a few seconds to save what it has. `docs/API.md` lists all rules of the loop.
 
 In an agent chat, a Markdown link shows its host after its label ("label (host)"), and a long bare URL is shortened
 with the whole URL in its tooltip. A web page can tell the model to write a link that carries private text in its
-address: the host shows where one click sends it.
+address: the host shows where one click sends it. A link with a query shows the query too ("label
+(host/path?query)", cut at 80 characters), so the text that it sends is visible before the click.
 
 ## Settings
 
