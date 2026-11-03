@@ -87,6 +87,7 @@ checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Erro
 - `waiting` (a text) is set only on the first queued job while it waits for prompt help or chat answers to finish
   before it starts.
 - `elapsed` counts from `started` while the job runs; after it, it is the time the job took.
+- `log_tail` holds the last 25 lines of `job.log`. While the job runs, it is read from the file on each request.
 - Only one job runs at a time (each model needs most of the memory of a 32-48 GB Mac).
 
 `POST /api/jobs/{id}/cancel` cancels a queued or running job and returns `{"status": "cancelled"}`, or the job's
@@ -193,6 +194,7 @@ sent. Without the session cookie the answer has only `proof` and `profile`. A ba
       "disk_free_gb": 412.3,
       "needs": null,
       "install": null,
+      "install_path": null,
       "download": {"status": "queued | running | done | failed | cancelled", "position": null, "error": null,
                    "done_gb": 12.4, "total_gb": 54.1, "percent": 22.9, "speed_mbs": 85.2, "eta_s": 489,
                    "idle_s": 0, "stalled": false}
@@ -216,6 +218,8 @@ sent. Without the session cookie the answer has only `proof` and `profile`. A ba
 - `features` lists the app features outside the tool list that need the entry (`"Prompt help"`, `"Chat"`). The chat
   profile shows only the entries whose `features` hold `"Chat"`. `used_by` is the tool labels plus `features`.
 - `path_key` is the `config.toml` key of the install path; `null` means the Hugging Face cache.
+- `install_path` is where the `install` commands put a manual entry: the default path of `path_key`. When it differs
+  from `path`, the user sets `path_key` to it after the install. It is `null` for downloads.
 - `fits` is true when `peak_gb` plus `mem_reserve_gb` is at most `mem_total_gb`.
 - `needs` names an entry to install first. `download` is `null` unless this model is queued, downloading, or was
   downloaded since the app started. A queued entry has `status: "queued"` and `position` (1 = it starts next); its
@@ -575,7 +579,7 @@ oldest turns are dropped. The budget counts the system prompt and the tool schem
   },
   "app": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full",
           "defaults": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full"},
-          "idle_choices": [5, 10, 30, 60, 0], "profiles": ["full", "chat"]},
+          "idle_choices": [5, 10, 30, 60, 0], "profiles": ["full", "chat"], "saved_profile": "full"},
   "llm": {"idle_stop_s": 600.0},
   "agent": {"python": "", "searxng_url": "", "wikipedia_language": "en", "marginalia": true,
             "defaults": {"python": "", "searxng_url": "", "wikipedia_language": "en", "marginalia": true},
@@ -603,7 +607,9 @@ oldest turns are dropped. The budget counts the system prompt and the tool schem
   sleep while a job is queued or running), `notify` (a macOS notification when a job is done or failed; none for a
   cancelled job), `llm_idle_minutes` (minutes without use before the local LLM unloads; 0 = never) and `profile`
   (one of `profiles`; see [System](#system)). `idle_choices` are the minutes the screen offers. After
-  `start.py --chat`, `profile` is `"chat"` although `config.toml` may say `"full"`.
+  `start.py --chat`, `profile` is `"chat"` although `config.toml` may say `"full"`. `saved_profile` is the profile
+  in `config.toml` (the default when the file does not set a valid one): the profile of the next start without
+  `--chat`.
 - `agent` holds the `[agent]` values in `config.toml` (Settings > Agent; [AGENT.md](AGENT.md#settings)): `python` (the
   sandbox interpreter of `run_python`; `""` = the app's own Python with the standard library only), `searxng_url`,
   `wikipedia_language` and `marginalia`. A key the file does not set, or sets to a bad value, shows its default.
