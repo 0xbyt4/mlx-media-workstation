@@ -96,6 +96,18 @@ def test_the_profile_in_config_counts_without_the_flag(
     ]
 
 
+def test_browser_on_the_same_profile_prints_the_link_again(
+    start: Any,
+    calls: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    busy(start, monkeypatch, "full")
+    start.main(["--browser"])  # a browser that lost the session cookie gets back in
+    assert signed(start, "http://127.0.0.1:7870/") in capsys.readouterr().out
+    assert calls.windows == []
+
+
 @pytest.mark.parametrize(("argv", "running"), [(["--chat"], "chat"), ([], "full")])
 def test_same_profile_says_it_is_open(
     start: Any,

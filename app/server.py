@@ -4,7 +4,8 @@ Listens on 127.0.0.1 only and answers only requests addressed to it (Host check)
 other web pages cannot reach it through the browser, and no page may show it in a frame (frame_headers). At start it
 writes a random token to outputs/.server-token (0600); GET /api/system?nonce= proves it knows the token, so start.py
 opens a window only on this app. Every request needs the session cookie, which GET /auth?t=<token> sets: start.py
-opens the window there. So another program or user on this Mac, which cannot read the token file, gets 401. Jobs live in outputs/<id>/ with job.json (state and parameters),
+opens the window there. So another program or user on this Mac, which cannot read the token file, gets 401.
+In --browser mode the browser also sends the cookie to other servers on 127.0.0.1 (cookies ignore the port). Jobs live in outputs/<id>/ with job.json (state and parameters),
 job.log (the model's output) and the result files; the list is rebuilt from those folders at start.
 
 One model at a time: the worker starts a job's process (its own process group) under the lock, and does not take the

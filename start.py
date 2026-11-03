@@ -166,13 +166,14 @@ def attach(profile: str, browser: bool) -> None:
         raise SystemExit(
             f"Port {PORT} is in use: the Workstation is probably already open ({URL})."
         )
-    if running == profile:
+    if running == profile and not browser:
         notify("Workstation is already open.")
         raise SystemExit(f"The Workstation is already open ({URL}).")
     token = server_token()
     if token is None:  # the server closed in between
         raise SystemExit(f"Port {PORT} is in use: try again in a few seconds.")
-    url = sign_in_url(token, window_url(profile))
+    # the same profile in --browser mode: the link again, for a browser that lost its session cookie
+    url = sign_in_url(token, URL if running == profile else window_url(profile))
     if browser:
         print(f"The Workstation runs already. Open {url}", flush=True)
         return

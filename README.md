@@ -357,6 +357,7 @@ The code that runs the models is MIT-licensed: mflux, mlx-audio, ACE-Step 1.5, l
 
 - `start.py` starts the server on `127.0.0.1:7870` and opens a native window (pywebview, the system WebKit). The
   window opens a sign-in link with this run's token, so other programs and users on the Mac cannot use the API.
+  In `--browser` mode the browser sends that cookie to every server on 127.0.0.1, so prefer the window.
 - `app/server.py`: the API (`docs/API.md`), the job queue, the output files and the memory display.
 - `app/tools.py`: the tools, their form fields and defaults, and the commands each job runs.
 - `app/models.py` and `app/models_api.py`: the model catalog (repositories, pinned revisions, sizes, peaks and

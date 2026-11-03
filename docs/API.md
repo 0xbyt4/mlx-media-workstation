@@ -9,7 +9,8 @@ answers HTTP 401: a JSON `detail` for `/api/` and `/files/`, a short HTML page f
 sets the cookie when `t` is this run's token (see `GET /api/system?nonce=` below) and answers 303 to `next`, a path of
 this app (`/` for anything else). A wrong token is HTTP 403. `start.py` opens the window on this link and prints it in
 `--browser` mode. So another program or another user on this Mac, which cannot read `outputs/.server-token`, cannot use
-the API. Only `/auth` and `/api/system?nonce=` work without the cookie.
+the API. Limit: cookies ignore the port, so in `--browser` mode the browser also sends the cookie to other servers on
+127.0.0.1 that its pages open. The app window keeps its cookies to itself. Only `/auth` and `/api/system?nonce=` work without the cookie.
 
 Every response has `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`, so no other page
 can show the app in a frame. A response with its own policy (the workspace files) gets `frame-ancestors 'none'`
