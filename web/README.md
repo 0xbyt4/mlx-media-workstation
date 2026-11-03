@@ -117,6 +117,9 @@ adds the file, up to its limit.
 - `api.sendMessage(chatId, formData, onEvent, signal)` and `api.resumeStream(chatId, onEvent, signal)` read the chat
   event stream. They call `onEvent` with each `data:` object and resolve with the last one.
 - `api.poll(task, delay)` runs `task` and then again after `delay(result, error)` ms. It returns `{kick, stop}`.
+- `api.agentState(chatId)`, `api.changeAgent(chatId, body)` and `api.approve(chatId, callId, decision)` read and
+  change an agent chat's Tools menu and answer an approval card. The chat view handles the agent events (`step`,
+  `tool_call`, `approval`, `approval_done`, `tool_result`); a page that comes back shows a waiting approval again.
 
 ## Saved in the browser
 

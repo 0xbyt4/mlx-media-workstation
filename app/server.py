@@ -50,6 +50,7 @@ from app import (
     settings_api,
     tools,
 )
+from app.agent import load_settings as load_agent_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs"
@@ -421,6 +422,53 @@ def get_jobs() -> list[dict[str, Any]]:
         ]
 
 
+def new_job_dir() -> tuple[str, Path]:
+    job_id = datetime.now().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
+    job_dir = OUT / job_id
+    job_dir.mkdir(parents=True)
+    return job_id, job_dir
+
+
+def form_value(f: dict[str, Any], raw: Any) -> Any:
+    """The value to store for a field that is not a file: the form's text checked (HTTP 400), or the default."""
+    value = (
+        None if raw is None else str(raw).replace("\r\n", "\n")
+    )  # browsers send CRLF
+    checked = check_value(f, value)
+    return checked if checked is not None else f.get("default")
+
+
+def queue_job(
+    job_id: str,
+    tool: dict[str, Any],
+    params: dict[str, Any],
+    files: dict[str, list[str]],
+) -> None:
+    """Add a checked job to the end of the queue and wake the worker."""
+    job = {
+        "id": job_id,
+        "tool": tool["id"],
+        "tool_label": tool["label"],
+        "status": "queued",
+        "created": now(),
+        "started": None,
+        "finished": None,
+        "elapsed": None,
+        "params": params,
+        "files": files,
+        "outputs": [],
+        "peak_gb": None,
+        "error": None,
+        "log_tail": "",
+    }
+    with lock:
+        job["order"] = next_order()
+        jobs[job_id] = job
+        save(job)
+    sync_awake()
+    wake.set()
+
+
 @app.post("/api/jobs")
 async def create_job(request: Request) -> dict[str, str]:
     if stopping.is_set():
@@ -430,9 +478,7 @@ async def create_job(request: Request) -> dict[str, str]:
     tool = tools.BY_ID.get(tool_id)
     if tool is None:
         raise HTTPException(400, f"Unknown tool {tool_id!r}")
-    job_id = datetime.now().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
-    job_dir = OUT / job_id
-    job_dir.mkdir(parents=True)
+    job_id, job_dir = new_job_dir()
     params: dict[str, Any] = {}
     files: dict[str, list[str]] = {}
     try:
@@ -465,12 +511,7 @@ async def create_job(request: Request) -> dict[str, str]:
                 if saved:
                     files[name] = saved
             else:
-                raw = form.get(name)
-                value = (
-                    None if raw is None else str(raw).replace("\r\n", "\n")
-                )  # browsers send CRLF
-                checked = check_value(f, value)
-                params[name] = checked if checked is not None else f.get("default")
+                params[name] = form_value(f, form.get(name))
         tools.validate(
             tool_id, params, {k: [job_dir / n for n in v] for k, v in files.items()}
         )
@@ -485,29 +526,62 @@ async def create_job(request: Request) -> dict[str, str]:
         raise HTTPException(
             500, f"Could not create the job: {type(e).__name__}: {e}"
         ) from None
-    job = {
-        "id": job_id,
-        "tool": tool_id,
-        "tool_label": tool["label"],
-        "status": "queued",
-        "created": now(),
-        "started": None,
-        "finished": None,
-        "elapsed": None,
-        "params": params,
-        "files": files,
-        "outputs": [],
-        "peak_gb": None,
-        "error": None,
-        "log_tail": "",
-    }
-    with lock:
-        job["order"] = next_order()
-        jobs[job_id] = job
-        save(job)
-    sync_awake()
-    wake.set()
+    queue_job(job_id, tool, params, files)
     return {"id": job_id}
+
+
+class Workstation:
+    """The server's side of the agent's Workstation tools (app/agent/ports.py WorkstationPort). create_job runs the
+    checks of POST /api/jobs and queues the job; it returns at once and never waits for the job, which waits for the
+    agent turn's memory lease."""
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        return [
+            {**t, "installed": all(p.exists() for p in tools.REQUIRES.get(t["id"], []))}
+            for t in tools.TOOLS
+        ]
+
+    def job_status(self, job_id: str) -> dict[str, Any] | None:
+        with lock:
+            job = jobs.get(job_id)
+            return view(job) if job is not None else None
+
+    def search_library(self, query: str, limit: int) -> list[dict[str, Any]]:
+        q = query.lower()
+        found = []
+        for e in library.entries():  # newest first
+            text = " ".join((e["text"], e["tool"], e["tool_label"], e["name"]))
+            if q in text.lower():
+                keys = ("job", "tool", "tool_label", "kind", "name", "created", "text")
+                found.append({k: e[k] for k in keys})
+                if len(found) >= limit:
+                    break
+        return found
+
+    def create_job(self, tool_id: str, fields: dict[str, str]) -> str:
+        if stopping.is_set():
+            raise ValueError("The app is closing.")
+        tool = tools.BY_ID.get(tool_id)
+        if tool is None:
+            raise ValueError(f"Unknown tool {tool_id!r}")
+        job_id, job_dir = new_job_dir()
+        params: dict[str, Any] = {}
+        try:
+            for f in tool["fields"]:
+                if f["type"] in ("file", "files"):
+                    if f.get("required"):
+                        raise ValueError(f"{f['label']} needs an uploaded file.")
+                    continue
+                params[f["name"]] = form_value(f, fields.get(f["name"]))
+            tools.validate(tool_id, params, {})
+        except HTTPException as e:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise ValueError(str(e.detail)) from None
+        except Exception:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
+        queue_job(job_id, tool, params, {})
+        return job_id
 
 
 @app.post("/api/jobs/{job_id}/cancel")
@@ -732,11 +806,19 @@ def start() -> None:
     """Load the history and start the worker. Called once by start.py after it knows the port is free."""
     OUT.mkdir(exist_ok=True)
     load_jobs()
+    # the [agent] settings apply from the start (a bad value stops here); the Settings screen shows the same values
+    chat.settings = load_agent_settings()
+    if hasattr(settings_api, "AGENT"):
+        settings_api.AGENT = chat.settings
+    chat.registry()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=llm.watch_idle, daemon=True).start()
 
 
 settings_api.on_change.append(sync_awake)  # the keep-awake switch applies at once
+chat.port = (
+    Workstation()
+)  # the media tools of agent chats (not offered in the chat profile)
 app.include_router(models_api.router)
 app.include_router(chat.router)
 app.include_router(settings_api.router)

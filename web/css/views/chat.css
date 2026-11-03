@@ -650,6 +650,295 @@
   color: var(--text-3);
 }
 
+/* ---------- agent answers: steps, tool cards, approvals ---------- */
+.v-chat .agent-flow {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.v-chat .agent-text {
+  display: grid;
+  gap: 8px;
+}
+.v-chat .tool {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.v-chat .tool-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  min-width: 0;
+}
+.v-chat .tool-card > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.v-chat .tool-card > summary::-webkit-details-marker {
+  display: none;
+}
+.v-chat .tool-card .chev {
+  flex: none;
+  transition: transform 0.15s;
+}
+.v-chat .tool-card[open] > summary .chev {
+  transform: rotate(90deg);
+}
+.v-chat .tool-name {
+  flex: none;
+  font-weight: 600;
+  color: var(--text);
+}
+.v-chat .tool-sum {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-3);
+}
+.v-chat .tool-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex: none;
+}
+.v-chat .tool-risk,
+.v-chat .tool-time {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.v-chat .tool-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 10px 30px;
+  min-width: 0;
+}
+.v-chat .tool-sec {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.v-chat .tool-pre {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font: var(--fs-sm) / 1.5 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.v-chat .tool-pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+.v-chat .tool-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+.v-chat .tool-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+.v-chat .tool-files .att {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+.v-chat .tool-files img {
+  display: block;
+  max-height: 220px;
+  max-width: min(360px, 100%);
+  object-fit: contain;
+}
+.v-chat .file-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.v-chat .approval {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--warn);
+  border-radius: var(--r-md);
+  background: var(--warn-soft);
+  min-width: 0;
+}
+.v-chat .approval.risk-3 {
+  border-color: var(--err);
+  background: var(--err-soft);
+}
+.v-chat .approval:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.v-chat .approval-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.v-chat .approval-head b {
+  font-size: var(--fs-md);
+}
+.v-chat .approval-what {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.v-chat .approval-why,
+.v-chat .approval-help {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.v-chat .approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.v-chat .approval .field-err {
+  margin: 0;
+}
+
+/* ---------- Tools menu ---------- */
+.v-chat .composer-wrap {
+  position: relative;
+}
+.v-chat .tools-pop {
+  position: absolute;
+  z-index: 6;
+  left: 24px;
+  bottom: calc(100% - 8px);
+  width: min(460px, calc(100% - 48px));
+  max-height: min(70vh, 640px);
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+.v-chat .tools-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.v-chat .tools-head h3 {
+  margin: 0;
+  font-size: var(--fs-md);
+}
+.v-chat .tools-intro,
+.v-chat .tools-taint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.v-chat .tools-taint {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.v-chat .tools-taint .ic {
+  flex: none;
+  margin-top: 2px;
+}
+.v-chat .tool-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.v-chat .tool-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.v-chat .tool-row .switch {
+  margin-top: 1px;
+}
+.v-chat .tool-row-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.v-chat .tool-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.v-chat .tool-row .help {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+.v-chat .tool-grant {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.v-chat .tools-folder {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.v-chat .tools-folder-row,
+.v-chat .tools-folder-set {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.v-chat .tools-folder-row .input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+}
+.v-chat .tools-folder-set code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--fs-sm) var(--mono);
+}
+
 /* ---------- narrow ---------- */
 @media (max-width: 900px) {
   .v-chat .chat {
@@ -687,5 +976,16 @@
   .v-chat .msg-images img {
     height: 110px;
     max-width: 160px;
+  }
+  .v-chat .tools-pop {
+    left: 16px;
+    width: calc(100% - 32px);
+  }
+  .v-chat .tool-risk,
+  .v-chat .tool-time {
+    display: none;
+  }
+  .v-chat .tool-body {
+    padding-left: 12px;
   }
 }
