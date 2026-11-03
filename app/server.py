@@ -129,8 +129,11 @@ def frame_headers(response: Response) -> Response:
 
 
 def signed_in(request: Request) -> bool:
-    return token is not None and hmac.compare_digest(  # bytes: any text compares, ASCII or not
-        request.cookies.get(SESSION_COOKIE, "").encode(), token.encode()
+    return (
+        token is not None
+        and hmac.compare_digest(  # bytes: any text compares, ASCII or not
+            request.cookies.get(SESSION_COOKIE, "").encode(), token.encode()
+        )
     )
 
 
@@ -391,7 +394,9 @@ def worker() -> None:
             traceback.print_exc()
             with lock:
                 orphan = procs.pop(job["id"], None) if job is not None else None
-            if orphan is not None:  # a save failed while its model ran: stop it, so no two models run at once
+            if (
+                orphan is not None
+            ):  # a save failed while its model ran: stop it, so no two models run at once
                 stop_group(orphan.pid)
             with lock:
                 if job is not None:
