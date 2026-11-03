@@ -199,6 +199,7 @@ def test_risk_levels_of_the_tools() -> None:
     untrusted = {n for n in reg.names() if reg.get(n).untrusted_output}
     assert untrusted == {
         "search_library",
+        "transcribe_audio",
         "list_files",
         "read_file",
         "search_files",

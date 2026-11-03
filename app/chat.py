@@ -93,8 +93,12 @@ NOTE_REPEAT = (
 LABELS = {
     "list_workstation_tools": "Media tools",
     "job_status": "Job status",
+    "list_jobs": "Jobs",
+    "wait_for_job": "Wait for a job",
     "search_library": "Library search",
     "create_job": "Queue a media job",
+    "cancel_job": "Cancel a job",
+    "transcribe_audio": "Transcribe",
     "list_files": "List files",
     "read_file": "Read a file",
     "search_files": "Search files",
@@ -331,6 +335,8 @@ def risk_text(tool: Tool) -> str:
         what = (
             "Sends text off this Mac (the query or the address)."
             if tool.network
+            else "Cancels a media job that this chat queued."
+            if tool.name == "cancel_job"
             else "Queues a media job that uses this Mac for minutes."
         )
         return (
@@ -756,7 +762,11 @@ class Turn:
                 state = self.state()
                 self.change(grants=sorted(set(state["grants"]) | {name}))
         ctx = Context(
-            self.chat_id, grants.folder, self.run.abort, work_dir(CHATS, self.chat_id)
+            self.chat_id,
+            grants.folder,
+            self.run.abort,
+            work_dir(CHATS, self.chat_id),
+            self.deadline,
         )
         res = self.reg.call(name, args, ctx)
         if res.status in ("ok", "error"):  # it ran: its text is in the context now
@@ -771,6 +781,7 @@ class Turn:
             files=self.files(res.files),
             seconds=res.seconds,
             approval=approval,
+            job=res.job,
         )
         return ("cancelled", "") if res.status == "cancelled" else None
 
@@ -829,8 +840,10 @@ class Turn:
         files: list[dict[str, str]] | None = None,
         seconds: float | None = None,
         approval: str | None = None,
+        job: str | None = None,
     ) -> None:
-        """The call's tool message (saved with the answer) and its tool_result event."""
+        """The call's tool message (saved with the answer) and its tool_result event. job: the media job the call
+        queued, for the page's job card."""
         name = str(call.get("name") or "")
         stored, _ = cap(text, MAX_STORED)
         preview, cut = cap(text, PREVIEW)
@@ -841,6 +854,8 @@ class Turn:
             "approval": approval,
             "risk": int(tool.risk) if tool else None,
         }
+        if job:
+            extra["job"] = job
         self.new.append(
             {
                 "role": "tool",

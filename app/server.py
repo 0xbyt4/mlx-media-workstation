@@ -57,6 +57,7 @@ from app import (
     tools,
 )
 from app.agent import load_settings as load_agent_settings
+from app.agent.ports import InputFile
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs"
@@ -76,11 +77,13 @@ KINDS = {
     ".m4a": "audio",
     ".mp4": "video",
     ".mov": "video",
+    ".txt": "text",
 }
 INPUT_NAMES = {
     "start.png",
     "person.png",
     "voice_padded.wav",
+    "speech.wav",
     "source.mp4",
     "tail.mp4",
     "extended_raw.mp4",
@@ -563,13 +566,58 @@ def form_value(f: dict[str, Any], raw: Any) -> Any:
     return checked if checked is not None else f.get("default")
 
 
+def prepare_job(
+    tool: dict[str, Any],
+    job_dir: Path,
+    value: Callable[[str], Any],
+    inputs: dict[str, list[InputFile]],
+) -> tuple[dict[str, Any], dict[str, list[str]]]:
+    """The checks of a new job: its field values (value(name) gives the raw value of a field) and its input files,
+    which are copied into job_dir as in_<field>_<n><suffix>. The name a file came with is never trusted: only a media
+    suffix of it is kept. Returns (params, files). Raises HTTPException(400) or ValueError; the caller removes
+    job_dir."""
+    params: dict[str, Any] = {}
+    files: dict[str, list[str]] = {}
+    for f in tool["fields"]:
+        name = f["name"]
+        if f["type"] in ("file", "files"):
+            given = inputs.get(name, [])
+            limit = 1 if f["type"] == "file" else f.get("max", 10)
+            if len(given) > limit:
+                raise HTTPException(400, f"{f['label']}: at most {limit} file(s)")
+            saved = []
+            for i, inp in enumerate(given):
+                if inp.size > MAX_UPLOAD:
+                    raise HTTPException(
+                        400, f"{f['label']}: file too large (max 200 MB)"
+                    )
+                suffix = Path(inp.name).suffix.lower()
+                suffix = (
+                    suffix if suffix in KINDS else ".bin"
+                )  # only media types are ever served back
+                fname = f"in_{name}_{i}{suffix}"
+                inp.write(job_dir / fname)
+                saved.append(fname)
+            if f.get("required") and not saved:
+                raise HTTPException(400, f"{f['label']} is required")
+            if saved:
+                files[name] = saved
+        else:
+            params[name] = form_value(f, value(name))
+    tools.validate(
+        tool["id"], params, {k: [job_dir / n for n in v] for k, v in files.items()}
+    )
+    return params, files
+
+
 def queue_job(
     job_id: str,
     tool: dict[str, Any],
     params: dict[str, Any],
     files: dict[str, list[str]],
+    chat: str | None = None,
 ) -> None:
-    """Add a checked job to the end of the queue and wake the worker."""
+    """Add a checked job to the end of the queue and wake the worker. chat: the agent chat that queued it."""
     job = {
         "id": job_id,
         "tool": tool["id"],
@@ -586,12 +634,25 @@ def queue_job(
         "error": None,
         "log_tail": "",
     }
+    if chat is not None:
+        job["chat"] = chat
     with lock:
         job["order"] = next_order()
         jobs[job_id] = job
         save(job)
     sync_awake()
     wake.set()
+
+
+def upload_writer(up: Any) -> Callable[[Path], None]:
+    """Writes an uploaded file (already spooled by the form parser) to a path."""
+
+    def write(path: Path) -> None:
+        up.file.seek(0)
+        with path.open("wb") as out:
+            shutil.copyfileobj(up.file, out)
+
+    return write
 
 
 @app.post("/api/jobs")
@@ -604,42 +665,17 @@ async def create_job(request: Request) -> dict[str, str]:
     if tool is None:
         raise HTTPException(400, f"Unknown tool {tool_id!r}")
     job_id, job_dir = new_job_dir()
-    params: dict[str, Any] = {}
-    files: dict[str, list[str]] = {}
+    uploads = {
+        f["name"]: [
+            InputFile(u.filename, u.size or 0, upload_writer(u))
+            for u in form.getlist(f["name"])
+            if hasattr(u, "filename") and u.filename
+        ]
+        for f in tool["fields"]
+        if f["type"] in ("file", "files")
+    }
     try:
-        for f in tool["fields"]:
-            name = f["name"]
-            if f["type"] in ("file", "files"):
-                uploads = [
-                    u
-                    for u in form.getlist(name)
-                    if hasattr(u, "filename") and u.filename
-                ]
-                limit = 1 if f["type"] == "file" else f.get("max", 10)
-                if len(uploads) > limit:
-                    raise HTTPException(400, f"{f['label']}: at most {limit} file(s)")
-                saved = []
-                for i, up in enumerate(uploads):
-                    if (up.size or 0) > MAX_UPLOAD:
-                        raise HTTPException(
-                            400, f"{f['label']}: file too large (max 200 MB)"
-                        )
-                    suffix = Path(up.filename).suffix.lower()
-                    suffix = (
-                        suffix if suffix in KINDS else ".bin"
-                    )  # only media types are ever served back
-                    fname = f"in_{name}_{i}{suffix}"  # never trust the uploaded name
-                    (job_dir / fname).write_bytes(await up.read())
-                    saved.append(fname)
-                if f.get("required") and not saved:
-                    raise HTTPException(400, f"{f['label']} is required")
-                if saved:
-                    files[name] = saved
-            else:
-                params[name] = form_value(f, form.get(name))
-        tools.validate(
-            tool_id, params, {k: [job_dir / n for n in v] for k, v in files.items()}
-        )
+        params, files = prepare_job(tool, job_dir, form.get, uploads)
     except ValueError as e:
         shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(400, str(e)) from None
@@ -655,10 +691,19 @@ async def create_job(request: Request) -> dict[str, str]:
     return {"id": job_id}
 
 
+def needs_memory(job: dict[str, Any]) -> bool:
+    """Whether a queued job, or a job before it in the queue, needs the memory that the chat model holds: such a job
+    starts only after the agent turn's memory lease ends, so a wait inside the turn would only time out (call with the
+    lock held)."""
+    queued = queued_jobs()
+    ahead = queued[: queued.index(job) + 1] if job in queued else [job]
+    return any(not llm.fits_with(models.tool_peak(j["tool"])) for j in ahead)
+
+
 class Workstation:
     """The server's side of the agent's Workstation tools (app/agent/ports.py WorkstationPort). create_job runs the
-    checks of POST /api/jobs and queues the job; it returns at once and never waits for the job, which waits for the
-    agent turn's memory lease."""
+    checks of POST /api/jobs (prepare_job) and queues the job; it returns at once and never waits for the job, which
+    waits for the agent turn's memory lease. wait_job does not wait for a job that needs that memory (needs_memory)."""
 
     def list_tools(self) -> list[dict[str, Any]]:
         return [
@@ -669,7 +714,51 @@ class Workstation:
     def job_status(self, job_id: str) -> dict[str, Any] | None:
         with lock:
             job = jobs.get(job_id)
-            return view(job) if job is not None else None
+            return {**view(job), "chat": job.get("chat")} if job is not None else None
+
+    def list_jobs(self, limit: int) -> list[dict[str, Any]]:
+        with lock:
+            newest = sorted(jobs.values(), key=lambda j: j["created"], reverse=True)
+            active = [j for j in newest if j["status"] in ("queued", "running")]
+            ended = [j for j in newest if j["status"] not in ("queued", "running")]
+            shown = active + ended[: max(0, limit - len(active))]
+            shown.sort(key=lambda j: j["created"], reverse=True)
+            return [{**view(j), "chat": j.get("chat")} for j in shown]
+
+    def wait_job(
+        self, job_id: str, seconds: float, abort: threading.Event
+    ) -> dict[str, Any] | None:
+        end = time.monotonic() + seconds
+        while True:
+            with lock:
+                job = jobs.get(job_id)
+                status = job["status"] if job is not None else None
+                if status == "queued" and needs_memory(job):
+                    return {**view(job), "chat": job.get("chat"), "needs_memory": True}
+            left = end - time.monotonic()
+            if status in (None, "done", "failed", "cancelled") or left <= 0:
+                break
+            if abort.wait(min(left, 0.5)):
+                break
+        return self.job_status(job_id)
+
+    def cancel_job(self, job_id: str) -> str:
+        try:
+            return cancel_job(job_id)["status"]
+        except HTTPException as e:
+            raise ValueError(str(e.detail)) from None
+
+    def output_file(self, job_id: str, name: str) -> Path | None:
+        with lock:
+            job = jobs.get(job_id)
+            listed = (
+                job is not None
+                and job["status"] == "done"
+                and any(o.get("name") == name for o in job.get("outputs") or [])
+            )
+        if not listed or "/" in name or name.startswith("."):
+            return None
+        return OUT / job_id / name
 
     def search_library(self, query: str, limit: int) -> list[dict[str, Any]]:
         q = query.lower()
@@ -683,29 +772,48 @@ class Workstation:
                     break
         return found
 
-    def create_job(self, tool_id: str, fields: dict[str, str]) -> str:
+    def create_job(
+        self,
+        tool_id: str,
+        fields: dict[str, str],
+        inputs: dict[str, list[InputFile]] | None = None,
+        chat: str | None = None,
+    ) -> str:
         if stopping.is_set():
             raise ValueError("The app is closing.")
         tool = tools.BY_ID.get(tool_id)
         if tool is None:
             raise ValueError(f"Unknown tool {tool_id!r}")
+        inputs = inputs or {}
+        uploads = {
+            f["name"]: f for f in tool["fields"] if f["type"] in ("file", "files")
+        }
+        for name, given in inputs.items():
+            f = uploads.get(name)
+            if f is None:
+                raise ValueError(f"{tool['label']} has no file field {name!r}.")
+            # stricter than a browser upload: the suffix must be a media type that the field accepts
+            accepts = {a.strip().split("/")[0] for a in f.get("accept", "").split(",")}
+            for inp in given:
+                kind = KINDS.get(Path(inp.name).suffix.lower())
+                if kind is None or (accepts - {""} and kind not in accepts):
+                    wanted = " or ".join(sorted(accepts - {""})) or "media"
+                    raise ValueError(
+                        f"{f['label']} takes {wanted} files; {inp.name} is not one."
+                    )
+        for f in uploads.values():
+            if f.get("required") and not inputs.get(f["name"]):
+                raise ValueError(f"{f['label']} needs an uploaded file.")
         job_id, job_dir = new_job_dir()
-        params: dict[str, Any] = {}
         try:
-            for f in tool["fields"]:
-                if f["type"] in ("file", "files"):
-                    if f.get("required"):
-                        raise ValueError(f"{f['label']} needs an uploaded file.")
-                    continue
-                params[f["name"]] = form_value(f, fields.get(f["name"]))
-            tools.validate(tool_id, params, {})
+            params, files = prepare_job(tool, job_dir, fields.get, inputs)
         except HTTPException as e:
             shutil.rmtree(job_dir, ignore_errors=True)
             raise ValueError(str(e.detail)) from None
         except Exception:
             shutil.rmtree(job_dir, ignore_errors=True)
             raise
-        queue_job(job_id, tool, params, {})
+        queue_job(job_id, tool, params, files, chat)
         return job_id
 
 

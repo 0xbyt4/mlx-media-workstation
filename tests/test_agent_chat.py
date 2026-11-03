@@ -258,7 +258,8 @@ def test_the_next_turn_sends_the_history_as_the_template_needs_it(client, reg):
     # the tools of the request: the enabled ones, without run_python (off) and the file tools (no folder)
     names = [t["function"]["name"] for t in seen["tools"]]
     assert names == [
-        "list_workstation_tools", "job_status", "search_library", "create_job", "web_search", "fetch_url"
+        "list_workstation_tools", "job_status", "search_library", "create_job", "list_jobs", "wait_for_job",
+        "cancel_job", "transcribe_audio", "web_search", "fetch_url"
     ]  # fmt: skip
     system = sent[0]["content"]
     assert "untrusted data" in system and "emoji" in system
@@ -1053,3 +1054,30 @@ def test_stop_while_the_model_loads_ends_the_answer_at_once(
     t.join(10)
     assert time.monotonic() - t0 < 2
     assert saved(client, cid)["messages"][-1]["finish"] == "cancelled"
+
+
+# ---------- media jobs in the chat ----------
+
+
+def test_a_queued_job_reaches_the_page_and_the_saved_chat(client, ws, monkeypatch):
+    """create_job's result carries the job id (the page's job card); wait_for_job gets the answer's deadline, so it
+    leaves time for the next steps."""
+    monkeypatch.setattr(chat, "TURN_SECONDS", 100.0)
+    cid = agent_chat(client)
+    steps = script(
+        [call("create_job", tool="image.klein", fields={"prompt": "a fox"})],
+        [call("wait_for_job", job_id="20261103-130000-0001")],
+        "RESULT",
+    )
+    t, box = start(client, cid, steps)
+    approve(client, cid, pending(cid)["id"], "once")
+    t.join(5)
+    results = [e for e in events(box["r"]) if e["event"] == "tool_result"]
+    assert results[0]["job"] == "20261103-130000-0001"
+    assert "job" not in results[1]  # a wait shows no second card
+    assert "status: queued" in results[1]["content"]
+    ((job_id, seconds),) = ws.waits
+    assert job_id == "20261103-130000-0001" and 30 < seconds <= 40
+    tool = next(m for m in saved(client, cid)["messages"] if m["role"] == "tool")
+    assert tool["job"] == "20261103-130000-0001"
+    assert ws.jobs[job_id]["chat"] == cid

@@ -164,7 +164,7 @@ uv sync --frozen --no-dev --python /opt/homebrew/bin/python3.12""",
     Model(
         id="drama-venv",
         label="Fish Drama 3 environment (mlx-audio)",
-        tools=("voice.drama3",),
+        tools=("voice.drama3", "voice.transcribe"),
         path_key="drama_python",
         files=(),
         install="""uv venv --python /opt/homebrew/bin/python3.14 ~/mlx-media/venv-drama
@@ -193,11 +193,12 @@ uv pip install --python ~/mlx-media/venv-drama/bin/python "mlx-audio==0.6.1" sci
         licence_url="https://huggingface.co/mlx-community/fish-audio-drama-3-4bit/blob/1ac1b2108b63c2ef5bade463a121569363e293ce/LICENSE",
         peak_gb=39.0,
     ),
-    # the speech check runs inside the Drama 3 job, so its peak is that job's; the runner loads it by name
+    # the speech check of the Drama 3 job and the Transcribe tool; the runners load it by name. Its own peak (2.6 GB
+    # for 40 s of speech, measured 2026-11-03); a Drama 3 job's peak is the Drama model's
     Model(
         id="qwen3-asr-0.6b-8bit",
         label="Qwen3-ASR 0.6B (speech check)",
-        tools=("voice.drama3",),
+        tools=("voice.drama3", "voice.transcribe"),
         path_key=None,
         files=("config.json", "model.safetensors", "vocab.json"),
         repo="mlx-community/Qwen3-ASR-0.6B-8bit",
@@ -205,7 +206,7 @@ uv pip install --python ~/mlx-media/venv-drama/bin/python "mlx-audio==0.6.1" sci
         size_gb=1.0,
         licence="Apache-2.0",
         licence_url="https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit",
-        peak_gb=39.0,
+        peak_gb=3.0,
     ),
     Model(
         id="ace-step-checkout",

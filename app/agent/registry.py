@@ -49,6 +49,8 @@ class Context:
     folder: Path | None  # the folder the user granted to this chat, or None
     abort: threading.Event  # set by Stop: a tool checks it and ends early
     work_dir: Path  # the chat's workspace (outputs/chats/<id>/ws): run_python reads and writes only here
+    # when the answer must end (time.monotonic()), so a tool that waits stops in time; None = no limit
+    deadline: float | None = None
 
     def check_abort(self) -> None:
         if self.abort.is_set():
@@ -97,6 +99,9 @@ class Output:
 
     text: str
     files: list[str] = field(default_factory=list)
+    job: str | None = (
+        None  # the media job the call queued or waited for: the page shows its card
+    )
 
 
 @dataclass
@@ -110,6 +115,7 @@ class Result:
     args: (
         dict[str, Any] | None
     )  # the checked arguments (defaults filled in); None when they were invalid
+    job: str | None = None  # Output.job
 
 
 def cap(text: str, limit: int = MAX_RESULT) -> tuple[str, bool]:
@@ -145,7 +151,7 @@ class Registry:
         t0 = time.monotonic()
         tool = self.tools.get(name)
 
-        def done(status, text, checked=None, files=None) -> Result:
+        def done(status, text, checked=None, files=None, job=None) -> Result:
             content, truncated = cap(text)
             return Result(
                 status,
@@ -155,6 +161,7 @@ class Registry:
                 files or [],
                 round(time.monotonic() - t0, 2),
                 checked,
+                job,
             )
 
         if tool is None:
@@ -176,5 +183,5 @@ class Registry:
         except Exception as e:  # noqa: BLE001 - a broken tool must not end the turn
             return done("error", f"The tool failed: {type(e).__name__}: {e}", checked)
         if isinstance(out, Output):
-            return done("ok", out.text, checked, out.files)
+            return done("ok", out.text, checked, out.files, out.job)
         return done("ok", out, checked)

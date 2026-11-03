@@ -7,7 +7,7 @@
 // from the stream. The Tools menu turns tools on or off, grants a folder and revokes chat-wide approvals.
 
 import {store} from '../store.js';
-import {h, icon, toolIcon, grow, fmtBytes, fmtLeft, fmtTime, timeAgo, toast, inlineConfirm, lightbox, lsGet, lsSet, menu, closeMenu} from '../ui.js';
+import {h, icon, toolIcon, grow, fmtBytes, fmtLeft, fmtTime, timeAgo, toast, inlineConfirm, lightbox, lsGet, lsSet, menu, closeMenu, media, downloadLink} from '../ui.js';
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 const MAX_IMAGES = 4; // per message (app/chat.py MAX_IMAGES)
@@ -111,6 +111,7 @@ function mount(root, ctx, params) {
     store.on('jobs', () => {
       renderHead();
       if (s.live) paintLive(s.live);
+      s.root.querySelectorAll('.chat-job[data-job]').forEach(paintJob);
     }),
     store.on('tools', () => {
       if (s.chat && !s.loading) renderThread(false);
@@ -1023,7 +1024,7 @@ function toolSegNode(seg, live) {
     id: c.id, name: c.name, label: c.label, arguments: c.arguments, describe: c.describe, risk: c.risk,
     status: r.status || (seg.decision && seg.decision !== 'once' && seg.decision !== 'chat' ? 'denied' : null),
     content: r.content, truncated: r.truncated, files: r.files, seconds: r.seconds,
-    approval: r.approval || seg.decision,
+    approval: r.approval || seg.decision, job: r.job,
   }, seg);
 }
 
@@ -1089,7 +1090,53 @@ function toolBlock(t, seg) {
         typeof t.seconds === 'number' ? h('span', {class: 'tool-time num'}, t.seconds.toFixed(1) + ' s') : null)),
     body);
   if (seg) card.addEventListener('toggle', () => (seg.open = card.open));
-  return h('div', {class: 'tool'}, card, filesBlock(t));
+  return h('div', {class: 'tool'}, card, filesBlock(t), jobBlock(t));
+}
+
+// The media job a call queued (create_job, transcribe_audio): its live state from the shared job list, a link to the
+// Jobs view, and its outputs when it is done. paintJob runs again on each job list update.
+const JOB_STATUS = {
+  queued: ['idle', 'Queued'], running: ['run', 'Running'], done: ['ok', 'Done'], failed: ['err', 'Failed'],
+  cancelled: ['idle', 'Cancelled'],
+};
+const jobsAsked = new Set(); // jobs not in the list yet: the list is fetched once for each
+
+function jobBlock(t) {
+  if (!t.job) return null;
+  const el = h('div', {class: 'chat-job', 'data-job': t.job});
+  paintJob(el);
+  return el;
+}
+
+function paintJob(el) {
+  const id = el.getAttribute('data-job');
+  const job = (store.get('jobs') || []).find((j) => j.id === id);
+  if (!job && !jobsAsked.has(id)) {
+    jobsAsked.add(id);
+    store.refresh('jobs');
+  }
+  // rebuilt only when the job changes, so a playing output keeps playing
+  const sig = job ? JSON.stringify([job.status, job.position, job.progress, job.outputs, job.error]) : '';
+  if (el.dataset.sig === sig && el.firstChild) return;
+  el.dataset.sig = sig;
+  const st = job ? JOB_STATUS[job.status] || ['idle', job.status] : null;
+  const p = job && job.status === 'running' && job.progress ? job.progress : null;
+  const facts = [
+    job && job.status === 'queued' && job.position ? 'place ' + job.position + ' in the queue' : '',
+    p && typeof p.fraction === 'number' ? Math.round(p.fraction * 100) + '%' : '',
+    p && p.eta_s !== null && p.eta_s !== undefined ? fmtLeft(p.eta_s) : '',
+  ].filter(Boolean).join(' · ');
+  const outputs = job && job.status === 'done' ? (job.outputs || []).map((o) => media(o, {actions: downloadLink(o)})).filter(Boolean) : [];
+  el.replaceChildren(...[
+    h('div', {class: 'chat-job-head'},
+      icon('jobs', 'ic-sm'),
+      h('span', {class: 'chat-job-name'}, job ? job.tool_label || job.tool : 'Job ' + id),
+      st ? h('span', {class: 'pill pill-' + st[0]}, st[1]) : null,
+      facts ? h('span', {class: 'chat-job-facts num'}, facts) : null,
+      h('a', {class: 'chat-job-open', href: '#/jobs'}, 'Open in Jobs')),
+    job && job.error && job.status !== 'done' ? h('p', {class: 'chat-job-err'}, job.error) : null,
+    outputs.length ? h('div', {class: 'chat-job-outputs'}, outputs) : null,
+  ].filter(Boolean));
 }
 
 // The question for a call that needs the user's approval. Keyboard: the focus moves to the card, Tab reaches the
@@ -1162,6 +1209,7 @@ function agentTurn(run, isLast) {
       body.push(toolBlock({
         id: c.id, name: c.name, label: r.label || c.name, arguments: c.arguments, describe: r.describe, risk: r.risk,
         status: r.status || 'skipped', content: r.content, files: r.files, seconds: r.seconds, approval: r.approval,
+        job: r.job,
       }));
     }
   }

@@ -25,6 +25,9 @@ LTX_HEADER = re.compile(
     r"\[estimate\] denoising [^:]*: (\d+) steps x \d+ passes over (\d+) video"
 )
 TAKE = re.compile(r"take (\d+) seed \d+: [\d.]+ s, (.*?) \|")
+PART = re.compile(
+    r"part (\d+)/(\d+):"
+)  # printed by the Transcribe runner after each part
 # speaker tags and cues in a Drama 3 script
 SPOKEN = re.compile(r"<\|[^|]*\|>|\[[^\]]*\]")
 
@@ -213,6 +216,12 @@ def parse(
         return ace(text)
     if tool == "voice.drama3":
         return drama(text, int(num(params, "takes", 2)))
+    if tool == "voice.transcribe":
+        parts = PART.findall(text)
+        if not parts:
+            return None, None
+        done, total = parts[-1]
+        return "Transcribing", int(done) / int(total)
     return None, None
 
 

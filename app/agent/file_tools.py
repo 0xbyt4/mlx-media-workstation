@@ -133,10 +133,11 @@ def looks_text(sample: bytes) -> bool:
     return True
 
 
-def read_text(path: str, root: str, limit: int | None = None) -> tuple[str, int, bool]:
-    """The text of a file (decoded as UTF-8, bad bytes replaced), its size and whether it was cut at `limit`.
+def open_file(path: str, root: str) -> tuple[int, os.stat_result]:
+    """An open descriptor of a regular file inside the folder, and its stat. The caller closes it.
 
-    Raises ToolError for a binary file, a non-regular file, or a path that leaves the folder after opening."""
+    Raises ToolError for a link at the last part, a non-regular file, or a path that leaves the folder or reaches a
+    hidden or secret file after opening."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as e:
@@ -154,6 +155,18 @@ def read_text(path: str, root: str, limit: int | None = None) -> tuple[str, int,
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             raise ToolError(f"{_rel(path, root)}: not a regular file.")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, st
+
+
+def read_text(path: str, root: str, limit: int | None = None) -> tuple[str, int, bool]:
+    """The text of a file (decoded as UTF-8, bad bytes replaced), its size and whether it was cut at `limit`.
+
+    Raises ToolError for a binary file, a non-regular file, or a path that leaves the folder after opening."""
+    fd, st = open_file(path, root)
+    try:
         with os.fdopen(os.dup(fd), "rb") as f:
             data = f.read(limit or MAX_READ)
     finally:

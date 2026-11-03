@@ -780,6 +780,46 @@
   max-width: min(360px, 100%);
   object-fit: contain;
 }
+.v-chat .chat-job {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.v-chat .chat-job-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-sm);
+}
+.v-chat .chat-job-name {
+  font-weight: 600;
+}
+.v-chat .chat-job-facts {
+  color: var(--text-2);
+}
+.v-chat .chat-job-open {
+  margin-left: auto;
+  color: var(--accent);
+}
+.v-chat .chat-job-err {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--err);
+  overflow-wrap: anywhere;
+}
+.v-chat .chat-job-outputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.v-chat .chat-job-outputs .media {
+  max-width: min(360px, 100%);
+}
 .v-chat .file-link {
   display: inline-flex;
   align-items: center;

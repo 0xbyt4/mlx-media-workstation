@@ -38,6 +38,7 @@ REQUIRES: dict[str, list[Path]] = {
     "image.klein": [MFLUX / "mflux-generate-flux3"],
     "image.klein_edit": [MFLUX / "mflux-generate-flux3-edit"],
     "voice.drama3": [DRAMA_PY, DRAMA_MODEL, DRAMA_ASR],
+    "voice.transcribe": [DRAMA_PY, DRAMA_ASR],
     "music.ace": [ACE_PY, ACE_DIR / "checkpoints"],
     "video.t2v": [LTX, LTX_MODEL],
     "video.i2v": [LTX, LTX_MODEL],
@@ -45,6 +46,39 @@ REQUIRES: dict[str, list[Path]] = {
     "video.extend": [LTX_PY, LTX_MODEL],
 }
 
+# the languages Qwen3-ASR names in its config.json (support_languages)
+ASR_LANGUAGES = [
+    "Arabic",
+    "Cantonese",
+    "Chinese",
+    "Czech",
+    "Danish",
+    "Dutch",
+    "English",
+    "Filipino",
+    "Finnish",
+    "French",
+    "German",
+    "Greek",
+    "Hindi",
+    "Hungarian",
+    "Indonesian",
+    "Italian",
+    "Japanese",
+    "Korean",
+    "Macedonian",
+    "Malay",
+    "Persian",
+    "Polish",
+    "Portuguese",
+    "Romanian",
+    "Russian",
+    "Spanish",
+    "Swedish",
+    "Thai",
+    "Turkish",
+    "Vietnamese",
+]
 MOSS_NEGATIVE = "nsfw, worst quality, bad anatomy, watermark, jpeg artifact"
 IMAGE_SIZES = [
     ("768x1344", "9:16 (768x1344)"),
@@ -286,6 +320,33 @@ TOOLS: list[dict[str, Any]] = [
             ),
             field(
                 "top_k", "Top k", "number", default=30, min=5, max=200, advanced=True
+            ),
+        ],
+    },
+    {
+        "id": "voice.transcribe",
+        "group": "Voice",
+        "label": "Transcribe",
+        "description": "Speech to text with Qwen3-ASR 0.6B, the recogniser that checks the Drama 3 takes. "
+        "One line of text for about every 30 s, with its time. A few seconds for a minute of speech.",
+        "fields": [
+            field(
+                "audio",
+                "Audio or video",
+                "file",
+                accept="audio/*,video/*",
+                required=True,
+                help="Its sound track is transcribed. Music under the voice makes the text worse.",
+            ),
+            field(
+                "language",
+                "Language",
+                "select",
+                default="auto",
+                options=opts(
+                    [("auto", "Detect (per 30 s part)")]
+                    + [(n, n) for n in ASR_LANGUAGES]
+                ),
             ),
         ],
     },
@@ -783,6 +844,12 @@ def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) ->
                 and not str(params.get(f"ref{i}_text") or "").strip()
             ):
                 raise ValueError(f"Add the transcript of voice reference {i}.")
+    if (
+        tool == "voice.transcribe"
+        and files.get("audio")
+        and not has_audio(files["audio"][0])
+    ):
+        raise ValueError("The file has no sound track.")
     if tool == "video.a2v" and files.get("audio"):
         try:
             speech = media_seconds(files["audio"][0])
@@ -907,6 +974,42 @@ def plan(
         )
         return Plan(
             [[str(DRAMA_PY), str(APP / "runners" / "drama3.py"), str(spec)]], offline
+        )
+    if tool == "voice.transcribe":
+        src = files.get("audio", [None])[0]
+        if src is None:
+            raise ValueError("Add an audio or video file.")
+        speech = out / "speech.wav"
+        prep(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                str(src),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                str(speech),
+            ]
+        )
+        spec = out / "transcribe_job.json"
+        language = str(params.get("language") or "auto")
+        spec.write_text(
+            json.dumps(
+                {
+                    "audio": str(speech),
+                    "language": None if language == "auto" else language,
+                    "out": str(out),
+                }
+            )
+        )
+        return Plan(
+            [[str(DRAMA_PY), str(APP / "runners" / "transcribe.py"), str(spec)]],
+            offline,
         )
     if tool == "music.ace":
         spec = out / "music_job.json"
