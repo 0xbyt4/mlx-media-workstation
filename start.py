@@ -2,7 +2,7 @@
 """Start the workstation: the server on 127.0.0.1:7870 and a native window (pywebview, the system WebKit) showing it.
 
   .venv/bin/python start.py            # app window
-  .venv/bin/python start.py --browser  # server only; open http://127.0.0.1:7870 in a browser
+  .venv/bin/python start.py --browser  # server only; open the sign-in link it prints in a browser
   .venv/bin/python start.py --chat     # Chat, Models and Settings only (the chat profile)
 
 Without --chat, `profile` in config.toml [app] picks the profile ("full" when it is not set).
@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 import tomllib
+import urllib.parse
 import urllib.request
 from dataclasses import replace
 from pathlib import Path
@@ -138,6 +139,12 @@ def window_url(profile: str) -> str:
     return f"{URL}/?profile={profile}" + ("#/chat" if profile == "chat" else "")
 
 
+def sign_in_url(token: str, page: str = URL) -> str:
+    """The server's sign-in link (GET /auth): it sets the session cookie and goes on to the page."""
+    path = page.removeprefix(URL) or "/"
+    return f"{URL}/auth?" + urllib.parse.urlencode({"t": token, "next": path})
+
+
 def open_window(profile: str, url: str) -> None:
     import webview
 
@@ -162,9 +169,12 @@ def attach(profile: str, browser: bool) -> None:
     if running == profile:
         notify("Workstation is already open.")
         raise SystemExit(f"The Workstation is already open ({URL}).")
-    url = window_url(profile)
+    token = server_token()
+    if token is None:  # the server closed in between
+        raise SystemExit(f"Port {PORT} is in use: try again in a few seconds.")
+    url = sign_in_url(token, window_url(profile))
     if browser:
-        print(f"The Workstation runs already. Open {url}")
+        print(f"The Workstation runs already. Open {url}", flush=True)
         return
     open_window(profile, url)  # the server stays with the app that started it
 
@@ -174,7 +184,9 @@ def wait_ready(server: uvicorn.Server, timeout: float = 20) -> None:
     while time.time() < end:
         if server.started:
             try:
-                urllib.request.urlopen(f"{URL}/api/system", timeout=1)
+                urllib.request.urlopen(  # open without the session (server.open_route)
+                    f"{URL}/api/system?nonce={secrets.token_hex(16)}", timeout=1
+                )
                 return
             except OSError:
                 pass
@@ -215,12 +227,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     try:
         if args.browser:
-            print(f"Workstation at {URL}")
+            # the link holds this run's token: only this user can see it here and in outputs/.server-token
+            print(f"Workstation at {sign_in_url(srv.token or '')}", flush=True)
             server.run()
             return
         threading.Thread(target=server.run, daemon=True).start()
         wait_ready(server)
-        open_window(profile, URL)
+        open_window(profile, sign_in_url(srv.token or ""))
     finally:
         srv.shutdown()
         server.should_exit = True

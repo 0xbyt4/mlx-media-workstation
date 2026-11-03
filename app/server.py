@@ -3,7 +3,8 @@
 Listens on 127.0.0.1 only and answers only requests addressed to it (Host check) from its own page (Origin check), so
 other web pages cannot reach it through the browser, and no page may show it in a frame (frame_headers). At start it
 writes a random token to outputs/.server-token (0600); GET /api/system?nonce= proves it knows the token, so start.py
-opens a window only on this app. Jobs live in outputs/<id>/ with job.json (state and parameters),
+opens a window only on this app. Every request needs the session cookie, which GET /auth?t=<token> sets: start.py
+opens the window there. So another program or user on this Mac, which cannot read the token file, gets 401. Jobs live in outputs/<id>/ with job.json (state and parameters),
 job.log (the model's output) and the result files; the list is rebuilt from those folders at start.
 
 One model at a time: the worker starts a job's process (its own process group) under the lock, and does not take the
@@ -92,6 +93,12 @@ TOKEN_NAME = ".server-token"
 token: str | None = (
     None  # this run's secret; only start.py (the same user) can read the file that holds it
 )
+# where /auth may go: a path of this app (not //host), with no spaces, control characters or backslashes
+NEXT = re.compile(r"/(?![/\\])[^\s\\]*")
+SESSION_COOKIE = f"workstation_{PORT}"  # holds the token; HttpOnly, SameSite=Strict
+SIGN_IN = """<!doctype html><meta charset="utf-8"><title>Workstation</title>
+<p style="font: 15px -apple-system, sans-serif; margin: 3em">Open Workstation with Workstation.app or
+<code>start.py</code>. This address needs the link that start.py opens or prints.</p>"""
 
 app = FastAPI(title="Workstation", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
@@ -118,10 +125,39 @@ def frame_headers(response: Response) -> Response:
     return response
 
 
+def signed_in(request: Request) -> bool:
+    return token is not None and hmac.compare_digest(
+        request.cookies.get(SESSION_COOKIE, ""), token
+    )
+
+
+def open_route(request: Request) -> bool:
+    """The routes that work without the session: the sign-in link, and start.py's check of the server (it answers
+    only the proof and the profile without the session; see system())."""
+    path = request.url.path
+    return request.method == "GET" and (
+        path == "/auth" or (path == "/api/system" and "nonce" in request.query_params)
+    )
+
+
 @app.middleware("http")
 async def same_origin_writes(request: Request, call_next):
-    """Changes (every method but GET and HEAD) only from this app's own page, and no oversized bodies. Every
-    response, a refusal too, gets the frame headers."""
+    """Every request needs the session cookie (signed_in), except open_route. Changes (every method but GET and
+    HEAD) only from this app's own page, and no oversized bodies. Every response, a refusal too, gets the frame
+    headers."""
+    if not signed_in(request) and not open_route(request):
+        if request.url.path.startswith("/api/") or request.url.path.startswith(
+            "/files/"
+        ):
+            refusal: Response = JSONResponse(
+                {
+                    "detail": "Not signed in: open the app with Workstation.app or start.py."
+                },
+                status_code=401,
+            )
+        else:
+            refusal = Response(SIGN_IN, status_code=401, media_type="text/html")
+        return frame_headers(refusal)
     if request.method not in ("GET", "HEAD"):
         origin = request.headers.get("origin")
         if origin is not None and origin not in ORIGINS:
@@ -859,11 +895,30 @@ def remove_token() -> None:
         pass
 
 
+@app.get("/auth")
+def auth(t: str = "", next: str = "/") -> Response:
+    """The sign-in link start.py opens: with this run's token it sets the session cookie and goes to `next` (a path
+    of this app only)."""
+    if token is None or not hmac.compare_digest(t, token):
+        return Response(SIGN_IN, status_code=403, media_type="text/html")
+    if not NEXT.fullmatch(next):  # no other site, no header breaks
+        next = "/"
+        next = "/"
+    response = Response(status_code=303, headers={"Location": next})
+    response.set_cookie(
+        SESSION_COOKIE, token, httponly=True, samesite="strict", path="/"
+    )
+    return response
+
+
 @app.get("/api/system")
-def system(nonce: str | None = None) -> dict[str, Any]:
-    """The memory, the queue and the profile. With ?nonce= (start.py), also `proof`: HMAC(token, nonce)."""
+def system(request: Request, nonce: str | None = None) -> dict[str, Any]:
+    """The memory, the queue and the profile. With ?nonce= (start.py), also `proof`: HMAC(token, nonce); without
+    the session, only the proof and the profile."""
     if nonce is not None and not NONCE.fullmatch(nonce):
         raise HTTPException(400, "Bad nonce: 32 to 128 lowercase hex digits")
+    if nonce is not None and not signed_in(request):
+        return {"proof": proof(nonce), "profile": config.APP.profile}
     page = 16384
     vm = subprocess.run(["vm_stat"], capture_output=True, text=True, check=False).stdout
     pages = {

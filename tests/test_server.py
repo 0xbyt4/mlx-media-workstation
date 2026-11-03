@@ -623,3 +623,57 @@ def test_keep_awake_off(
     )
     post_job(client, "image.klein", {"prompt": "x"})
     assert mac_effects.awake.calls == [False]
+
+
+# The session: other programs and users on this Mac cannot use the API
+
+
+def test_without_the_session_everything_is_refused(client) -> None:
+    bare = TestClient(server.app, base_url=f"http://127.0.0.1:{server.PORT}")
+    assert bare.get("/api/jobs").status_code == 401
+    assert bare.get("/api/chats").status_code == 401
+    assert (
+        bare.post(
+            "/api/chats",
+            json={"mode": "general"},
+            headers={"Origin": next(iter(server.ORIGINS))},
+        ).status_code
+        == 401
+    )
+    page = bare.get("/")
+    assert page.status_code == 401 and "Workstation.app" in page.text
+    assert page.headers["X-Frame-Options"] == "DENY"
+    bare.cookies.set(server.SESSION_COOKIE, "0" * 64)  # a guess
+    assert bare.get("/api/jobs").status_code == 401
+    assert client.get("/api/jobs").status_code == 200
+
+
+def test_the_sign_in_link_sets_the_session(monkeypatch) -> None:
+    bare = TestClient(
+        server.app, base_url=f"http://127.0.0.1:{server.PORT}", follow_redirects=False
+    )
+    assert bare.get("/auth", params={"t": "0" * 64}).status_code == 403
+    r = bare.get("/auth", params={"t": server.token, "next": "/?profile=chat#/chat"})
+    assert r.status_code == 303 and r.headers["location"] == "/?profile=chat#/chat"
+    cookie = r.headers["set-cookie"].lower()
+    assert "httponly" in cookie and "samesite=strict" in cookie
+    assert bare.get("/api/jobs").status_code == 200
+    for elsewhere in (
+        "//evil.example/",
+        "https://evil.example/",
+        "/\\evil.example",
+        "/a\r\nSet-Cookie: x=1",
+    ):
+        r = bare.get("/auth", params={"t": server.token, "next": elsewhere})
+        assert r.headers["location"] == "/", elsewhere
+    monkeypatch.setattr(server, "token", None)  # before start(): no token, no session
+    assert bare.get("/auth", params={"t": ""}).status_code == 403
+    assert bare.get("/api/jobs").status_code == 401
+
+
+def test_start_py_check_answers_only_the_proof_without_the_session() -> None:
+    bare = TestClient(server.app, base_url=f"http://127.0.0.1:{server.PORT}")
+    nonce = "ab" * 16
+    data = bare.get("/api/system", params={"nonce": nonce}).json()
+    assert set(data) == {"proof", "profile"} and data["proof"] == server.proof(nonce)
+    assert bare.get("/api/system").status_code == 401

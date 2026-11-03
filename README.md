@@ -112,7 +112,7 @@ The local LLM shares the memory with the jobs:
 
    ```sh
    .venv/bin/python start.py            # opens the app window
-   .venv/bin/python start.py --browser  # server only: open http://127.0.0.1:7870 in a browser
+   .venv/bin/python start.py --browser  # server only: open the link it prints in a browser
    .venv/bin/python start.py --chat     # the chat profile: Chat, Models and Settings only
    ```
 
@@ -122,7 +122,7 @@ The app uses port 7870. If the port is in use, `start.py` asks the app on that p
 
 - If the app there shows the other profile, `start.py` opens only a window on that app, in the profile you asked
   for. It does not start a second server, so the local LLM loads only once. Closing this window does not stop the
-  app. With `--browser`, `start.py` prints the address of that window and stops.
+  app. With `--browser`, `start.py` prints the link of that window and stops.
 - In all other cases (the same profile, or a port that another program uses), `start.py` says so and stops.
 
 Closing the app's own window, or Ctrl-C in `--browser` mode, cancels the queue and stops every model process. A
@@ -351,7 +351,8 @@ The code that runs the models is MIT-licensed: mflux, mlx-audio, ACE-Step 1.5, l
 
 ## How it works
 
-- `start.py` starts the server on `127.0.0.1:7870` and opens a native window (pywebview, the system WebKit).
+- `start.py` starts the server on `127.0.0.1:7870` and opens a native window (pywebview, the system WebKit). The
+  window opens a sign-in link with this run's token, so other programs and users on the Mac cannot use the API.
 - `app/server.py`: the API (`docs/API.md`), the job queue, the output files and the memory display.
 - `app/tools.py`: the tools, their form fields and defaults, and the commands each job runs.
 - `app/models.py` and `app/models_api.py`: the model catalog (repositories, pinned revisions, sizes, peaks and

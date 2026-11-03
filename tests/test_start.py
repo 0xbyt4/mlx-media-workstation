@@ -42,6 +42,14 @@ def busy(start: Any, monkeypatch: pytest.MonkeyPatch, running: str | None) -> No
     """The port is in use, by a Workstation in this profile (None: by something that is not the Workstation)."""
     monkeypatch.setattr(start, "port_free", lambda: False)
     monkeypatch.setattr(start, "running_profile", lambda: running)
+    monkeypatch.setattr(start, "server_token", lambda: "tok")
+
+
+def signed(start: Any, page: str) -> str:
+    """The window's address: the sign-in link that goes on to the page."""
+    return "http://127.0.0.1:7870/auth?" + start.urllib.parse.urlencode(
+        {"t": "tok", "next": page.removeprefix("http://127.0.0.1:7870")}
+    )
 
 
 def test_flags(start: Any) -> None:
@@ -59,7 +67,9 @@ def test_chat_opens_a_window_on_the_running_full_app(
 ) -> None:
     busy(start, monkeypatch, "full")
     start.main(["--chat"])
-    assert calls.windows == [("chat", "http://127.0.0.1:7870/?profile=chat#/chat")]
+    assert calls.windows == [
+        ("chat", signed(start, "http://127.0.0.1:7870/?profile=chat#/chat"))
+    ]
     assert calls.notes == []
 
 
@@ -68,7 +78,9 @@ def test_full_opens_a_window_on_the_running_chat_app(
 ) -> None:
     busy(start, monkeypatch, "chat")
     start.main([])
-    assert calls.windows == [("full", "http://127.0.0.1:7870/?profile=full")]
+    assert calls.windows == [
+        ("full", signed(start, "http://127.0.0.1:7870/?profile=full"))
+    ]
 
 
 def test_the_profile_in_config_counts_without_the_flag(
@@ -79,7 +91,9 @@ def test_the_profile_in_config_counts_without_the_flag(
     )
     busy(start, monkeypatch, "full")
     start.main([])
-    assert calls.windows == [("chat", "http://127.0.0.1:7870/?profile=chat#/chat")]
+    assert calls.windows == [
+        ("chat", signed(start, "http://127.0.0.1:7870/?profile=chat#/chat"))
+    ]
 
 
 @pytest.mark.parametrize(("argv", "running"), [(["--chat"], "chat"), ([], "full")])
@@ -118,7 +132,8 @@ def test_browser_prints_the_address_of_the_window(
     busy(start, monkeypatch, "full")
     start.main(["--chat", "--browser"])
     assert calls.windows == []
-    assert "http://127.0.0.1:7870/?profile=chat#/chat" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert signed(start, "http://127.0.0.1:7870/?profile=chat#/chat") in out
 
 
 TOKEN = "ab" * 32

@@ -155,8 +155,11 @@ search fails only when every source fails.
 - The SearXNG URL is trusted. Its address is not checked, so it can be on this Mac or the local network.
 - The granted folder is not mounted in the sandbox. `run_python` cannot read the user's files. Only the file tools
   can, and only as text for the model.
-- A local program can send any `Origin` header. The same-origin check on approvals and grants stops other web pages,
-  not programs on this Mac.
+- A local program can send any `Origin` header. The same-origin check stops other web pages. Programs on this Mac
+  need the session cookie, which only the token file of this user gives (docs/API.md). A program that runs as this
+  user can read that file.
+- In `--browser` mode the browser sends the session cookie to every server on 127.0.0.1, at any port, that its pages
+  open. Use the app window when other local servers run.
 
 ## How the chat loop uses the package
 

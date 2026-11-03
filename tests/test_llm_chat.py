@@ -11,9 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 import uvicorn
-from fastapi.testclient import TestClient
 
 from app import assist, chat, config, llm, models, server, tools
+from tests.conftest import app_client
 
 FAKE = Path(__file__).with_name("fake_llm_worker.py")
 PNG = (
@@ -46,7 +46,7 @@ def fake_llm(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client():
-    return TestClient(server.app, base_url="http://127.0.0.1:7870")
+    return app_client()
 
 
 def user(text):
@@ -427,7 +427,8 @@ def test_assist_is_cancelled_when_the_client_goes_away(draft):
         sock = socket.create_connection(("127.0.0.1", port))
         sock.sendall(
             b"POST /api/assist/enhance HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-            b"Content-Type: multipart/form-data; boundary=b\r\n"
+            + f"Cookie: {server.SESSION_COOKIE}={server.token}\r\n".encode()
+            + b"Content-Type: multipart/form-data; boundary=b\r\n"
             + f"Content-Length: {len(body)}\r\n\r\n".encode()
             + body
         )

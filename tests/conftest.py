@@ -18,6 +18,21 @@ from app import config, llm, macos, server, tools
 MODELS = Path("/models")
 
 
+TOKEN = "cd" * 32  # the tests' run token (server.publish_token makes a random one)
+
+
+@pytest.fixture(autouse=True)
+def session_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "token", TOKEN)
+
+
+def app_client(base_url: str = f"http://127.0.0.1:{server.PORT}") -> TestClient:
+    """A client of the app with the session cookie, as the window has it after /auth."""
+    return TestClient(
+        server.app, base_url=base_url, cookies={server.SESSION_COOKIE: TOKEN}
+    )
+
+
 @pytest.fixture(autouse=True)
 def model_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fixed model paths, so the command lines do not depend on this Mac's config.toml."""
@@ -140,7 +155,7 @@ def client(state: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     monkeypatch.setattr(server, "run_job", no_run)
     monkeypatch.setattr(tools, "REQUIRES", {})
-    return TestClient(server.app, base_url=f"http://127.0.0.1:{server.PORT}")
+    return app_client()
 
 
 @pytest.fixture

@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app import progress, server
+from tests.conftest import app_client
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -362,7 +362,7 @@ def test_view_and_api_expose_progress(
     assert v["progress"]["stage"] == "Stage 1: 3/8"
     assert server.view(done)["progress"] is None
 
-    client = TestClient(server.app, base_url="http://127.0.0.1:7870")
+    client = app_client()
     body = client.get("/api/jobs").json()
     by_id = {j["id"]: j for j in body}
     assert by_id["run"]["progress"]["fraction"] == pytest.approx(0.161, abs=0.001)

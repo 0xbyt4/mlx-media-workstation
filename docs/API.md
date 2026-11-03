@@ -4,6 +4,13 @@ The server (`app/server.py`, FastAPI) listens on `http://127.0.0.1:7870` only. T
 (`index.html`, `css/`, `js/`; see `web/README.md`), served at `/`. Plain HTML, CSS and JavaScript: no framework, no build step,
 no CDN or other network request. All JSON is UTF-8.
 
+Every request needs the session cookie (`workstation_7870`, HttpOnly, SameSite=Strict). Without it the server
+answers HTTP 401: a JSON `detail` for `/api/` and `/files/`, a short HTML page for the rest. `GET /auth?t=<token>&next=<path>`
+sets the cookie when `t` is this run's token (see `GET /api/system?nonce=` below) and answers 303 to `next`, a path of
+this app (`/` for anything else). A wrong token is HTTP 403. `start.py` opens the window on this link and prints it in
+`--browser` mode. So another program or another user on this Mac, which cannot read `outputs/.server-token`, cannot use
+the API. Only `/auth` and `/api/system?nonce=` work without the cookie.
+
 Every response has `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`, so no other page
 can show the app in a frame. A response with its own policy (the workspace files) gets `frame-ancestors 'none'`
 added to it.
@@ -155,7 +162,7 @@ this endpoint when the port is in use, to find out whether the Workstation runs 
 server's token as the key. At start the server writes a new random token to `outputs/.server-token` (mode 0600,
 an atomic write) and removes it at a clean shutdown. `start.py` reads the file, sends a random nonce and opens a
 window only when the proof matches, so another program on the port cannot get a window. The token itself is never
-sent. A bad nonce is HTTP 400.
+sent. Without the session cookie the answer has only `proof` and `profile`. A bad nonce is HTTP 400.
 
 ## Models
 
@@ -466,8 +473,9 @@ The chat's agent state is in `chat.json` under `agent`:
 - `tainted` is `true` after a tool returned untrusted text (a page, a file, program output). From then on every
   network or job call asks again.
 
-Endpoints. The writes need an `Origin` header of the app's own page (HTTP 403 without it), so a script on this Mac
-cannot approve calls or grant folders through plain `curl`.
+Endpoints. Like every endpoint they need the session cookie, so a program on this Mac that cannot read the token
+file cannot approve calls or grant folders. The writes also need an `Origin` header of the app's own page (HTTP 403
+with another one).
 
 - `GET /api/chats/{id}/agent` returns the state for the Tools menu: `folder`, `grants`, `tainted`, `enabled` (the
   names), `limits` (`steps`, `seconds`, `approval_s`) and `tools`, a list of `{name, label, description, risk,

@@ -12,12 +12,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app import chat, llm, models, server, tools
 from app.agent import Limits, RunResult, Settings, build_registry
 from app.agent.net import HttpRequest, HttpResponse
 from app.agent.web_tools import Net
+from tests.conftest import app_client
 from tests.fake_workstation import FakeWorkstation
 
 REAL_REGISTRY = chat.registry  # the tests below replace it with fakes
@@ -126,7 +126,7 @@ def reg(monkeypatch, ws, box, net):
 
 @pytest.fixture
 def client():
-    return TestClient(server.app, base_url=f"http://127.0.0.1:{server.PORT}")
+    return app_client()
 
 
 def events(response) -> list[dict[str, Any]]:

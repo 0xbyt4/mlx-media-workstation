@@ -15,11 +15,11 @@ from pathlib import Path
 
 import httpx2
 import pytest
-from fastapi.testclient import TestClient
 from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
 from huggingface_hub.hf_api import RepoFile
 
-from app import config, models, server, tools
+from app import config, models, tools
+from tests.conftest import app_client
 
 ROOT = Path(__file__).resolve().parents[1]
 QWEN = models.BY_ID["qwen3.8-27b-4bit"]
@@ -670,7 +670,7 @@ def test_fetch_into_the_cache_writes_the_main_ref(paths, monkeypatch):
 
 @pytest.fixture
 def client():
-    return TestClient(server.app, base_url="http://127.0.0.1:7870")
+    return app_client()
 
 
 def test_get_models(client, paths, monkeypatch):
