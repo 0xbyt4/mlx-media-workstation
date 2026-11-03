@@ -9,8 +9,10 @@ without changing the tools. Seatbelt profile (deny by default), built in profile
   /dev/random and /dev/urandom, the interpreter's own folders, and the extra read-only paths a caller passes.
 - read and write: the work dir only (and writing to /dev/null).
 - file metadata (stat) anywhere. Directory listings and file contents elsewhere are refused.
-- sysctl reads of the hardware facts (hw.*) and the OS name and version only: not the process table or other
-  processes' arguments (kern.proc*).
+- sysctl reads of the hardware facts (hw.*) and the OS name and version only: not the process table (kern.proc*).
+- process information about itself only: "(deny default)" does not cover the process-info* operations, so the
+  profile denies them and allows them for the process itself. Other processes' arguments and environment
+  (KERN_PROCARGS2), their paths (proc_pidpath) and the process list (proc_listpids) are refused.
 - the work dir node itself is not writable, so the code cannot remove it and put a symlink in its place. The host
   also refuses a work dir that is a symlink.
 - no network rule, so every socket (TCP, UDP, Unix) and DNS lookup is refused; no mach-lookup, so no system service
@@ -236,9 +238,41 @@ def default_interpreter() -> Interpreter:
     return Interpreter([exe, "-I", "-S"], _execs(exe, base), [base])
 
 
+def unsafe_interpreter(python: Path) -> str | None:
+    """Why the app must not run this interpreter, or None. configured_interpreter() runs it once outside the sandbox
+    (as the user), and the sandbox may exec it, so no other user may be able to change it: the file and every folder
+    above it, up to "/", must belong to the user or root and must not be writable by the group or by others (whoever
+    can write to a folder can rename what is in it, also a folder only the user can open). The path is checked as
+    written (the file a symlink names, not the folders of its target)."""
+    uid = os.getuid()
+    path = Path(os.path.abspath(python))
+
+    def problem(p: Path, st: os.stat_result) -> str | None:
+        if st.st_uid not in (uid, 0):
+            return f"{p} belongs to another user."
+        if st.st_mode & 0o022:
+            return (
+                f"{p} can be changed by other users (it is group- or world-writable)."
+            )
+        return None
+
+    try:
+        if error := problem(path, os.stat(path)):
+            return error
+        for folder in path.parents:
+            if error := problem(folder, os.stat(folder)):
+                return error
+    except OSError as e:
+        return f"Cannot check {path}: {e.strerror}."
+    return None
+
+
 def configured_interpreter(python: Path) -> Interpreter:
     """A dedicated interpreter (usually a venv made for the sandbox), run with -I so its own site-packages work but
-    no user site folder or PYTHON* variable does. Asks the interpreter once for its folders."""
+    no user site folder or PYTHON* variable does. Asks the interpreter once for its folders (outside the sandbox, so
+    only after unsafe_interpreter() found nothing)."""
+    if error := unsafe_interpreter(python):
+        raise ValueError(f"The sandbox interpreter is refused: {error}")
     probe = (
         "import json, os, sys; print(json.dumps([sys.prefix, sys.base_prefix, "
         "os.path.realpath(getattr(sys, '_base_executable', sys.executable))]))"
@@ -286,6 +320,8 @@ def profile(interp: Interpreter, workdir: str, read_only: Sequence[str]) -> str:
     )
     return f"""(version 1)
 (deny default)
+(deny process-info*)
+(allow process-info* (target self))
 (allow process-exec {execs})
 (allow sysctl-read {sysctls})
 (allow file-read-metadata)
@@ -308,6 +344,8 @@ class SeatbeltSandbox:
             return "sandbox-exec is not on this system (macOS only)."
         if self.python is not None and not self.python.exists():
             return f"The sandbox interpreter {self.python} does not exist ([agent] python in config.toml)."
+        if self.python is not None and (error := unsafe_interpreter(self.python)):
+            return f"The sandbox interpreter is refused ([agent] python in config.toml): {error}"
         return None
 
     def interpreter(self) -> Interpreter:

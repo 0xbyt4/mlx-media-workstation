@@ -475,6 +475,10 @@ function renderAgent() {
     el.mark.className = 'set-mark';
     el.mark.title = '';
     parts.push('Default: ', h('span', {class: 'mono'}, a.default_python + ' -I -S'), ', the standard library only.');
+  } else if (a.python_found && a.python_problem) {
+    setMark(el, 'x', 'is-miss', 'Refused');
+    parts.push(h('span', {class: 'set-missing'}, 'Refused: '), a.python_problem,
+      ' The agent has no Python tool until you fix it or press Use default.');
   } else if (a.python_found) {
     setMark(el, 'check', 'is-ok', 'Found');
     parts.push(h('span', {class: 'set-found'}, 'Found: '), h('span', {class: 'mono'}, a.python_path));

@@ -72,20 +72,30 @@ def inside(path: str, root: str) -> bool:
 
 
 def _root(ctx: Context) -> str:
+    """The granted folder, opened without following a link at its last part, and only while the open folder is still
+    the one granted: its F_GETPATH must equal the stored path (the server stores the disk's spelling, chat.disk_path).
+    A folder swapped for a link, or moved, is refused until the user grants it again."""
     if ctx.folder is None:
         raise ToolError("No folder is granted to this chat.")
     try:
-        fd = os.open(ctx.folder, os.O_RDONLY | os.O_DIRECTORY)
+        fd = os.open(ctx.folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError:
-        raise ToolError("The granted folder is missing.") from None
+        raise ToolError(
+            "The granted folder is missing or is now a link. Grant it again in the Tools menu."
+        ) from None
     try:
-        # the path as the disk spells it, so it compares with F_GETPATH of the files below it
-        return os.path.realpath(_fd_path(fd))
+        real = fd_path(fd)
     finally:
         os.close(fd)
+    if real != str(ctx.folder):
+        raise ToolError(
+            "The granted folder has moved or changed. Grant it again in the Tools menu."
+        )
+    return real
 
 
-def _fd_path(fd: int) -> str:
+def fd_path(fd: int) -> str:
+    """The path of an open file or folder as the disk spells it (F_GETPATH)."""
     return os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).split(b"\0", 1)[0])
 
 
@@ -132,7 +142,7 @@ def read_text(path: str, root: str, limit: int | None = None) -> tuple[str, int,
     except OSError as e:
         raise ToolError(f"{_rel(path, root)}: cannot open ({e.strerror}).") from None
     try:
-        real = os.path.realpath(_fd_path(fd))
+        real = os.path.realpath(fd_path(fd))
         if not inside(real, root):
             raise ToolError(f"{_rel(path, root)}: outside the granted folder.")
         if real != root and any(

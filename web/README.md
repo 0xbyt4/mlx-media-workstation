@@ -91,8 +91,8 @@ address overrides it for that window (`start.py` opens such a window next to a r
   server it starts with `full`.
 - `router.views()` lists the sections of the profile, and the shortcuts follow that list. `router.setProfile(p)`
   switches; when the open section is not in the new profile, the router opens the profile's home.
-- A view that shows media tools or jobs checks `store.profile()` and listens to the `profile` event. Models and
-  Settings do. In the chat profile, nothing may link to Create, Jobs or Library.
+- A view that shows media tools or jobs checks `store.profile()` and listens to the `profile` event. Chat, Models
+  and Settings do. In the chat profile, nothing may link to Create, Jobs or Library.
 
 ## Handoff
 

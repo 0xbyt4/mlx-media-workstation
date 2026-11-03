@@ -6,7 +6,8 @@ The app reads [paths] and [assist] once, at start (app/config.py), and [agent] o
 unload, profile) apply at once: a write replaces config.APP and calls on_change. A write
 changes only the lines of the keys it sets: comments, blank lines, other keys and other sections stay as they are.
 The new text is parsed again before it replaces the file, and the replace is atomic (a temp file, then os.replace).
-Nothing here holds a secret. Writes pass the server's same-origin check.
+Nothing here holds a secret. A write needs the Origin header of the app's own page (chat.same_origin), not only the
+server's check, which lets a write without an Origin through.
 """
 
 import functools
@@ -22,10 +23,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from app import assist, config, llm, models, tools
+from app import assist, chat, config, llm, models, tools
 from app.agent import sandbox
 from app.agent import settings as agent_settings
 
@@ -211,14 +212,15 @@ def agent_snapshot(data: dict[str, Any]) -> dict[str, Any]:
         for k, default in agent_settings.DEFAULTS.items()
     }
     python = agent_settings.interpreter(str(values["python"]))
+    found = bool(python and python.is_file() and os.access(python, os.X_OK))
     pending = AGENT is not None and agent_settings.from_values(values) != AGENT
     return {
         **values,
         "defaults": agent_settings.DEFAULTS,
         "python_path": str(python) if python else None,
-        "python_found": bool(
-            python and python.is_file() and os.access(python, os.X_OK)
-        ),
+        "python_found": found,
+        # why the sandbox refuses a python that is there (other users can change it); None when it does not
+        "python_problem": sandbox.unsafe_interpreter(python) if found else None,
         "default_python": sandbox.default_interpreter().argv[0],
         "languages": list(agent_settings.LANGUAGES),
         "restart_required": pending,
@@ -444,6 +446,9 @@ def get_settings() -> dict[str, Any]:
 
 
 @router.put("")
-def put_settings(change: Change) -> dict[str, Any]:
+def put_settings(change: Change, request: Request) -> dict[str, Any]:
+    """Needs the Origin of the app's own page, like approvals and folder grants: [agent] python names a program the
+    app runs outside the sandbox, and [paths] name the programs of every job."""
+    chat.same_origin(request)
     changed = update(change)
     return {**snapshot(), "changed": changed}

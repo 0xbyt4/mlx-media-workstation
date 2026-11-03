@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from app import config
+from app.agent import sandbox
 
 DEFAULTS: dict[str, str | bool] = {
     "python": "",
@@ -81,7 +82,8 @@ def interpreter(value: str) -> Path | None:
 
 def clean(key: str, value: object) -> str | bool:
     """A value from the Settings screen, ready to write; raises ValueError with the message for the field. Stricter
-    than check: the python must be an absolute path to an executable file that is there now."""
+    than check: the python must be an absolute path to an executable file that is there now, and no other user may
+    be able to change it (sandbox.unsafe_interpreter: the app runs it outside the sandbox once)."""
     if key not in DEFAULTS:
         raise ValueError("Unknown setting.")
     if isinstance(value, str):
@@ -100,6 +102,8 @@ def clean(key: str, value: object) -> str | bool:
             raise ValueError("Use an absolute path, for example ~/env/bin/python.")
         if not path.is_file() or not os.access(path, os.X_OK):
             raise ValueError(f"No executable file at {path}.")
+        if error := sandbox.unsafe_interpreter(path):
+            raise ValueError(error)
     return value if isinstance(value, bool) else str(value)
 
 

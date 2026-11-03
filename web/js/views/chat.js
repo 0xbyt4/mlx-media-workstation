@@ -78,6 +78,12 @@ function showCards() {
   return chatMode() === 'workstation' && s.ctx.store.profile() !== 'chat';
 }
 
+// Links in agent chats name their host: a page the agent read can make it write a link that carries private text off
+// this Mac in one click.
+function showHosts() {
+  return chatMode() === 'agent';
+}
+
 // Kept across mounts for this session: the open chat, the composer draft, the chosen images, the Thinking switch and
 // the mode for the next new chat.
 const memo = {activeId: null, draft: '', attach: [], thinking: false, mode: null};
@@ -104,6 +110,7 @@ function mount(root, ctx, params) {
     store.on('tools', () => {
       if (s.chat && !s.loading) renderThread(false);
     }),
+    store.on('profile', onProfile),
     store.on('offline', (off) => {
       if (!off && memo.activeId && !s.live) reloadChat(memo.activeId);
     }),
@@ -151,6 +158,15 @@ function onModelState() {
     if (!s.loading) renderThread(false);
   }
   if (s.live) paintLive(s.live);
+}
+
+// The profile changed (web/README.md): the modes on offer, the "Use in" cards and the examples follow it.
+function onProfile() {
+  closeMenu();
+  s.els.newMode.hidden = offered().length < 2;
+  renderHead();
+  renderComposer();
+  if (!s.loading) renderThread(false);
 }
 
 // ---------- layout ----------
@@ -513,6 +529,7 @@ async function pickMode(mode) {
   if (s.chat) {
     const id = s.chat.id;
     s.modeBusy = true;
+    renderComposer();
     try {
       const c = await me.api.setChatMode(id, mode);
       if (s !== me || !s.chat || s.chat.id !== id) return;
@@ -525,6 +542,7 @@ async function pickMode(mode) {
       reloadChat(id);
     } finally {
       me.modeBusy = false;
+      if (s === me) renderComposer(); // also when another chat opened meanwhile: Send is free again
     }
   }
   renderHead();
@@ -603,7 +621,7 @@ async function reloadChat(id, resumeOk = true) {
 
 async function send() {
   const els = s.els;
-  if (s.live || s.sending || s.loading || modelFacts().blocked) return;
+  if (s.live || s.sending || s.loading || s.modeBusy || modelFacts().blocked) return;
   const text = els.input.value.trim();
   const files = memo.attach.slice();
   if (!text && !files.length) {
@@ -679,7 +697,8 @@ async function regenerate() {
   const me = s;
   const id = s.chat.id;
   const msgs = s.chat.messages;
-  while (msgs.length && msgs[msgs.length - 1].role === 'assistant') msgs.pop();
+  // the answer: its assistant messages and an agent's tool messages, as the server drops them
+  while (msgs.length && ['assistant', 'tool'].includes(msgs[msgs.length - 1].role)) msgs.pop();
   showNote('');
   s.els.input.focus();
   const fd = new FormData();
@@ -833,7 +852,7 @@ function paintLive(live) {
     live.thinkBody.classList.toggle('caret', thinking);
     if (!live.thinkTouched) live.think.open = thinking;
   }
-  live.bubble.replaceChildren(renderMarkdown(m.content, true, showCards()));
+  live.bubble.replaceChildren(renderMarkdown(m.content, true, showCards(), showHosts()));
   live.bubble.hidden = !m.content;
   if (m.content && !m.finish) addCaret(live.bubble);
   live.state.replaceChildren(...liveStatus(live));
@@ -955,7 +974,7 @@ function paintAgent(live) {
         seg.thinkBody.classList.toggle('caret', thinking);
         if (!seg.touched) seg.think.open = thinking;
       }
-      seg.bubble.replaceChildren(renderMarkdown(t.content, active, showCards()));
+      seg.bubble.replaceChildren(renderMarkdown(t.content, active, showCards(), showHosts()));
       seg.bubble.hidden = !t.content;
       if (t.content && active) addCaret(seg.bubble);
       seg.node.hidden = !t.content && !t.reasoning;
@@ -998,9 +1017,20 @@ function toolSegNode(seg, live) {
   }, seg);
 }
 
+// Characters that hide or reorder text (app/agent/registry.py HIDDEN): C0 and C1 controls, zero-width characters and
+// marks, bidi embeddings, overrides and isolates, and the byte order mark. The arguments show them as \uXXXX, so the
+// user approves what the call really sends. keepLines leaves line breaks and tabs (of code and of the JSON layout;
+// JSON.stringify writes those inside strings as \n and \t).
+const HIDDEN = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}]/gu;
+
+function visible(text, keepLines) {
+  return String(text).replace(HIDDEN, (c) => (keepLines && (c === '\n' || c === '\t') ? c
+    : '\\u' + c.codePointAt(0).toString(16).padStart(4, '0')));
+}
+
 function argsLine(args) {
   const parts = Object.entries(args || {}).map(([k, v]) => k + ': ' + (typeof v === 'string' ? v : JSON.stringify(v)));
-  const text = parts.join(', ').replace(/\s+/g, ' ');
+  const text = visible(parts.join(', ').replace(/[ \n\r\t]+/g, ' '));
   return text.length > 140 ? text.slice(0, 139) + '…' : text;
 }
 
@@ -1010,7 +1040,7 @@ function argsBlock(t) {
   if (!Object.keys(args).length) return null;
   const code = t.name === 'run_python' && typeof args.code === 'string';
   return h('div', {class: 'tool-sec'}, h('span', {class: 'eyebrow'}, code ? 'Code' : 'Arguments'),
-    h('pre', {class: 'tool-pre', tabindex: '0'}, h('code', null, code ? args.code : JSON.stringify(args, null, 2))));
+    h('pre', {class: 'tool-pre', tabindex: '0'}, h('code', null, visible(code ? args.code : JSON.stringify(args, null, 2), true))));
 }
 
 function filesBlock(t) {
@@ -1030,7 +1060,7 @@ function filesBlock(t) {
 // wrote show under the card. seg (live) keeps the open state across repaints.
 function toolBlock(t, seg) {
   const st = t.status ? STATUS[t.status] || ['idle', t.status] : ['run', 'Running'];
-  const sum = t.describe || argsLine(t.arguments);
+  const sum = t.describe ? visible(t.describe) : argsLine(t.arguments);
   const risk = t.risk === null || t.risk === undefined ? null : RISK[t.risk];
   const body = h('div', {class: 'tool-body'},
     t.approval && DECISION[t.approval] ? h('p', {class: 'tool-note'}, icon('lock', 'ic-sm'), DECISION[t.approval]) : null,
@@ -1098,7 +1128,8 @@ function approvalCard(seg, live) {
   },
   h('div', {class: 'approval-head'}, icon('lock'), h('b', {id: id + '-t'}, 'Allow ' + label + '?'),
     h('span', {class: 'pill pill-' + risk.pill}, risk.label)),
-  h('p', {class: 'approval-what', id: id + '-d'}, ap.describe || argsLine(ap.arguments)),
+  h('p', {class: 'approval-what', id: id + '-d'}, ap.describe ? visible(ap.describe) : argsLine(ap.arguments)),
+  ap.host ? h('p', {class: 'approval-host'}, 'Host: ', h('code', null, ap.host)) : null,
   ap.reason ? h('p', {class: 'approval-why'}, ap.reason) : null,
   argsBlock(ap),
   h('div', {class: 'approval-actions'}, buttons),
@@ -1115,7 +1146,7 @@ function agentTurn(run, isLast) {
   const body = [];
   for (const m of steps) {
     if (m.reasoning) body.push(thinkBlock(m.reasoning));
-    if (m.content) body.push(h('div', {class: 'bubble md'}, renderMarkdown(m.content, false, showCards())));
+    if (m.content) body.push(h('div', {class: 'bubble md'}, renderMarkdown(m.content, false, showCards(), showHosts())));
     for (const c of m.tool_calls || []) {
       const r = results.get(c.id) || {};
       body.push(toolBlock({
@@ -1352,7 +1383,7 @@ function aiMessage(m, isLast) {
   return h('article', {class: 'msg msg-ai', 'aria-label': 'Answer from ' + modelName()},
     h('span', {class: 'who', title: fmtTime(m.time)}, modelName()),
     m.reasoning ? thinkBlock(m.reasoning) : null,
-    m.content ? h('div', {class: 'bubble md'}, renderMarkdown(m.content, false, showCards())) : null,
+    m.content ? h('div', {class: 'bubble md'}, renderMarkdown(m.content, false, showCards(), showHosts())) : null,
     finishNote(m),
     msgTools(m, isLast));
 }
@@ -1432,7 +1463,7 @@ function renderComposer() {
   } else {
     els.send.className = 'btn btn-primary btn-sm';
     els.send.removeAttribute('aria-disabled');
-    els.send.disabled = f.blocked || s.sending;
+    els.send.disabled = f.blocked || s.sending || !!s.modeBusy; // a mode change waits for the server
     els.send.replaceChildren(icon('send', 'ic-sm'), 'Send');
   }
   els.unload.disabled = !!live;
@@ -1597,9 +1628,9 @@ const INLINE = new RegExp([
   '\\\\([!-\\/:-@\\[-`{-~])', // 11: escaped punctuation
 ].join('|'), 'gu');
 
-export function renderMarkdown(src, streaming, cards = true) {
+export function renderMarkdown(src, streaming, cards = true, hosts = false) {
   const out = document.createDocumentFragment();
-  renderBlocks(String(src || '').replace(/\r\n?/g, '\n').replace(/\t/g, '    ').split('\n'), out, {streaming, cards});
+  renderBlocks(String(src || '').replace(/\r\n?/g, '\n').replace(/\t/g, '    ').split('\n'), out, {streaming, cards, hosts});
   return out;
 }
 
@@ -1612,7 +1643,7 @@ function startsBlock(lines, i) {
   return RE.fence.test(l) || RE.heading.test(l) || RE.hr.test(l) || RE.quote.test(l) || RE.item.test(l) || isTableStart(lines, i);
 }
 
-// o: {streaming, cards}
+// o: {streaming, cards, hosts}
 function renderBlocks(lines, out, o) {
   let i = 0;
   while (i < lines.length) {
@@ -1645,7 +1676,7 @@ function renderBlocks(lines, out, o) {
       continue;
     }
     if ((m = RE.heading.exec(line))) {
-      out.append(inline(h('h' + Math.min(6, m[1].length + 2), {class: 'md-h' + m[1].length}), m[2] || ''));
+      out.append(inline(h('h' + Math.min(6, m[1].length + 2), {class: 'md-h' + m[1].length}), m[2] || '', o));
       i++;
       continue;
     }
@@ -1665,14 +1696,14 @@ function renderBlocks(lines, out, o) {
       continue;
     }
     if (isTableStart(lines, i)) {
-      i = renderTable(lines, i, out);
+      i = renderTable(lines, i, out, o);
       continue;
     }
     const p = h('p');
-    inline(p, line.trim());
+    inline(p, line.trim(), o);
     for (i++; i < lines.length && lines[i].trim() && !startsBlock(lines, i); i++) {
       p.append(h('br'));
-      inline(p, lines[i].trim());
+      inline(p, lines[i].trim(), o);
     }
     out.append(p);
   }
@@ -1721,7 +1752,7 @@ function renderMdList(lines, start, out, o) {
   return i;
 }
 
-function renderTable(lines, i, out) {
+function renderTable(lines, i, out, o) {
   const cells = (line) => {
     let t = line.trim();
     if (t.startsWith('|')) t = t.slice(1);
@@ -1730,7 +1761,7 @@ function renderTable(lines, i, out) {
   };
   const head = cells(lines[i]);
   const align = cells(lines[i + 1]).map((c) => (c.endsWith(':') ? (c.startsWith(':') ? 'center' : 'right') : null));
-  const cell = (tag, text, k) => inline(h(tag, align[k] ? {style: {textAlign: align[k]}} : null), text);
+  const cell = (tag, text, k) => inline(h(tag, align[k] ? {style: {textAlign: align[k]}} : null), text, o);
   const thead = h('thead', null, h('tr', null, head.map((c, k) => cell('th', c, k))));
   const tbody = h('tbody');
   for (i += 2; i < lines.length && lines[i].trim() && lines[i].includes('|'); i++) {
@@ -1741,33 +1772,55 @@ function renderTable(lines, i, out) {
   return i;
 }
 
-function inline(parent, text) {
+function inline(parent, text, o) {
   let pos = 0;
   for (const m of text.matchAll(INLINE)) {
     if (m.index > pos) parent.append(text.slice(pos, m.index));
     pos = m.index + m[0].length;
     if (m[1] !== undefined) parent.append(h('code', null, m[2].replace(/^ (.*[^ ].*) $/, '$1')));
-    else if (m[3] !== undefined || m[4] !== undefined) parent.append(inline(h('strong'), m[3] ?? m[4]));
-    else if (m[5] !== undefined || m[6] !== undefined) parent.append(inline(h('em'), m[5] ?? m[6]));
-    else if (m[7] !== undefined) parent.append(inline(h('del'), m[7]));
-    else if (m[8] !== undefined) link(parent, m[8], m[9]);
-    else if (m[10] !== undefined) link(parent, null, m[10]);
+    else if (m[3] !== undefined || m[4] !== undefined) parent.append(inline(h('strong'), m[3] ?? m[4], o));
+    else if (m[5] !== undefined || m[6] !== undefined) parent.append(inline(h('em'), m[5] ?? m[6], o));
+    else if (m[7] !== undefined) parent.append(inline(h('del'), m[7], o));
+    else if (m[8] !== undefined) link(parent, m[8], m[9], o);
+    else if (m[10] !== undefined) link(parent, null, m[10], o);
     else parent.append(m[11]);
   }
   if (pos < text.length) parent.append(text.slice(pos));
   return parent;
 }
 
-function link(parent, label, url) {
-  if (/^https?:\/\//i.test(url)) {
+const LINK_TEXT = 80; // characters of a bare URL shown in an agent chat; the title has all of it
+
+// The host a link opens, as the browser sends it (IDNA, so a look-alike letter shows as xn--); null when the URL does
+// not parse.
+function linkHost(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+}
+
+// o.hosts (agent chats): "label (host)", and a long bare URL is shortened with all of it in the title. A URL whose
+// host does not parse stays text there.
+function link(parent, label, url, o) {
+  const web = /^https?:\/\//i.test(url);
+  const host = web && o && o.hosts ? linkHost(url) : '';
+  if (web && host !== null) {
     const a = h('a', {href: url, target: '_blank', rel: 'noopener noreferrer', title: url});
-    if (label === null) a.append(url);
-    else inline(a, label);
+    const shown = label === null && host && url.length > LINK_TEXT ? url.slice(0, LINK_TEXT - 1) + '…' : url;
+    // in agent chats the label is isolated, so a bidi control in it cannot reorder the host after it
+    if (label === null) a.append(shown);
+    else if (host) a.append(inline(h('bdi'), label, o));
+    else inline(a, label, o);
+    // a bare URL names its host already, unless it hides it (user info, a non-ASCII name, a cut before its end)
+    const named = label === null && shown.toLowerCase().startsWith(url.split(':')[0].toLowerCase() + '://' + host);
+    if (host && !named) a.append(' ', h('bdi', {class: 'link-host', dir: 'ltr'}, '(' + host + ')'));
     parent.append(a);
   } else if (label === null) {
     parent.append(url);
   } else {
-    inline(parent, label);
+    inline(parent, label, o);
     parent.append(' (' + url + ')');
   }
 }

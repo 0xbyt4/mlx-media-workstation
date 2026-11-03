@@ -147,6 +147,16 @@ def _charset(content_type: str, body: bytes) -> str:
     return codec if codec.startswith(TEXT_CODECS) else "utf-8"
 
 
+def url_host(url: object) -> str | None:
+    """The host fetch_url would contact for this URL, as the network sees it (IDNA: "xn--..." for a non-ASCII name,
+    so a look-alike letter shows), or None when the URL has no valid http(s) host."""
+    try:
+        parts = urlsplit(str(url))
+        return _host(parts) if parts.scheme in ("http", "https") else None
+    except (ToolError, ValueError):
+        return None
+
+
 def fetch(
     url: str,
     net: Net,
@@ -458,5 +468,6 @@ def build(settings: Settings, net: Net) -> list[Tool]:
             explain=lambda a: (
                 f"Downloads {a.get('url', '')} (the site sees this Mac's IP address)."
             ),
+            host=lambda a: url_host(a.get("url", "")),
         ),
     ]

@@ -1,11 +1,16 @@
 """start.py without a window or a server: the flags, the profile of the run, and what it does when the port is in
 use (a window on the running server in the other profile, never a second server)."""
 
+import hmac
 import io
+import json
 import os
+import re
 import urllib.error
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -116,11 +121,39 @@ def test_browser_prints_the_address_of_the_window(
     assert "http://127.0.0.1:7870/?profile=chat#/chat" in capsys.readouterr().out
 
 
+TOKEN = "ab" * 32
+
+
+@pytest.fixture
+def token_file(start: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The running server's token file, as server.publish_token writes it."""
+    path = tmp_path / ".server-token"
+    path.write_text(TOKEN)
+    path.chmod(0o600)
+    monkeypatch.setattr(start, "TOKEN_FILE", path)
+    return path
+
+
+def answer(body: dict[str, Any], key: str = TOKEN) -> Any:
+    """A /api/system answer with the proof for the nonce in the URL, made with this key."""
+
+    def make(url: str) -> bytes:
+        nonce = parse_qs(urlsplit(url).query)["nonce"][0]
+        proof = hmac.new(key.encode(), nonce.encode(), "sha256").hexdigest()
+        return json.dumps({**body, "proof": proof}).encode()
+
+    return make
+
+
 @pytest.mark.parametrize(
     ("body", "profile"),
     [
-        (b'{"mem_total_gb": 48.0, "running": null, "profile": "chat"}', "chat"),
-        (b'{"mem_total_gb": 48.0, "running": null}', "full"),  # before profiles
+        (answer({"mem_total_gb": 48.0, "running": None, "profile": "chat"}), "chat"),
+        (answer({"mem_total_gb": 48.0, "profile": "full"}), "full"),
+        # the server cannot prove the token: another program, or a server from before the token
+        (answer({"mem_total_gb": 48.0, "profile": "chat"}, key="cd" * 32), None),
+        (b'{"mem_total_gb": 48.0, "running": null, "profile": "chat"}', None),
+        (b'{"mem_total_gb": 48.0, "profile": "chat", "proof": null}', None),
         (b'{"detail": "Not Found"}', None),
         (b"[1, 2]", None),
         (b"<html>other app</html>", None),
@@ -130,18 +163,102 @@ def test_browser_prints_the_address_of_the_window(
 )
 def test_running_profile(
     start: Any,
+    token_file: Path,
     monkeypatch: pytest.MonkeyPatch,
-    body: bytes | Exception,
+    body: Any,
     profile: str | None,
 ) -> None:
     def urlopen(url: str, timeout: float) -> io.BytesIO:
-        assert url == "http://127.0.0.1:7870/api/system"
+        assert re.fullmatch(
+            r"http://127\.0\.0\.1:7870/api/system\?nonce=[0-9a-f]{32}", url
+        )
         if isinstance(body, Exception):
             raise body
-        return io.BytesIO(body)
+        return io.BytesIO(body(url) if callable(body) else body)
 
     monkeypatch.setattr(start.urllib.request, "urlopen", urlopen)
     assert start.running_profile() == profile
+
+
+def test_a_new_nonce_each_time(
+    start: Any, token_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    urls: list[str] = []
+    make = answer({"profile": "chat"})
+
+    def urlopen(url: str, timeout: float) -> io.BytesIO:
+        urls.append(url)
+        return io.BytesIO(make(url))
+
+    monkeypatch.setattr(start.urllib.request, "urlopen", urlopen)
+    assert start.running_profile() == start.running_profile() == "chat"
+    # a new nonce each time, and the token itself is never sent
+    assert len(set(urls)) == 2 and TOKEN not in "".join(urls)
+
+
+@pytest.mark.parametrize("problem", ["missing", "group", "world", "link", "folder"])
+def test_no_usable_token_file_means_not_the_workstation(
+    start: Any,
+    token_file: Path,
+    calls: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    problem: str,
+) -> None:
+    """Without a token file only this user can read, start.py does not ask the port at all and exits as before."""
+    if problem == "missing":
+        token_file.unlink()
+    elif problem in ("group", "world"):
+        token_file.chmod(0o640 if problem == "group" else 0o604)
+    elif problem == "link":
+        real = token_file.with_name("real-token")
+        token_file.rename(real)
+        token_file.symlink_to(real)
+    else:
+        token_file.unlink()
+        token_file.mkdir()
+    monkeypatch.setattr(
+        start.urllib.request,
+        "urlopen",
+        lambda *a, **kw: pytest.fail("asked the port without a token"),
+    )
+    monkeypatch.setattr(start, "port_free", lambda: False)
+    with pytest.raises(SystemExit, match="Port 7870 is in use"):
+        start.main(["--chat"])
+    assert calls.windows == []
+    assert calls.notes == [
+        "Already open, or still closing: try again in a few seconds."
+    ]
+
+
+def test_the_server_proves_its_token(
+    start: Any, client: Any, state: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real round trip: server.publish_token writes the file (0600), GET /api/system?nonce= answers the proof,
+    start.py checks it; a clean shutdown removes the file."""
+    monkeypatch.setattr(server, "token", None)  # restored after the test
+    server.publish_token()
+    path = state / ".server-token"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.read_text() == server.token
+    monkeypatch.setattr(start, "TOKEN_FILE", path)
+
+    def urlopen(url: str, timeout: float) -> io.BytesIO:
+        r = client.get(url.removeprefix(start.URL))
+        assert server.token not in r.text
+        return io.BytesIO(r.content)
+
+    monkeypatch.setattr(start.urllib.request, "urlopen", urlopen)
+    assert start.running_profile() == "full"
+    assert "proof" not in client.get("/api/system").json()  # the page's poll gets none
+    assert client.get("/api/system?nonce=xyz").status_code == 400
+    server.publish_token()  # a new start: the old proof no longer matches
+    path.write_text("ef" * 32)  # a file this run did not write stays at shutdown
+    server.remove_token()
+    assert path.exists()
+    assert start.running_profile() is None
+    path.write_text(server.token)
+    server.remove_token()
+    assert not path.exists()
 
 
 # The port is free: this start runs the server

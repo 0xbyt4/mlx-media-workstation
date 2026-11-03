@@ -411,6 +411,13 @@
   color: var(--accent);
   text-underline-offset: 2px;
 }
+.v-chat .md .link-host {
+  unicode-bidi: isolate;
+  direction: ltr;
+  color: var(--text-2);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
 .v-chat .md blockquote {
   margin: 0;
   padding-left: 12px;
@@ -810,6 +817,13 @@
 .v-chat .approval-what {
   margin: 0;
   overflow-wrap: anywhere;
+}
+.v-chat .approval-host {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.v-chat .approval-host code {
+  font-weight: 600;
 }
 .v-chat .approval-why,
 .v-chat .approval-help {

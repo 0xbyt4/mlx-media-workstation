@@ -285,6 +285,7 @@ def test_allow_once_runs_the_call_and_taints_the_chat(client, net):
     assert ask["name"] == "web_search" and ask["chat_scope"] is True
     assert ask["describe"] == "Sends the query 'Antikythera' to en.wikipedia.org."
     assert ask["timeout_s"] > 0 and ask["risk"] == 2
+    assert ask["host"] is None  # only fetch_url names one host
     assert not net.requests  # nothing left the Mac before the answer
     assert approve(client, cid, ask["id"], "once").json()["decision"] == "once"
     t.join(5)
@@ -535,6 +536,8 @@ def test_a_model_error_ends_the_answer_and_saves_the_steps(client, monkeypatch):
 
 
 def test_folder_grant_validation(client, tmp_path, monkeypatch):
+    # the temp folder is under /private/var, which a real grant refuses (test_shared_and_other_folders_are_refused)
+    monkeypatch.setattr(chat, "SHARED_FOLDERS", ())
     cid = agent_chat(client)
     home = tmp_path / "home"
     (home / "Library").mkdir(parents=True)
@@ -580,6 +583,42 @@ def test_folder_grant_validation(client, tmp_path, monkeypatch):
     assert saved(client, cid)["agent"]["folder"] == str(notes.resolve())
     r = client.patch(f"/api/chats/{cid}/agent", json={"folder": None}, headers=ORIGIN)
     assert r.json()["folder"] is None
+    # another letter case is stored as the disk spells it, so the file tools' check matches
+    upper = Path(str(notes).replace("/notes", "/NOTES"))
+    if upper.exists():  # a case-insensitive file system
+        assert grant(str(upper)).json()["folder"] == str(notes.resolve())
+
+
+def test_shared_and_other_folders_are_refused(client, tmp_path, monkeypatch):
+    """/var, /tmp and what is inside them, other users' home folders and the app's own folder are never granted."""
+    cid = agent_chat(client)
+
+    def grant(path):
+        return client.patch(
+            f"/api/chats/{cid}/agent", json={"folder": str(path)}, headers=ORIGIN
+        )
+
+    inside_tmp = tmp_path / "work"  # pytest's temp folder: under /private/var/folders
+    inside_tmp.mkdir()
+    for bad in ("/var", "/private/var", "/tmp", "/private/tmp", "/var/tmp", inside_tmp):
+        r = grant(bad)
+        assert r.status_code == 400, bad
+    assert "shared folder" in grant(inside_tmp).json()["detail"]
+    others = [
+        p for p in Path("/Users").iterdir() if p.is_dir() and p != Path.home()
+    ]  # /Users/Shared at least
+    for other in others:
+        r = grant(other)
+        assert r.status_code == 400, other
+        assert "not in your home folder" in r.json()["detail"]
+    for own in (chat.ROOT, chat.ROOT / "app", chat.ROOT / "docs", chat.ROOT.parent):
+        r = grant(own)
+        assert r.status_code == 400, own
+        assert "app's own folder" in r.json()["detail"]
+    # the checks hold in another letter case too (APFS ignores it)
+    if Path("/LIBRARY").exists():
+        assert "system folder" in grant("/LIBRARY/Preferences").json()["detail"]
+        assert grant("/PRIVATE/VAR/folders").status_code == 400
 
 
 def test_tools_menu_state(client, reg):
@@ -631,7 +670,11 @@ def test_python_files_are_served_from_the_workspace_only(client, box):
     r = client.get(res["files"][0]["url"])
     assert r.status_code == 200 and r.content == PNG
     assert r.headers["content-type"] == "image/png"
-    assert "sandbox" in r.headers["content-security-policy"]
+    # the workspace's own policy stays, with the server's frame rule merged in
+    assert r.headers["content-security-policy"] == (
+        "sandbox; default-src 'none'; frame-ancestors 'none'"
+    )
+    assert r.headers["x-frame-options"] == "DENY"
     ws_dir = chat.CHATS / cid / "ws"
     (ws_dir / "page.html").write_text("<script>alert(1)</script>")
     r = client.get(f"/api/chats/{cid}/ws/page.html")
@@ -794,3 +837,140 @@ def test_model_input_counts_the_tools_and_shortens_old_results_first(monkeypatch
     monkeypatch.setattr(chat, "CONTEXT_TOKENS", 256 + system + newest + 5)
     least, _ = chat.model_input(c, 256)
     assert [m["role"] for m in least] == ["system", "user", "assistant", "tool"]
+
+
+def test_a_fifo_in_the_workspace_does_not_block_the_server(client):
+    """The code can make a FIFO; opening it without O_NONBLOCK would wait for a writer for ever."""
+    cid = agent_chat(client)
+    ws_dir = chat.CHATS / cid / "ws"
+    ws_dir.mkdir(parents=True)
+    os.mkfifo(ws_dir / "pipe.txt")
+    box: dict[str, Any] = {}
+    t = threading.Thread(
+        target=lambda: box.update(r=client.get(f"/api/chats/{cid}/ws/pipe.txt")),
+        daemon=True,
+    )
+    t.start()
+    t.join(5)
+    if t.is_alive():  # unblock the server thread so the test run can end
+        with open(ws_dir / "pipe.txt", "wb"):
+            pass
+        t.join(5)
+        pytest.fail("GET of a FIFO blocked")
+    assert box["r"].status_code == 404
+
+
+def test_the_approval_card_shows_the_real_host_and_hidden_characters(client, net):
+    """A look-alike host shows as IDNA on its own line; bidi, zero-width and control characters show as \\uXXXX."""
+    cid = agent_chat(client)
+    url = "https://\u0430pple.com/a\u202eb\u200bc\x00"  # a Cyrillic a, an override, a zero-width space, NUL
+    t, _ = start(client, cid, script([call("fetch_url", url=url)], "RESULT"))
+    ask = pending(cid)
+    assert ask["host"] == "xn--pple-43d.com"
+    assert ask["describe"] == (
+        "Downloads https://\u0430pple.com/a\\u202eb\\u200bc\\u0000 (the site sees this Mac's IP address)."
+    )
+    assert ask["arguments"] == {
+        "url": url
+    }  # the page escapes the shown arguments itself
+    approve(client, cid, ask["id"], "deny")
+    t.join(5)
+    assert not net.requests
+
+
+# ---------- waiting for memory, late answers, the app closing ----------
+
+
+def test_a_long_media_job_before_the_turn_does_not_use_up_its_time(client, monkeypatch):
+    """The turn waits for a big job longer than its own limit; the wait does not count, so the answer completes."""
+    monkeypatch.setattr(chat, "TURN_SECONDS", 1.0)
+    cid = agent_chat(client)
+    assert llm.claim(35.0)  # a big media job holds the memory
+    threading.Timer(1.5, llm.release).start()  # and runs longer than the turn limit
+    evs = send(client, cid, script([call("list_workstation_tools")], "RESULT"))
+    assert "waiting" in kinds(evs)
+    assert evs[-1]["event"] == "done" and evs[-1]["finish"] == "stop", evs[-1]
+    assert evs[-1]["stats"]["seconds"] >= 1.5  # the whole answer, the wait included
+    res = next(e for e in evs if e["event"] == "tool_result")
+    assert res["status"] == "ok"
+
+
+def test_the_lease_is_held_after_a_wait_longer_than_its_limit():
+    """A session's limit counts from the moment it holds the memory, not from the with-block's start."""
+    assert llm.claim(35.0)
+    with llm.session(limit=1.0) as s:
+        assert not s.held and s.end is None
+        threading.Timer(1.5, llm.release).start()
+        evs = list(llm.generate([{"role": "user", "content": "hi"}]))
+        assert [e["event"] for e in evs][:2] == ["started", "waiting"]
+        assert s.held and s.alive()
+        with llm.room:
+            assert llm.holding()  # a new job's claim waits for this lease
+        assert s.end is not None and s.end > time.time()
+
+
+def test_stop_ends_a_turn_that_waits_for_memory(client):
+    """A turn stuck behind a media job ends at Stop; nothing runs, and the answer is saved as stopped."""
+    assert llm.claim(35.0)
+    cid = agent_chat(client)
+    t, _ = start(client, cid, script([call("list_workstation_tools")], "RESULT"))
+    assert wait_for(
+        lambda: (
+            chat.live.get(cid) is not None
+            and any(e["event"] == "waiting" for e in chat.live[cid].events)
+        )
+    )
+    assert client.post(f"/api/chats/{cid}/stop").json() == {"status": "stopping"}
+    t.join(5)
+    assert not t.is_alive()
+    last = saved(client, cid)["messages"][-1]
+    assert last["finish"] == "cancelled"
+    assert not any(m["role"] == "tool" for m in saved(client, cid)["messages"])
+
+
+def test_an_answer_that_comes_just_after_the_timeout_counts(client, net, monkeypatch):
+    """approve() answers in the moment between the approval's timeout and the turn's lock: the page got HTTP 200, so
+    the call runs with that answer (the server and the page agree)."""
+    results: list[Any] = []
+
+    class LateEvent(threading.Event):
+        def wait(
+            self, timeout=None
+        ):  # the user's click arrives just as the wait times out
+            results.append(approve(client, cid, chat.live[cid].approval.id, "once"))
+            return False
+
+    class LateApproval(chat.Approval):
+        def __init__(self, call_id, chat_scope):
+            super().__init__(call_id, chat_scope)
+            self.answered = LateEvent()
+
+    monkeypatch.setattr(chat, "Approval", LateApproval)
+    cid = agent_chat(client)
+    evs = send(client, cid, script([call("web_search", query="late")], "RESULT"))
+    assert [r.status_code for r in results] == [200]
+    assert next(e for e in evs if e["event"] == "approval_done")["decision"] == "once"
+    res = next(e for e in evs if e["event"] == "tool_result")
+    assert res["status"] == "ok" and res["approval"] == "once"
+    assert len(net.requests) == 1
+    # an answer after the turn took the lock finds nothing to approve
+    ask = next(e for e in evs if e["event"] == "approval")
+    assert approve(client, cid, ask["id"], "once").status_code == 409
+
+
+def test_shutdown_ends_running_turns_and_saves_them(client, state):
+    """Closing the app stops a turn that waits for approval, as Stop does: the call is cancelled, the turn ends and the partial
+    answer is saved, before the shutdown returns."""
+    cid = agent_chat(client)
+    t, _ = start(client, cid, script([call("web_search", query="x")], "SLOW"))
+    ask = pending(cid)
+    started = time.monotonic()
+    server.shutdown()
+    assert time.monotonic() - started < 6
+    assert cid not in chat.live
+    msgs = saved(client, cid)["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "tool", "assistant"]
+    tool = msgs[2]
+    assert tool["tool_call_id"] == ask["id"] and tool["status"] == "cancelled"
+    assert msgs[-1]["finish"] in ("cancelled", "error")
+    t.join(5)

@@ -51,6 +51,22 @@ def test_other_host_names_are_refused(client: TestClient) -> None:
     )
 
 
+def test_no_page_may_show_the_app_in_a_frame(client: TestClient) -> None:
+    """Every response, refusals included, forbids framing (clickjacking of the approval buttons)."""
+    responses = [
+        client.get("/"),
+        client.get("/js/main.js"),
+        client.get("/api/tools"),
+        client.get("/api/jobs/missing"),
+        client.get("/api/tools", headers={"host": "evil.example"}),
+        client.post("/api/jobs", headers={"origin": "http://evil.example"}),
+    ]
+    assert [r.status_code for r in responses] == [200, 200, 200, 404, 400, 403]
+    for r in responses:
+        assert r.headers["x-frame-options"] == "DENY"
+        assert r.headers["content-security-policy"] == "frame-ancestors 'none'"
+
+
 # Creating jobs
 
 

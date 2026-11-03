@@ -247,3 +247,46 @@ def test_example_config_holds_the_agent_defaults() -> None:
     example = config.ROOT / "config.example.toml"
     assert load_settings(example) == Settings()
     assert tomllib.loads(example.read_text())["agent"] == agent_settings.DEFAULTS
+
+
+def test_describe_escapes_characters_that_hide_or_reorder_text() -> None:
+    """The approval card's line shows bidi controls, zero-width characters, the BOM and C0/C1 controls as \\uXXXX."""
+    from app.agent.registry import visible
+
+    hidden = (
+        [chr(c) for c in range(0x20)]
+        + [chr(c) for c in range(0x7F, 0xA0)]
+        + [chr(c) for c in range(0x200B, 0x2010)]
+        + [chr(c) for c in range(0x202A, 0x202F)]
+        + [chr(c) for c in range(0x2066, 0x206A)]
+        + ["\ufeff", "\xad", "\u061c", "\u2028", "\u2029", "\u2060", "\u2064", "\ufe0f"]
+        + ["\U000e0041", "\U000e007f"]  # tag characters
+    )
+    for ch in hidden:
+        assert visible(f"a{ch}b") == f"a\\u{ord(ch):04x}b"
+    assert visible("Grüße, 東京 – ok") == "Grüße, 東京 – ok"
+    tool = Tool(
+        "t",
+        "d",
+        {"type": "object", "properties": {}},
+        Risk.R0,
+        lambda a, c: "",
+        explain=lambda a: "Sends x\u202ey",
+    )
+    assert tool.describe({}) == "Sends x\\u202ey"
+    assert tool.target({}) is None
+
+
+def test_fetch_url_names_its_host_as_the_network_sees_it() -> None:
+    from app.agent.web_tools import url_host
+
+    assert url_host("https://\u0430pple.com/x") == "xn--pple-43d.com"
+    assert url_host("http://Example.COM:8080/a") == "example.com"
+    assert url_host("https://bücher.de") == "xn--bcher-kva.de"
+    for bad in (
+        "ftp://example.com",
+        "https://",
+        "not a url",
+        "https://exa\u202emple.com",
+    ):
+        assert url_host(bad) is None

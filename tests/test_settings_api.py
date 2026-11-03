@@ -55,7 +55,12 @@ def cfg(tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return file
 
 
+ORIGIN = {"origin": "http://127.0.0.1:7870"}
+
+
 def put(client: TestClient, body: dict, **kw) -> object:
+    """A write from the app's own page (with its Origin), unless the test passes other headers."""
+    kw.setdefault("headers", ORIGIN)
     return client.put("/api/settings", json=body, **kw)
 
 
@@ -218,6 +223,12 @@ def test_put_needs_the_app_origin(client: TestClient, cfg: Path) -> None:
         {"paths": {"ace_dir": "/ace"}},
         headers={"origin": "http://evil.example"},
     )
+    assert r.status_code == 403
+    assert cfg.read_text() == USER_FILE
+    # no Origin at all (curl, a script on this Mac): refused too, unlike most writes
+    r = put(client, {"paths": {"ace_dir": "/ace"}}, headers={})
+    assert r.status_code == 403
+    r = put(client, {"agent": {"wikipedia_language": "de"}}, headers={})
     assert r.status_code == 403
     assert cfg.read_text() == USER_FILE
     ok = put(
@@ -423,6 +434,7 @@ def test_get_reports_the_agent_values(client: TestClient, cfg: Path) -> None:
         "defaults": agent_settings.DEFAULTS,
         "python_path": None,
         "python_found": False,
+        "python_problem": None,
         "default_python": sandbox.default_interpreter().argv[0],
         "languages": ["en", "tr", "de", "fr", "es", "it", "ja", "zh"],
         "restart_required": False,
@@ -570,3 +582,58 @@ def test_a_url_the_screen_refuses_also_stops_the_start(
     file.write_text(f'[agent]\nsearxng_url = "{url}"\n')
     with pytest.raises(SystemExit, match="searxng_url"):
         agent_settings.load(file)
+
+
+def test_put_agent_python_that_others_can_change_is_refused(
+    client: TestClient,
+    cfg: Path,
+    exe: Path,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The app runs [agent] python outside the sandbox: the file and its folders must be the user's (or root's) and
+    not writable by others, up to a folder only the user can open or one root owns."""
+
+    def refused(reason: str) -> None:
+        r = put(client, {"agent": {"python": str(exe)}})
+        assert r.status_code == 400, r.text
+        assert reason in r.json()["detail"]["fields"]["agent.python"]
+        assert cfg.read_text() == USER_FILE
+
+    exe.chmod(0o775)  # the file is group-writable
+    refused("can be changed by other users")
+    exe.chmod(0o757)  # world-writable
+    refused("can be changed by other users")
+    exe.chmod(0o755)
+    exe.parent.chmod(0o777)  # its folder
+    refused(str(exe.parent))
+    exe.parent.chmod(0o755)
+    home.chmod(0o775)  # a folder further up
+    refused(str(home))
+    home.chmod(0o755)
+    other = os.getuid() + 1000
+    with monkeypatch.context() as m:  # the files belong to another user
+        m.setattr(sandbox.os, "getuid", lambda: other)
+        refused("belongs to another user")
+    assert put(client, {"agent": {"python": str(exe)}}).status_code == 200
+
+
+def test_unsafe_python_after_the_save_is_refused_at_start(
+    client: TestClient, cfg: Path, exe: Path
+) -> None:
+    """A python that became group-writable after the save: the Settings screen says why, and the sandbox refuses it
+    (no run_python tool, and it is never run)."""
+    assert put(client, {"agent": {"python": str(exe)}}).status_code == 200
+    assert client.get("/api/settings").json()["agent"]["python_problem"] is None
+    exe.chmod(0o775)
+    agent = client.get("/api/settings").json()["agent"]
+    assert agent["python_found"] is True
+    assert "can be changed by other users" in agent["python_problem"]
+    box = sandbox.SeatbeltSandbox(exe)
+    assert "refused" in (box.unavailable() or "")
+    with pytest.raises(ValueError, match="refused"):
+        sandbox.configured_interpreter(exe)
+    from app.agent import Settings, build_registry
+
+    reg = build_registry(None, Settings(python=exe))
+    assert "run_python" not in reg.names()

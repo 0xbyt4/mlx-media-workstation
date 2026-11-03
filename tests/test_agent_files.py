@@ -218,12 +218,43 @@ def test_the_search_time_cap_counts_skipped_files(
     assert "Stopped after 0 files" in text
 
 
-def test_a_folder_granted_in_another_case_still_works(
+def test_a_folder_stored_in_another_case_is_refused(
     reg: Registry, folder: Path, tmp_path: Path
 ) -> None:
+    """The server stores the disk's spelling (chat.disk_path), so the open folder's F_GETPATH must equal it."""
     other = Path(str(folder).replace("granted", "GRANTED"))
     if not other.exists():
         pytest.skip("case-sensitive file system")
     ctx = Context("c1", other, threading.Event(), tmp_path / "ws")
     status, text = call(reg, ctx, "read_file", path="notes/todo.md")
-    assert status == "ok" and "buy milk" in text
+    assert status == "error" and "moved or changed" in text
+
+
+def test_a_granted_folder_swapped_for_a_link_is_refused(
+    reg: Registry, ctx: Context, folder: Path, tmp_path: Path
+) -> None:
+    """After the grant, the folder is replaced by a link to another folder, or a folder above it is: the file tools
+    refuse it instead of reading the link's target."""
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "notes").mkdir(parents=True)
+    (elsewhere / "notes" / "todo.md").write_text("dummy other text\n")
+    assert call(reg, ctx, "read_file", path="notes/todo.md")[0] == "ok"
+    folder.rename(tmp_path / "moved")
+    folder.symlink_to(elsewhere)
+    status, text = call(reg, ctx, "read_file", path="notes/todo.md")
+    assert status == "error" and "is now a link" in text
+    for status, text in (
+        call(reg, ctx, "list_files"),
+        call(reg, ctx, "search_files", query="dummy"),
+    ):
+        assert status == "error" and "dummy other text" not in text
+    folder.unlink()
+    # a link in place of a folder above the granted one: the open folder's path is not the stored one
+    deep = tmp_path / "up" / "granted"
+    deep.mkdir(parents=True)
+    deep_ctx = Context("c1", deep, threading.Event(), tmp_path / "ws")
+    assert call(reg, deep_ctx, "list_files")[0] == "ok"
+    (tmp_path / "up").rename(tmp_path / "up-moved")
+    (tmp_path / "up").symlink_to(tmp_path / "up-moved")
+    status, text = call(reg, deep_ctx, "list_files")
+    assert status == "error" and "moved or changed" in text

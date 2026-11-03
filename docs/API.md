@@ -4,6 +4,10 @@ The server (`app/server.py`, FastAPI) listens on `http://127.0.0.1:7870` only. T
 (`index.html`, `css/`, `js/`; see `web/README.md`), served at `/`. Plain HTML, CSS and JavaScript: no framework, no build step,
 no CDN or other network request. All JSON is UTF-8.
 
+Every response has `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`, so no other page
+can show the app in a frame. A response with its own policy (the workspace files) gets `frame-ancestors 'none'`
+added to it.
+
 ## Tools
 
 `GET /api/tools` returns the list of tools. The Create screen builds its tool list and its forms from it.
@@ -146,6 +150,12 @@ other name. The job stays in the job list, also when it has no outputs left.
 in `config.toml`, or `"chat"` when the app was started with `start.py --chat`. A change in Settings applies at once.
 The profile changes only the UI: every endpoint works in both profiles, the job endpoints too. `start.py` also reads
 this endpoint when the port is in use, to find out whether the Workstation runs there and in which profile.
+
+`GET /api/system?nonce=<32 to 128 lowercase hex digits>` adds `"proof"`: the hex HMAC-SHA256 of the nonce with the
+server's token as the key. At start the server writes a new random token to `outputs/.server-token` (mode 0600,
+an atomic write) and removes it at a clean shutdown. `start.py` reads the file, sends a random nonce and opens a
+window only when the proof matches, so another program on the port cannot get a window. The token itself is never
+sent. A bad nonce is HTTP 400.
 
 ## Models
 
@@ -467,25 +477,33 @@ cannot approve calls or grant folders through plain `curl`.
   - `folder`: a folder to grant, or `null` or `""` to revoke it;
   - `revoke`: tools whose "allow in this chat" ends.
   The changes apply from the next tool call, also while an answer runs. The folder must be an absolute path to an
-  existing folder. The server stores its resolved path. It refuses `/`, a folder directly under `/`, the home folder
-  and the folders above it, system folders (`/System`, `/Library`, `/usr`, `/private/etc`...), `~/Library` and any
-  path with a hidden part (`.ssh`). Each refusal is HTTP 400 with the reason.
+  existing folder. The server stores its real path as the disk spells it (`F_GETPATH`). It refuses `/`, a folder
+  directly under `/`, the home folder and the folders above it, system folders (`/System`, `/Library`, `/usr`,
+  `/private/etc`...), `~/Library`, `/private/var` and `/private/tmp` (also as `/var` and `/tmp`), other users' folders
+  under `/Users`, the app's own folder and the folders that hold it, everything inside these, and any path with a
+  hidden part (`.ssh`). Each
+  refusal is HTTP 400 with the reason.
 - `POST /api/chats/{id}/approve` with `{"call_id": "call_3f2a...", "decision": "once" | "chat" | "deny"}` answers
-  the call that waits. It returns `{"status": "answered", "decision": "..."}`. HTTP 409 when that call does not wait
-  any more, HTTP 400 for `"chat"` when the approval did not offer it.
+  the call that waits. It returns `{"status": "answered", "decision": "..."}`, and the call then runs with that
+  answer, also when the wait timed out in the same moment. HTTP 409 when that call does not wait any more (the
+  `approval_done` event was sent), HTTP 400 for `"chat"` when the approval did not offer it.
 - `GET /api/chats/{id}/ws/{path}` serves a file that `run_python` wrote in the chat's workspace
   (`outputs/chats/<id>/ws`). PNG, JPEG, GIF and WebP come as images. `.txt`, `.csv`, `.tsv`, `.json`, `.md`, `.py`
   and `.log` come as `text/plain`. Every other file is a download (`Content-Disposition: attachment`). Each response
-  has `Content-Security-Policy: sandbox; default-src 'none'`. Symlinks, hidden names and files over 64 MB give
-  HTTP 404.
+  has `Content-Security-Policy: sandbox; default-src 'none'; frame-ancestors 'none'`. Symlinks, hidden names, files
+  that are not regular files (a FIFO too) and files over 64 MB give HTTP 404.
 
 Events. The message stream of an agent chat has these events besides `waiting`, `reasoning`, `content` and `error`:
 
 - `{"event": "step", "n": 2, "max": 8}` before each model request.
 - `{"event": "tool_call", "id", "name", "label", "arguments", "describe", "risk"}` for each call the model made.
-  `describe` is one line about what the call does. `risk` is 0 to 3, or `null` for an unknown tool.
-- `{"event": "approval", "id", "name", "label", "arguments", "describe", "reason", "risk", "chat_scope",
+  `describe` is one line about what the call does, with bidi, zero-width and control characters written as
+  `\uXXXX`. `risk` is 0 to 3, or `null` for an unknown tool. `arguments` are as the model sent them: the page writes
+  those characters as `\uXXXX` when it shows them.
+- `{"event": "approval", "id", "name", "label", "arguments", "describe", "host", "reason", "risk", "chat_scope",
   "timeout_s"}` when the call waits for the user. Offer "Allow in this chat" only when `chat_scope` is `true`.
+  `host` is the host that `fetch_url` contacts, as the network sees it (IDNA: `xn--...` for a non-ASCII name), or
+  `null` for other tools and for a URL without a valid host. The page shows it on its own line.
 - `{"event": "approval_done", "id", "decision"}` with `once`, `chat`, `deny`, `timeout` or `stopped`.
 - `{"event": "tool_result", "id", "name", "status", "content", "truncated", "files", "seconds", "approval", "risk"}`.
   `status` is `ok`, `error`, `cancelled`, `denied`, `refused` or `skipped`. `content` is the first 4,000 characters.
@@ -501,8 +519,9 @@ call with `stopped`.
 Rules of the loop (`app/chat.py`, `Turn`):
 
 1. All steps run in one `llm.session()`, so a queued media job does not unload the model between steps.
-2. An answer has at most 8 steps and 10 minutes. A call in step 8 does not run, because its result would never reach
-   the model.
+2. An answer has at most 8 steps and 10 minutes. The time a step waits for memory (a media job runs) does not count,
+   and the memory lease's limit counts from the moment it first holds the memory. A call in step 8 does not run,
+   because its result would never reach the model.
 3. Stop is checked before each step, before each call, while a call waits for approval and inside the tools.
 4. A malformed call, an unknown or disabled tool, a refusal and a denial each give the model a tool message. The
    answer goes on.
@@ -511,6 +530,8 @@ Rules of the loop (`app/chat.py`, `Turn`):
 7. `create_job` queues the job and returns its id at once. It never waits for the job, because the job waits for the
    answer's memory lease.
 8. Every call of a step gets a tool message, also when the answer ends before the call runs.
+9. When the app closes, every running answer gets Stop, as with the Stop button. The server waits a few
+   seconds for the answers to save what they have.
 
 The answer's messages are saved when it ends. The assistant messages keep their `tool_calls`. The tool messages are
 `{"role": "tool", "tool_call_id", "name", "label", "status", "content", "describe", "files", "seconds", "approval",
@@ -550,7 +571,7 @@ oldest turns are dropped. The budget counts the system prompt and the tool schem
   "llm": {"idle_stop_s": 600.0},
   "agent": {"python": "", "searxng_url": "", "wikipedia_language": "en", "marginalia": true,
             "defaults": {"python": "", "searxng_url": "", "wikipedia_language": "en", "marginalia": true},
-            "python_path": null, "python_found": false,
+            "python_path": null, "python_found": false, "python_problem": null,
             "default_python": "/opt/homebrew/Cellar/python@3.12/3.12.15_1/Frameworks/Python.framework/Versions/3.12/bin/python3.12",
             "languages": ["en", "tr", "de", "fr", "es", "it", "ja", "zh"], "restart_required": false},
   "about": {"version": "0.1.0", "commit": "8172e42 2026-11-02", "root": "/Users/me/mlx-media-workstation",
@@ -579,14 +600,18 @@ oldest turns are dropped. The budget counts the system prompt and the tool schem
   sandbox interpreter of `run_python`; `""` = the app's own Python with the standard library only), `searxng_url`,
   `wikipedia_language` and `marginalia`. A key the file does not set, or sets to a bad value, shows its default.
   `python_path` is `python` with "~" expanded (`null` when empty), and `python_found` tells whether it is an
-  executable file now. `default_python` is the interpreter the sandbox uses when `python` is empty (it runs with
-  `-I -S`). `languages` are the Wikipedia languages the screen offers. `agent.restart_required` is true when these
-  values differ from the ones the agent tools were built from at start.
+  executable file now. `python_problem` is why the sandbox refuses that file although it is there (another user can
+  change it, see [AGENT.md](AGENT.md#the-interpreter)), else `null`. `default_python` is the interpreter the
+  sandbox uses when `python` is empty (it runs with `-I -S`). `languages` are the Wikipedia languages the screen
+  offers. `agent.restart_required` is true when these values differ from the ones the agent tools were built from at
+  start.
 
 `PUT /api/settings` takes JSON with the values to change: `{"paths": {"ltx_model": "/Volumes/Models/ltx-2.5-mlx-q8"},
 "assist": {"provider": "local"}, "app": {"notify": false, "llm_idle_minutes": 30}, "agent": {"wikipedia_language": "de"}}`.
 Each part is optional. It writes `config.toml` and returns the same object as
-`GET /api/settings`, plus `changed` (for example `["paths.ltx_model"]`; empty when nothing changed).
+`GET /api/settings`, plus `changed` (for example `["paths.ltx_model"]`; empty when nothing changed). It needs the
+`Origin` header of the app's own page (HTTP 403 without it), like the agent writes: `[agent] python` and `[paths]`
+name programs that the app runs.
 
 - Only the lines of the changed keys change. Comments, blank lines, other keys and other sections stay. A key that
   is not in the file goes after the last key of its section; a missing section goes at the end; a missing file is

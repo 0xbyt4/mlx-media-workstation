@@ -40,10 +40,20 @@ earlier untrusted content. So the user turns it on in the Tools menu when the ch
 The file tools never list, search or read hidden names (any path part that starts with `.`) or secret files (keys,
 certificates, keychains, password databases, `credentials`, `secrets.*` and similar). They resolve every path and
 keep it inside the granted folder. They open a file with `O_NOFOLLOW` and check its real path again from the open
-descriptor. They read only text files.
+descriptor. They read only text files. They open the granted folder itself with `O_NOFOLLOW` too, and its real path
+(`F_GETPATH`) must equal the stored path. A granted folder that was moved, or replaced by a link (also a folder above
+it), is refused until the user grants it again.
 
-The folder grant is checked by the server (`PATCH /api/chats/{id}/agent`). It refuses `/`, the folders directly under
-`/`, the home folder itself, system folders, `~/Library` and paths with a hidden part.
+The folder grant is checked by the server (`PATCH /api/chats/{id}/agent`). It stores the folder's real path as the
+disk spells it (`F_GETPATH`), so another letter case cannot pass a check. It refuses these folders and everything
+inside them:
+
+- `/`, the folders directly under `/`, the home folder itself and the folders above it;
+- system folders and `~/Library`;
+- `/private/var` and `/private/tmp` (also as `/var` and `/tmp`): every user can write there;
+- other users' folders under `/Users` (also `/Users/Shared`);
+- the app's own folder (its settings, outputs and the other chats), and the folders that hold it;
+- paths with a hidden part.
 
 ## Taint
 
@@ -69,6 +79,9 @@ The prompt also tells the model that tool output is untrusted data and never ins
 - **Read and write**: the chat's work folder only (`outputs/chats/<id>/ws`), and writes to `/dev/null`.
 - **Metadata**: `stat` works on any path. Directory listings and file contents elsewhere are refused.
 - **sysctl**: the hardware facts (`hw.*`) and the OS name and version only.
+- **Processes**: information about the process itself only. `(deny default)` does not cover the `process-info*`
+  operations, so the profile denies them and allows them for the process itself. The code cannot read other
+  processes' command lines and environment (`KERN_PROCARGS2`), their paths or the process list.
 - **Network**: no rule allows it. Every socket and every DNS lookup is refused. No `mach-lookup`, so no system
   service can act for the code.
 - The work folder node itself is not writable, so the code cannot replace it with a symlink. The host refuses a work
@@ -99,7 +112,12 @@ and links other files (`GET /api/chats/{id}/ws/{path}`).
 - `[agent] python` in `config.toml` names another interpreter, usually a venv made for the sandbox (for example with
   numpy, pandas and matplotlib). It runs with `-I`: its own packages work, but no user site folder and no `PYTHON*`
   variable. The sandbox may read that environment's folders.
-- When that interpreter does not exist, or `sandbox-exec` is missing, the registry has no `run_python`.
+- The app runs that interpreter once outside the sandbox, to ask it for its folders. So no other user may be able to
+  change it: the file and every folder above it, up to `/`, must belong to you or to root and must not be writable
+  by the group or by others. The path is checked as written:
+  for a symlink (a venv's `bin/python`), the file it names is checked, not the folders of that file.
+- When that interpreter does not exist or fails that check, or `sandbox-exec` is missing, the registry has no
+  `run_python`. Settings > Agent shows why.
 
 ## The web tools
 
@@ -131,7 +149,8 @@ search fails only when every source fails.
 - Seatbelt (`sandbox-exec`) is deprecated by Apple. It works on current macOS, but Apple may remove it.
 - The memory watchdog polls. Between two polls the code can use more memory than the limit.
 - The code can `stat` any path, so it can learn which files exist and their sizes and dates.
-- The code can read other processes' command lines (`KERN_PROCARGS2`). Do not put secrets in command lines.
+- The folders of a symlinked interpreter's target are not checked. A Homebrew `Cellar` folder, for example, is
+  writable by the `admin` group.
 - A DNS lookup and the HTML parsing of `fetch_url` cannot be interrupted. Stop takes effect after they end.
 - The SearXNG URL is trusted. Its address is not checked, so it can be on this Mac or the local network.
 - The granted folder is not mounted in the sandbox. `run_python` cannot read the user's files. Only the file tools
@@ -141,8 +160,10 @@ search fails only when every source fails.
 
 ## How the chat loop uses the package
 
-`app/chat.py` builds one registry with `build_registry(port, settings)` and keeps it. The port is the server's
-`Workstation` object (`app/server.py`), or `None` in the chat profile. One answer (`Turn`) runs these steps:
+`app/chat.py` builds a registry with `build_registry(port, settings)` at the first use and keeps it. It keeps one
+registry per media flag, so at most one per profile: with the media tools (the full profile; the port is the server's
+`Workstation` object from `app/server.py`) and without them (the chat profile; the port is `None`). One answer
+(`Turn`) runs these steps:
 
 1. Take the schemas of the tools the chat offers. The R1 tools are offered only when a folder is granted.
 2. Build the model input. The budget counts the system prompt, the tool schemas and the tool messages. Old tool
@@ -151,13 +172,22 @@ search fails only when every source fails.
 4. For each call: check Stop and the time, check the format, check for a repeat, then call
    `decide(tool, grants, tainted, enabled)`.
 5. On "ask", show the approval card and wait, at most 10 minutes. No answer counts as a denial. "Allow in this chat"
-   adds the tool to the chat's grants.
+   adds the tool to the chat's grants. An answer that the server accepted (HTTP 200) counts, also when it came in the
+   moment the wait timed out. The card shows `describe` and the arguments with bidi, zero-width, tag and control
+   characters written as `\uXXXX`, and for `fetch_url` the host as the network sees it (IDNA, `xn--...`) on its own
+   line.
 6. Run the call with `registry.call(name, args, Context(chat_id, folder, abort, work_dir))`. Then update the taint
    flag with `taints(tool, tainted)`.
-7. Add a tool message with the result and go to the next step. An answer has at most 8 steps and 10 minutes.
+7. Add a tool message with the result and go to the next step. An answer has at most 8 steps and 10 minutes. The
+   time a step waits for memory (a media job runs) does not count against the 10 minutes, and Stop ends that wait.
 
-All steps run in one `llm.session()`. `create_job` never waits for its job, because the job waits for that session.
-`docs/API.md` lists all rules of the loop.
+All steps run in one `llm.session()`. Its time limit counts from the moment it first holds the memory. `create_job`
+never waits for its job, because the job waits for that session. When the app closes, every running answer gets
+Stop (a waiting approval is denied) and a few seconds to save what it has. `docs/API.md` lists all rules of the loop.
+
+In an agent chat, a Markdown link shows its host after its label ("label (host)"), and a long bare URL is shortened
+with the whole URL in its tooltip. A web page can tell the model to write a link that carries private text in its
+address: the host shows where one click sends it.
 
 ## Settings
 
@@ -176,7 +206,8 @@ change takes effect after a restart; the Settings screen shows the restart note 
 
 The Settings screen (`PUT /api/settings`, see [API.md](API.md#settings)) refuses a value that breaks these rules:
 
-- `python`: `""`, or an absolute path ("~" is expanded) to an executable file that is there now.
+- `python`: `""`, or an absolute path ("~" is expanded) to an executable file that is there now. No other user may
+  be able to change it (see [The interpreter](#the-interpreter)).
 - `searxng_url`: `""`, or an `http://` or `https://` URL with a host. It cannot hold a user name or password, a query
   (`?`) or a fragment (`#`).
 - `wikipedia_language`: a language code: two or three lowercase letters, then an optional `-` and lowercase letters
@@ -186,8 +217,8 @@ The Settings screen (`PUT /api/settings`, see [API.md](API.md#settings)) refuses
 - A text value cannot hold a double quote, a backslash or a line break, and is at most 1024 characters.
 
 At start the app checks the same rules, except that `python` may be a relative path (counted from the app folder) and
-need not exist: a bad value stops the start with a message. When the `python` file is missing, the agent has no
-`run_python` tool.
+need not exist: a bad value stops the start with a message. When the `python` file is missing, or other users can
+change it, the agent has no `run_python` tool.
 
 ### A sandbox environment with packages
 

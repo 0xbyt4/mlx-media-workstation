@@ -157,12 +157,18 @@ class Session:
 
     def __init__(self, abort: Callable[[], bool], limit: float) -> None:
         self.abort = abort
-        self.end = time.time() + limit
+        self.limit = limit
+        # limit seconds after the lease is first held: time spent waiting for a media job before does not count
+        self.end: float | None = None
         self.held = False  # counted in leases: its requests skip the memory check
         self.closed = False  # the with-block ended
 
     def alive(self) -> bool:
-        return not self.closed and time.time() < self.end and not self.abort()
+        return (
+            not self.closed
+            and (self.end is None or time.time() < self.end)
+            and not self.abort()
+        )
 
 
 def holding() -> bool:
@@ -178,6 +184,8 @@ def hold(s: Session | None) -> None:
     """A request of session s got the memory: the session holds it from now on (call with room held)."""
     if s is not None and not s.held and s.alive():
         s.held = True
+        if s.end is None:  # the limit counts from here
+            s.end = time.time() + s.limit
         leases.add(s)
 
 
@@ -190,7 +198,8 @@ def session(
     The lease starts at once when the memory is free, or else with the first request of the session that gets it. A
     media job's claim then waits for the lease as for a running answer, and the session's requests skip the memory
     check, so they never wait for that job. The lease ends when the with-block ends, when abort() returns True or
-    after limit seconds; requests after that behave like any other request. The block never waits here.
+    limit seconds after it was first held (a wait for memory before that does not count); requests after that behave
+    like any other request. The block never waits here.
 
     Requests made in the with-block's thread use the session; pass session= to generate to use it from another
     thread. abort is called with the module lock held: it must be fast and must not call this module.

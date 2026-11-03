@@ -1,7 +1,9 @@
 """The workstation server: the tool list, one job queue (one model at a time), output files and system info.
 
 Listens on 127.0.0.1 only and answers only requests addressed to it (Host check) from its own page (Origin check), so
-other web pages cannot reach it through the browser. Jobs live in outputs/<id>/ with job.json (state and parameters),
+other web pages cannot reach it through the browser, and no page may show it in a frame (frame_headers). At start it
+writes a random token to outputs/.server-token (0600); GET /api/system?nonce= proves it knows the token, so start.py
+opens a window only on this app. Jobs live in outputs/<id>/ with job.json (state and parameters),
 job.log (the model's output) and the result files; the list is rebuilt from those folders at start.
 
 One model at a time: the worker starts a job's process (its own process group) under the lock, and does not take the
@@ -14,6 +16,7 @@ job that ends done or failed shows a notification (both switches are in Settings
 """
 
 import asyncio
+import hmac
 import json
 import math
 import os
@@ -32,7 +35,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -82,6 +85,12 @@ MAX_REQUEST = 1024 * 1024 * 1024
 KILL_AFTER = 10.0  # seconds between SIGTERM and SIGKILL
 # a prompt-help request id that the client makes
 REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# the nonce start.py sends to GET /api/system to check that the server on the port is this app (see start())
+NONCE = re.compile(r"[0-9a-f]{32,128}")
+TOKEN_NAME = ".server-token"
+token: str | None = (
+    None  # this run's secret; only start.py (the same user) can read the file that holds it
+)
 
 app = FastAPI(title="Workstation", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
@@ -94,24 +103,41 @@ claiming: set[str] = set()  # the queued job whose memory claim waits for LLM an
 awake = macos.Awake()
 
 
+NO_FRAMES = "frame-ancestors 'none'"
+
+
+def frame_headers(response: Response) -> Response:
+    """No other page may show this app in a frame (clickjacking of the approval buttons): X-Frame-Options for older
+    engines and the CSP directive, added to a policy the response already has (the workspace files' sandbox)."""
+    response.headers["X-Frame-Options"] = "DENY"
+    csp = response.headers.get("Content-Security-Policy")
+    response.headers["Content-Security-Policy"] = (
+        f"{csp.rstrip('; ')}; {NO_FRAMES}" if csp else NO_FRAMES
+    )
+    return response
+
+
 @app.middleware("http")
 async def same_origin_writes(request: Request, call_next):
-    """Changes (every method but GET and HEAD) only from this app's own page, and no oversized bodies."""
+    """Changes (every method but GET and HEAD) only from this app's own page, and no oversized bodies. Every
+    response, a refusal too, gets the frame headers."""
     if request.method not in ("GET", "HEAD"):
         origin = request.headers.get("origin")
         if origin is not None and origin not in ORIGINS:
-            return JSONResponse(
-                {"detail": "Cross-site request refused"}, status_code=403
+            return frame_headers(
+                JSONResponse({"detail": "Cross-site request refused"}, status_code=403)
             )
         if int(request.headers.get("content-length") or 0) > MAX_REQUEST:
-            return JSONResponse({"detail": "Request too large"}, status_code=413)
+            return frame_headers(
+                JSONResponse({"detail": "Request too large"}, status_code=413)
+            )
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     if not request.url.path.startswith(
         "/api/"
     ):  # the page's own files: check for a newer copy after an update
         response.headers.setdefault("Cache-Control", "no-cache")
-    return response
+    return frame_headers(response)
 
 
 def now() -> str:
@@ -323,8 +349,10 @@ def worker() -> None:
 
 
 def shutdown() -> None:
-    """Stop taking jobs, cancel everything queued or running, and wait until every model process is gone."""
+    """Stop taking jobs, cancel everything queued or running, and wait until every model process is gone. Running
+    chat answers get Stop (an agent's waiting approval is denied) and a few seconds to save what they have."""
     stopping.set()
+    answers = chat.stop_all()
     with lock:
         for job in jobs.values():
             if job["status"] in ("queued", "running"):
@@ -337,6 +365,8 @@ def shutdown() -> None:
     models.stop()
     llm.close("The app was closed.")
     wake.set()
+    chat.wait_all(answers)
+    remove_token()
 
 
 def view(job: dict[str, Any]) -> dict[str, Any]:
@@ -769,8 +799,45 @@ def assist_cancel(body: AssistCancel) -> dict[str, str]:
     return {"status": "cancelling" if assist.cancel(body.request_id) else "idle"}
 
 
+def proof(nonce: str) -> str | None:
+    """HMAC-SHA256 of the nonce under this run's token: shows that this server wrote the token file, without
+    sending the token. None before start()."""
+    if token is None:
+        return None
+    return hmac.new(token.encode(), nonce.encode(), "sha256").hexdigest()
+
+
+def publish_token() -> None:
+    """A new random token in outputs/.server-token, mode 0600, written atomically (a temp file, then a rename)."""
+    global token
+    token = secrets.token_hex(32)
+    fd, tmp = tempfile.mkstemp(dir=OUT, prefix=TOKEN_NAME + ".", suffix=".tmp")  # 0600
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(token)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, OUT / TOKEN_NAME)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def remove_token() -> None:
+    """Remove the token file at a clean shutdown, when it still holds this run's token."""
+    path = OUT / TOKEN_NAME
+    try:
+        if token is not None and path.read_text() == token:
+            path.unlink()
+    except OSError:
+        pass
+
+
 @app.get("/api/system")
-def system() -> dict[str, Any]:
+def system(nonce: str | None = None) -> dict[str, Any]:
+    """The memory, the queue and the profile. With ?nonce= (start.py), also `proof`: HMAC(token, nonce)."""
+    if nonce is not None and not NONCE.fullmatch(nonce):
+        raise HTTPException(400, "Bad nonce: 32 to 128 lowercase hex digits")
     page = 16384
     vm = subprocess.run(["vm_stat"], capture_output=True, text=True, check=False).stdout
     pages = {
@@ -792,7 +859,7 @@ def system() -> dict[str, Any]:
             (j["id"] for j in jobs.values() if j["status"] == "running"), None
         )
         queued = sum(1 for j in jobs.values() if j["status"] == "queued")
-    return {
+    info = {
         "mem_total_gb": round(total / 2**30, 1),
         "mem_free_gb": round(sum(pages.values()) * page / 2**30, 1),
         "swap_used_gb": round(float(used.group(1)) / 1024, 1) if used else 0.0,
@@ -800,11 +867,16 @@ def system() -> dict[str, Any]:
         "queued": queued,
         "profile": config.APP.profile,  # what the UI shows: "full" or "chat"
     }
+    if nonce is not None:
+        info["proof"] = proof(nonce)
+    return info
 
 
 def start() -> None:
-    """Load the history and start the worker. Called once by start.py after it knows the port is free."""
+    """Load the history and start the worker. Called once by start.py after it knows the port is free. Writes the
+    token file that a later start.py uses to check that the server on the port is this app."""
     OUT.mkdir(exist_ok=True)
+    publish_token()
     load_jobs()
     # the [agent] settings apply from the start (a bad value stops here); the Settings screen shows the same values
     chat.settings = load_agent_settings()

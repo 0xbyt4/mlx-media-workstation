@@ -47,6 +47,7 @@ from app.agent import (
     WorkstationPort,
     build_registry,
     decide,
+    file_tools,
     load_settings,
     taints,
     work_dir,
@@ -124,6 +125,8 @@ SYSTEM_FOLDERS = (
     "/private/var/root",
     "/private/var/log",
 )
+# shared folders that every user can write to (/var and /tmp resolve here): never granted, nor anything inside
+SHARED_FOLDERS = ("/private/var", "/private/tmp")
 
 
 def workstation_prompt() -> str:
@@ -510,6 +513,7 @@ class Turn:
         # thinking counts against the limit
         self.max_tokens = 8192 if thinking else 4096
         self.started = time.monotonic()
+        # moved later by the time a request waits for memory (generate): a media job's run does not count
         self.deadline = self.started + TURN_SECONDS
         self.timed_out = False  # the time limit cancelled the running step
         self.reg = registry()
@@ -595,7 +599,10 @@ class Turn:
         images: list[str],
         schemas: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """One model request: its deltas go to the page; returns its done event."""
+        """One model request: its deltas go to the page; returns its done event. The time the request waits for
+        memory (a media job runs) is added to the deadline: the answer's limit counts its own time only. Stop ends
+        the wait (llm.cancel)."""
+        waiting_since: float | None = None
         for ev in llm.generate(
             messages,
             images,
@@ -609,6 +616,11 @@ class Turn:
                 if self.run.stop:
                     llm.cancel(ev["id"])
                 continue
+            if ev["event"] == "waiting":
+                waiting_since = time.monotonic()
+            elif waiting_since is not None:  # the wait ended
+                self.deadline += time.monotonic() - waiting_since
+                waiting_since = None
             if ev["event"] == "done":
                 self.generated += int(ev["stats"].get("generation_tokens") or 0)
                 return ev
@@ -627,9 +639,11 @@ class Turn:
         args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
         tool = self.reg.get(name)
         describe = ""
+        host = None
         if tool is not None and not call.get("error"):
             try:
                 describe = tool.describe(args)
+                host = tool.target(args)
             except Exception:  # noqa: BLE001 - an explain function must not end the answer
                 describe = f"Runs {name}."
         self.emit(
@@ -682,7 +696,7 @@ class Turn:
         approval = None
         if verdict.action == Action.ASK:
             approval = self.ask(
-                call, tool, describe, verdict.reason, verdict.chat_scope
+                call, tool, describe, host, verdict.reason, verdict.chat_scope
             )
             if approval == "stopped":
                 self.result(
@@ -728,6 +742,7 @@ class Turn:
         call: dict[str, Any],
         tool: Tool,
         describe: str,
+        host: str | None,
         reason: str,
         chat_scope: bool,
     ) -> str:
@@ -743,6 +758,7 @@ class Turn:
                 "label": LABELS.get(tool.name, tool.name),
                 "arguments": call.get("arguments") or {},
                 "describe": describe,
+                "host": host,
                 "reason": reason,
                 "risk": int(tool.risk),
                 "chat_scope": chat_scope,
@@ -757,8 +773,12 @@ class Turn:
         else:
             decision = "timeout"
         with lock:
+            # approve() may have answered between the timeout and this lock: the page got its 200, so the answer
+            # counts. After this block a late answer finds nothing to approve (HTTP 409).
+            if decision == "timeout" and ap.answered.is_set() and ap.decision:
+                decision = ap.decision
             self.run.approval = None
-            ap.answered.set()  # a late answer finds nothing to approve
+            ap.answered.set()
         self.emit({"event": "approval_done", "id": ap.id, "decision": decision})
         return decision
 
@@ -1069,6 +1089,32 @@ async def resume_stream(chat_id: str, request: Request) -> StreamingResponse:
     return StreamingResponse(stream(request, run), media_type="text/event-stream")
 
 
+def stop_all() -> list[Live]:
+    """The app closes: Stop every running answer, as Stop does. Returns the runs for wait_all."""
+    runs = list(live.values())
+    for run in runs:
+        run.stop = True
+        run.abort.set()
+        with lock:
+            ap = run.approval
+            if ap is not None and not ap.answered.is_set():
+                ap.decision = "stopped"
+                ap.answered.set()
+        if run.rid is not None:
+            llm.cancel(run.rid)
+    return runs
+
+
+def wait_all(runs: list[Live], seconds: float = 5.0) -> bool:
+    """Wait at most `seconds` for the answer threads of stop_all to save what they have; True when all did."""
+    end = time.monotonic() + seconds
+    while not all(run.done for run in runs):
+        if time.monotonic() > end:
+            return False
+        time.sleep(0.05)
+    return True
+
+
 @router.post("/chats/{chat_id}/stop")
 def stop_answer(chat_id: str) -> dict[str, str]:
     folder(chat_id)
@@ -1099,8 +1145,18 @@ def same_origin(request: Request) -> None:
         raise HTTPException(403, "Only the app's own page can change this.")
 
 
+def disk_path(path: Path) -> Path:
+    """The folder's real path as the disk spells it (F_GETPATH: links resolved, letter case as stored), so a check
+    cannot be passed with "/library" or "/users/x", and the file tools compare with the same spelling."""
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        return Path(file_tools.fd_path(fd))
+    finally:
+        os.close(fd)
+
+
 def check_folder(text: str) -> str:
-    """The folder a chat may be granted, as its resolved path; HTTP 400 with the reason otherwise."""
+    """The folder a chat may be granted, as its real path (disk_path); HTTP 400 with the reason otherwise."""
     raw = Path(text.strip()).expanduser()
     if not raw.is_absolute():
         raise HTTPException(
@@ -1112,7 +1168,19 @@ def check_folder(text: str) -> str:
         raise HTTPException(400, f"There is no folder {raw}.") from None
     if not path.is_dir():
         raise HTTPException(400, f"{path} is a file. Choose a folder.")
-    home = Path.home().resolve()
+    try:
+        path = disk_path(path)
+    except OSError:
+        raise HTTPException(400, f"{path} cannot be opened.") from None
+
+    def within(folder: str | Path) -> bool:
+        return path == Path(folder) or Path(folder) in path.parents
+
+    home, app_root = Path.home().resolve(), ROOT.resolve()
+    try:
+        home, app_root = disk_path(home), disk_path(app_root)
+    except OSError:
+        pass
     if path == Path("/") or path.parent == Path("/"):
         raise HTTPException(
             400, f"{path} is too broad. Choose a folder inside your home folder."
@@ -1121,16 +1189,28 @@ def check_folder(text: str) -> str:
         raise HTTPException(
             400, "Choose a folder inside your home folder, not the home folder itself."
         )
-    if any(path == Path(f) or Path(f) in path.parents for f in SYSTEM_FOLDERS):
+    if any(within(f) for f in SYSTEM_FOLDERS):
         raise HTTPException(
             400, f"{path} is a system folder. Choose one of your own folders."
         )
+    if any(within(f) for f in SHARED_FOLDERS):
+        raise HTTPException(
+            400,
+            f"{path} is a shared folder that other users and programs can write to. Choose one of your own folders.",
+        )
+    if path.parts[:2] == ("/", "Users") and not within(home):
+        raise HTTPException(
+            400, f"{path} is not in your home folder. Choose one of your own folders."
+        )
+    if within(app_root) or path in app_root.parents:
+        what = "is" if within(app_root) else "holds"
+        raise HTTPException(
+            400,
+            f"{path} {what} the app's own folder (its settings and the other chats). Choose one of your own "
+            "folders.",
+        )
     library = home / "Library"
-    if (
-        path == library
-        or library in path.parents
-        or any(part.startswith(".") for part in path.parts)
-    ):
+    if within(library) or any(part.startswith(".") for part in path.parts):
         raise HTTPException(
             400, f"{path} holds app data and secrets. Choose one of your own folders."
         )
@@ -1257,7 +1337,8 @@ def workspace_file(chat_id: str, path: str) -> Response:
         fds.append(os.open(root, flags | os.O_DIRECTORY))
         for part in parts[:-1]:
             fds.append(os.open(part, flags | os.O_DIRECTORY, dir_fd=fds[-1]))
-        fds.append(os.open(parts[-1], flags, dir_fd=fds[-1]))
+        # O_NONBLOCK: a FIFO the code made must not block this thread in open(); the S_ISREG check refuses it
+        fds.append(os.open(parts[-1], flags | os.O_NONBLOCK, dir_fd=fds[-1]))
         st = os.fstat(fds[-1])
         if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_SERVED:
             raise HTTPException(404, "No such file")

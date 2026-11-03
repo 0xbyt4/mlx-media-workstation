@@ -6,6 +6,7 @@ caps the text the model gets. A tool reports a problem the model can act on with
 becomes an error result too, so a broken tool never ends the turn.
 """
 
+import re
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -17,6 +18,19 @@ from app.agent import schema
 from app.agent.policy import Risk
 
 MAX_RESULT = 12000  # characters of a result in the model's context (about 4,000 tokens)
+# characters that hide or reorder text on the approval card: C0 and C1 controls, the soft hyphen, zero-width
+# characters and bidi marks, line and paragraph separators, bidi embeddings, overrides and isolates, invisible
+# operators, variation selectors, the byte order mark and the tag characters (invisible text)
+HIDDEN = re.compile(
+    "[\x00-\x1f\x7f-\x9f\xad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069"
+    "\ufe00-\ufe0f\ufeff\U000e0000-\U000e007f]"
+)
+
+
+def visible(text: str) -> str:
+    """The text with each hiding character written as \\uXXXX (\\uXXXXX for a tag character), so the user reads
+    what the call really sends."""
+    return HIDDEN.sub(lambda m: f"\\u{ord(m.group()):04x}", text)
 
 
 class ToolError(Exception):
@@ -55,6 +69,8 @@ class Tool:
     untrusted_output: bool = False
     # one line for the approval card: what this call does ("Sends the query ... to en.wikipedia.org")
     explain: Callable[[dict[str, Any]], str] | None = None
+    # the host the call contacts, as the network sees it (IDNA), for its own line on the approval card
+    host: Callable[[dict[str, Any]], str | None] | None = None
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -67,7 +83,12 @@ class Tool:
         }
 
     def describe(self, args: dict[str, Any]) -> str:
-        return self.explain(args) if self.explain else f"Runs {self.name}."
+        """The approval card's line, with hiding characters escaped (visible)."""
+        return visible(self.explain(args) if self.explain else f"Runs {self.name}.")
+
+    def target(self, args: dict[str, Any]) -> str | None:
+        """The host the call contacts (ASCII, IDNA), or None for a tool without one or a URL with no valid host."""
+        return self.host(args) if self.host else None
 
 
 @dataclass

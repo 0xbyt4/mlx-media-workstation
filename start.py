@@ -7,18 +7,24 @@
 
 Without --chat, `profile` in config.toml [app] picks the profile ("full" when it is not set).
 
-If the port is taken, start.py asks the server there for its profile (GET /api/system). When the running app shows
-another profile, it opens only a window on that server in the profile asked for, so there is one job queue and one
-local LLM (a second server would load a second copy of the 18 GB model). Closing that window leaves the server
-running. In every other case it says that the app is open, and exits without touching the running app's jobs.
+If the port is taken, start.py asks the server there for its profile (GET /api/system). It first checks that the
+server is this app: the server writes a random token to outputs/.server-token (mode 0600) at start, and start.py
+sends a random nonce and checks the answer's HMAC(token, nonce), so the token never leaves the file. When the running
+app shows another profile, it opens only a window on that server in the profile asked for, so there is one job queue
+and one local LLM (a second server would load a second copy of the 18 GB model). Closing that window leaves the
+server running. In every other case (also a server that cannot prove the token) it says that the port is in use, and
+exits without touching the running app's jobs.
 Closing the server's own window, or Ctrl-C in --browser mode, cancels the queue and stops every model process before
 exiting.
 """
 
 import argparse
+import hmac
 import json
 import os
+import secrets
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -37,6 +43,7 @@ os.environ["PATH"] = os.pathsep.join(
 )
 sys.path.insert(0, str(ROOT))
 HOST, PORT = "127.0.0.1", 7870
+TOKEN_FILE = ROOT / "outputs" / ".server-token"  # written by app/server.py start()
 URL = f"http://{HOST}:{PORT}"
 TITLES = {"full": "Workstation", "chat": "Workstation Chat"}
 # width, height and smallest size of the window; a chat window needs less room than the media forms
@@ -80,18 +87,47 @@ def port_free() -> bool:
     return True
 
 
-def running_profile(timeout: float = 2.0) -> str | None:
-    """The profile of the Workstation that answers on the port; None when nothing answers, or not the Workstation."""
+def server_token() -> str | None:
+    """The running server's token: a regular file (not a link) of this user that only this user can read; else
+    None."""
     try:
-        with urllib.request.urlopen(f"{URL}/api/system", timeout=timeout) as r:
+        fd = os.open(TOKEN_FILE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if (
+            not stat.S_ISREG(st.st_mode)
+            or st.st_uid != os.getuid()
+            or st.st_mode & 0o077
+        ):
+            return None
+        text = os.read(fd, 1024).decode("ascii", errors="replace").strip()
+    finally:
+        os.close(fd)
+    return text or None
+
+
+def running_profile(timeout: float = 2.0) -> str | None:
+    """The profile of the Workstation that answers on the port; None when nothing answers, or when the server there
+    cannot prove that it knows the token in outputs/.server-token (another program, or no token file)."""
+    token = server_token()
+    if token is None:
+        return None
+    nonce = secrets.token_hex(16)
+    try:
+        with urllib.request.urlopen(
+            f"{URL}/api/system?nonce={nonce}", timeout=timeout
+        ) as r:
             data = json.load(r)
     except (OSError, ValueError):  # no answer, an HTTP error, or not JSON
         return None
-    if not isinstance(data, dict) or "mem_total_gb" not in data:
+    if not isinstance(data, dict) or not isinstance(data.get("proof"), str):
         return None
-    return str(
-        data.get("profile") or "full"
-    )  # a server from before profiles shows everything
+    expected = hmac.new(token.encode(), nonce.encode(), "sha256").hexdigest()
+    if not hmac.compare_digest(data["proof"], expected):
+        return None
+    return str(data.get("profile") or "full")
 
 
 def window_url(profile: str) -> str:

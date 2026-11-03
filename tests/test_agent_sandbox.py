@@ -246,6 +246,7 @@ def test_profile_is_deny_by_default_and_names_no_home_path(
 ) -> None:
     text = sb.profile(box.interpreter(), "/private/var/w", [])
     assert "(deny default)" in text
+    assert "(deny process-info*)\n(allow process-info* (target self))" in text
     assert "network" not in text and "mach-lookup" not in text
     assert "process-fork" not in text
     assert str(Path.home()) not in text
@@ -273,8 +274,11 @@ def test_run_python_tool(work: Path) -> None:
     assert reg.call("run_python", {"code": "1"}, stop).status == "cancelled"
 
 
-def test_a_configured_environment_runs_with_its_own_packages(tmp_path: Path) -> None:
-    """[agent] python = a venv: it runs with -I, sees its own site-packages, and still cannot read outside."""
+def test_a_configured_environment_runs_with_its_own_packages(
+    tmp_path: Path, other_process
+) -> None:
+    """[agent] python = a venv: it runs with -I, sees its own site-packages, and still cannot read outside or see
+    other processes."""
     env = tmp_path / "venv-sandbox"
     base = os.path.realpath(getattr(sys, "_base_executable", sys.executable))
     subprocess.run(
@@ -293,6 +297,12 @@ def test_a_configured_environment_runs_with_its_own_packages(tmp_path: Path) -> 
         threading.Event(),
     )
     assert r.stdout.split() == ["42", "1", "0", "denied"], r.stderr
+    pid, marker = other_process
+    r = box.run_python(
+        PEEK.format(pid=pid, marker=marker), tmp_path / "ws", FAST, threading.Event()
+    )
+    assert r.stdout.split()[:3] == ["procargs", "denied", "False"], r.stderr
+    assert marker not in r.stdout
     assert "does not exist" in (
         sb.SeatbeltSandbox(tmp_path / "missing" / "python").unavailable() or ""
     )
@@ -352,3 +362,70 @@ def test_system_facts_work_under_the_sysctl_allowlist(
     )
     r = run(box, work, code)
     assert r.stdout.split() == ["True", "arm64", "True", "8"], r.stderr
+
+
+PEEK = """
+import ctypes, sys
+libc = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+pid = int(sys.argv[1]) if len(sys.argv) > 1 else {pid}
+# sysctl CTL_KERN (1), KERN_PROCARGS2 (49), pid: the argv and the environment of that process
+mib = (ctypes.c_int * 3)(1, 49, pid)
+size = ctypes.c_size_t(1 << 20)
+buf = ctypes.create_string_buffer(size.value)
+ok = libc.sysctl(mib, 3, buf, ctypes.byref(size), None, ctypes.c_size_t(0)) == 0
+print('procargs', 'read' if ok else 'denied', {marker!r}.encode() in buf.raw[: size.value] if ok else False)
+# proc_listpids(PROC_ALL_PIDS, 0, buffer, size): the pid list
+pids = (ctypes.c_int * 4096)()
+n = libc.proc_listpids(1, 0, pids, ctypes.sizeof(pids))
+print('listpids', n, pid in list(pids[: max(0, n) // 4]))
+# proc_pidpath: the executable of that process
+path = ctypes.create_string_buffer(4096)
+print('pidpath', libc.proc_pidpath(pid, path, 4096))
+# its own path still works
+print('self', libc.proc_pidpath(__import__('os').getpid(), path, 4096) > 0)
+"""
+
+
+@pytest.fixture
+def other_process():
+    """A helper python process with a fake marker in its environment and its argv."""
+    marker = "mmw-marker-" + os.urandom(4).hex()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)", marker],
+        env={"PATH": "/usr/bin:/bin", "MMW_TEST_MARKER": marker},
+    )
+    try:
+        yield proc.pid, marker
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_peek_works_outside_the_sandbox(other_process) -> None:
+    """The check below would see the marker without the sandbox, so its "denied" means something."""
+    pid, marker = other_process
+    out = subprocess.run(
+        [sys.executable, "-c", PEEK.format(pid=pid, marker=marker)],
+        capture_output=True,
+        check=True,
+        text=True,
+        timeout=30,
+    ).stdout.split()
+    assert out[:3] == ["procargs", "read", "True"]
+    assert int(out[4]) > 0 and out[5] == "True"
+    assert int(out[7]) > 0
+
+
+def test_cannot_see_other_processes(
+    box: sb.SeatbeltSandbox, work: Path, other_process
+) -> None:
+    """No argv or environment of another process (KERN_PROCARGS2), no pid list and no paths of other processes."""
+    pid, marker = other_process
+    r = run(box, work, PEEK.format(pid=pid, marker=marker))
+    assert r.exit_code == 0, r.stderr
+    assert marker not in r.stdout
+    out = r.stdout.split()
+    assert out[:3] == ["procargs", "denied", "False"], r.stdout
+    assert out[3:6] == ["listpids", "0", "False"], r.stdout
+    assert out[6:8] == ["pidpath", "0"], r.stdout
+    assert out[8:] == ["self", "True"], r.stdout
