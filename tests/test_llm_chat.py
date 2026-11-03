@@ -164,10 +164,18 @@ def test_closing_the_iterator_cancels_and_the_worker_goes_on():
 
 def test_stop_fails_waiting_requests_with_the_reason():
     gen = llm.generate(user("SLOW"))
-    next(gen)
-    threading.Timer(0.1, llm.stop, args=("Unloaded for a test.",)).start()
-    last = list(gen)[-1]
-    assert last == {"event": "error", "message": "Unloaded for a test."}
+    while next(gen)["event"] != "content":  # the worker runs and answers
+        pass
+    t0 = time.monotonic()
+    llm.stop("Unloaded for a test.")
+    assert (
+        time.monotonic() - t0 < llm.STOP_WAIT
+    )  # the answer is cancelled, not waited for
+    events = []
+    for ev in gen:  # the deltas already sent, then the end; never an endless stream
+        events.append(ev)
+        assert len(events) < 1000
+    assert events[-1] == {"event": "error", "message": "Unloaded for a test."}
     assert llm.status()["state"] == "off"
 
 

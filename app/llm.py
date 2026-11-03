@@ -115,7 +115,16 @@ class Worker:
     def stop(self, reason: str) -> None:
         self.reason = reason
         if self.alive():
+            with lock:  # the running answers end now, with the reason
+                running = list(self.pending)
+                for q in self.pending.values():
+                    q.put({"event": "error", "message": reason})
+                self.pending.clear()
             try:
+                # the worker ends the current answer before it reads shutdown: cancel it first, or the exit waits
+                # STOP_WAIT for the answer and then needs the SIGKILL
+                for rid in running:
+                    self.send({"op": "cancel", "id": rid})
                 self.send({"op": "shutdown"})
                 self.proc.stdin.close()
             except (LLMError, ValueError, OSError):
