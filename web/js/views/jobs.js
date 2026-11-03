@@ -15,7 +15,7 @@ const STATUS = {
 };
 const KIND_ICON = {image: 'image', audio: 'voice', video: 'video'};
 
-// Kept across mounts: details the user opened or closed, and queued jobs waiting for their Undo to expire.
+// Kept across mounts: details the user opened or closed, and queued jobs that are being removed.
 const openDetails = new Set();
 const removing = new Set();  // job ids being removed, hidden until the next refresh
 
