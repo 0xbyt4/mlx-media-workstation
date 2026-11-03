@@ -149,6 +149,8 @@ search fails only when every source fails.
 - Seatbelt (`sandbox-exec`) is deprecated by Apple. It works on current macOS, but Apple may remove it.
 - The memory watchdog polls. Between two polls the code can use more memory than the limit.
 - The code can `stat` any path, so it can learn which files exist and their sizes and dates.
+- The code can read the Mac's name (`kern.hostname`), which often holds the user's name: `os.uname()` needs it,
+  and `ctypes` and `platform` call that at import.
 - The folders of a symlinked interpreter's target are not checked. A Homebrew `Cellar` folder, for example, is
   writable by the `admin` group.
 - A DNS lookup and the HTML parsing of `fetch_url` cannot be interrupted. Stop takes effect after they end.

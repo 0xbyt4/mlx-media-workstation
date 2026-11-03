@@ -53,7 +53,7 @@ SYSTEM_READ = (
 )
 # what Python's start, os.uname() and platform read besides hw.* (found with the sandbox violation log)
 SYSCTLS = (
-    "kern.hostname",
+    "kern.hostname",  # os.uname() needs it (ctypes, platform): the code can read the Mac's name
     "kern.ostype",
     "kern.osrelease",
     "kern.osversion",
@@ -180,6 +180,17 @@ def snapshot(workdir: Path) -> dict[str, tuple[int, int]]:
                 continue
             if not os.path.islink(path) and os.path.isfile(path):
                 found[os.path.relpath(path, workdir)] = (st.st_size, st.st_mtime_ns)
+    return found
+
+
+def all_files(workdir: Path) -> set[str]:
+    """Every file and link under the work dir, hidden ones too (absolute paths; links are not followed)."""
+    found: set[str] = set()
+    for here, dirs, files in os.walk(workdir):
+        found.update(os.path.join(here, name) for name in files)
+        found.update(
+            os.path.join(here, d) for d in dirs if os.path.islink(os.path.join(here, d))
+        )
     return found
 
 
@@ -394,6 +405,7 @@ class SeatbeltSandbox:
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
         before = snapshot(Path(work))
+        before_all = all_files(Path(work))
         t0 = time.monotonic()
         proc = subprocess.Popen(
             [SANDBOX_EXEC, "-p", sbpl, *interp.argv, "-B", "-X", "utf8", "-"],
@@ -454,6 +466,16 @@ class SeatbeltSandbox:
         shutil.rmtree(tmp, ignore_errors=True)
         after = snapshot(Path(work))
         changed = sorted(p for p, v in after.items() if before.get(p) != v)
+        size, count = dir_size(Path(work))
+        if size > limits.disk_mb * 1024 * 1024 or count > MAX_WORK_FILES:
+            # the watchdog looks every DISK_EVERY seconds: code that wrote fast and ended in between loses what it
+            # wrote, hidden files too, so the folder is back under the limit for the next call
+            for path in sorted(all_files(Path(work)) - before_all, reverse=True):
+                Path(path).unlink(missing_ok=True)
+            for rel in changed:
+                (Path(work) / rel).unlink(missing_ok=True)
+            killed = killed or "disk"
+            changed = []
         stdout, stdout_cut = out.text(limits.output_chars)
         stderr, stderr_cut = err.text(limits.output_chars)
         return RunResult(
