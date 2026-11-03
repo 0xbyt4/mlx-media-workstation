@@ -343,6 +343,7 @@ def build() -> list[Tool]:
             },
             risk=Risk.R1,
             run=list_files,
+            repeatable=True,
             untrusted_output=True,
             explain=lambda a: (
                 f"Lists {a.get('path', '.')!r} in the granted folder"
@@ -374,6 +375,7 @@ def build() -> list[Tool]:
             },
             risk=Risk.R1,
             run=read_file,
+            repeatable=True,
             untrusted_output=True,
             explain=lambda a: (
                 f"Reads {a.get('path', '')!r} in the granted folder"
@@ -408,6 +410,7 @@ def build() -> list[Tool]:
             },
             risk=Risk.R1,
             run=search_files,
+            repeatable=True,
             untrusted_output=True,
             explain=lambda a: (
                 f"Searches for {a.get('query', '')!r} in {a.get('path', '.')!r} of the granted folder."

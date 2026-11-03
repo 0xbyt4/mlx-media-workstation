@@ -485,6 +485,68 @@ def test_a_fast_write_past_the_disk_limit_is_removed(
     assert sorted(p.name for p in work.iterdir()) == ["kept.txt"]
 
 
+def test_the_disk_limit_counts_resource_forks_and_extended_attributes(
+    box: ss.SeatbeltShell, work: Path
+) -> None:
+    """A resource fork or a large extended attribute leaves a file's size at 0 (APFS keeps a large attribute outside
+    the file's blocks too), so the disk limit counts them: the run is stopped and what it added is removed."""
+    work.mkdir(parents=True)
+    forks = "for i in 1 2 3; do touch f$i; head -c 4000000 /dev/zero > f$i/..namedfork/rsrc; done"
+    r = run(box, work, forks, Limits(wall_s=10, disk_mb=10))
+    assert r.killed == "disk" and list(work.iterdir()) == []
+    (work / "plain.txt").write_text("x")
+    data = b"a" * 3_000_000
+    for name in ("big1", "big2"):
+        assert (
+            sb._libc.setxattr(
+                os.fsencode(work / "plain.txt"), name.encode(), data, len(data), 0, 0
+            )
+            == 0
+        )
+    size, _ = sb.dir_size(work)
+    assert size >= 6_000_000
+    assert sb.snapshot(work)["plain.txt"][0] >= 6_000_000
+
+
+def test_immutable_files_are_removed_too(box: ss.SeatbeltShell, work: Path) -> None:
+    """Code can set the user immutable flag (chflags uchg) on what it writes. The cleanup after a run past the disk
+    limit clears it, so the folder does not stay over the limit for every later run."""
+    work.mkdir(parents=True)
+    cmd = "mkdir d; for i in 1 2 3 4; do head -c 1000000 /dev/zero > d/f$i; done; chflags uchg d/f1 d/f2 d/f3 d/f4 d"
+    r = run(box, work, cmd, Limits(wall_s=10, disk_mb=3))
+    assert r.killed == "disk" and list(work.iterdir()) == []
+    assert run(box, work, "echo ok").killed is None
+    # the same for the sandbox's temp folder, which the host empties after each run
+    r = run(box, work, "echo x > $TMPDIR/t; chflags uchg $TMPDIR/t $TMPDIR")
+    assert r.exit_code == 0 and not (work / ".tmp" / "t").exists()
+
+
+def test_system_v_ipc_objects_cannot_carry_data(
+    box: ss.SeatbeltShell, work: Path
+) -> None:
+    """macOS does not check the creation of System V IPC objects in a sandbox (shmget, msgget and semget with
+    IPC_CREAT work under (deny default) and under (deny ipc-sysv*)), and such an object outlives the run. Their use
+    is refused, so no data passes from one run to the next. The test removes what it made."""
+    perl = (
+        "perl -e 'use IPC::SysV qw(IPC_PRIVATE IPC_CREAT); "
+        'my $m = shmget(IPC_PRIVATE, 4096, IPC_CREAT|0600); print "m $m\\n"; '
+        'print shmwrite($m, "x", 0, 1) ? "shm written\\n" : "shm refused\\n"; '
+        'my $q = msgget(IPC_PRIVATE, IPC_CREAT|0600); print "q $q\\n"; '
+        'print msgsnd($q, pack("l! a*", 1, "x"), 0) ? "msg sent\\n" : "msg refused\\n"'
+        "'"
+    )
+    r = run(box, work, perl)
+    made = [line.split() for line in r.stdout.splitlines() if line[:2] in ("m ", "q ")]
+    try:
+        assert "shm refused" in r.stdout and "msg refused" in r.stdout, (
+            r.stdout + r.stderr
+        )
+    finally:
+        for kind, ident in made:
+            if ident.isdigit():
+                subprocess.run(["/usr/bin/ipcrm", f"-{kind}", ident], check=False)
+
+
 def test_environment_is_clean(
     box: ss.SeatbeltShell, work: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

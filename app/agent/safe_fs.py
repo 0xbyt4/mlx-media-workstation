@@ -32,10 +32,21 @@ EXEC_TYPES = frozenset(
         ".scpt", ".scptd", ".applescript", ".workflow", ".action", ".terminal",
         ".plist", ".mobileconfig", ".dylib", ".so", ".bundle", ".kext", ".framework", ".plugin", ".xpc",
         ".prefpane", ".saver", ".qlgenerator", ".mdimporter", ".osax", ".appex",
-        ".exe", ".msi", ".bat", ".cmd", ".com", ".ps1", ".vbs", ".jar", ".pkg", ".mpkg", ".dmg",
+        ".exe", ".msi", ".bat", ".cmd", ".com", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".hta",
+        ".scr", ".reg", ".jar", ".pkg", ".mpkg", ".dmg", ".osascript", ".pth",
         ".url", ".webloc", ".inetloc", ".fileloc", ".desktop", ".lnk",
     }
 )  # fmt: skip
+# .pth: Python's site module runs its import lines at every start of that Python.
+# folder types that macOS runs or loads as one bundle: never written in, also not as the granted folder
+BUNDLE_TYPES = frozenset(
+    {
+        ".app", ".bundle", ".framework", ".plugin", ".kext", ".xpc", ".prefpane", ".saver", ".qlgenerator",
+        ".mdimporter", ".osax", ".appex", ".scptd", ".workflow", ".action",
+    }
+)  # fmt: skip
+# folders Python loads code from: never written in, also not as the granted folder
+CODE_FOLDERS = frozenset({"site-packages", "dist-packages"})
 # binary types export_from_workspace may copy into the granted folder (other files must be UTF-8 text)
 BINARY_TYPES = frozenset(
     {
@@ -68,11 +79,23 @@ def check_name(name: str, where: str) -> None:
         )
 
 
-def check_parts(rel: str, where: str) -> None:
-    """No folder on the way may be an app or another bundle that macOS runs or loads."""
+def code_folder(part: str) -> bool:
+    """Whether a folder name is a bundle that macOS runs or loads, or a folder Python loads code from."""
+    return Path(part).suffix.lower() in BUNDLE_TYPES or part.lower() in CODE_FOLDERS
+
+
+def check_parts(rel: str, where: str, root: str = "") -> None:
+    """No folder on the way may be an app or another bundle that macOS runs or loads, or a folder Python loads
+    code from; the same for the granted folder `root` and the folders above it (a grant made before the app
+    refused such folders)."""
     for part in Path(rel).parts[:-1]:
-        if Path(part).suffix.lower() in EXEC_TYPES:
+        if Path(part).suffix.lower() in EXEC_TYPES or code_folder(part):
             raise ToolError(f"{where}: cannot write inside {part}.")
+    for part in Path(root).parts:
+        if code_folder(part):
+            raise ToolError(
+                f"{where}: the granted folder is inside {part}, so the agent does not write there."
+            )
 
 
 def text_bytes(text: str, where: str) -> bytes:
@@ -123,7 +146,7 @@ def new_target(root: str, given: str) -> tuple[str, str]:
     folder, name = os.path.split(given)
     check_name(name, given)
     rel = os.path.relpath(os.path.normpath(os.path.join(root, given)), root)
-    check_parts(rel, given)
+    check_parts(rel, given, root)
     parent = no_links(root, folder or ".")
     if not os.path.isdir(parent):
         raise ToolError(f"{given}: {folder} is not a folder.")

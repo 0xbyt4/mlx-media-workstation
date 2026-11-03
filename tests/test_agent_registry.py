@@ -233,6 +233,41 @@ def test_risk_levels_of_the_tools() -> None:
     } | ({"run_python", "run_shell"} & set(risks))
 
 
+def test_tools_outside_the_repeat_rule_and_tools_that_clear_it() -> None:
+    """The chat loop's repeat rule (app/chat.py Turn.call) skips the tools whose result can change, and forgets the
+    earlier calls after a tool that changes state ran."""
+    reg = build_registry(FakeWorkstation(), Settings())
+    names = set(reg.names())
+    repeatable = {n for n in names if reg.get(n).repeatable}
+    assert (
+        repeatable
+        == {
+            "job_status",
+            "list_jobs",
+            "wait_for_job",
+            "transcribe_audio",
+            "search_library",
+            "list_files",
+            "read_file",
+            "search_files",
+            "media_info",
+            "view_image",
+            "fetch_url",
+        }
+        & names
+    )
+    changes = {n for n in names if reg.get(n).writes or reg.get(n).side_effects}
+    assert changes == {
+        "create_job",
+        "cancel_job",
+        "transcribe_audio",
+        "write_file",
+        "edit_file",
+        "copy_to_workspace",
+        "export_from_workspace",
+    } | ({"run_python", "run_shell"} & names)
+
+
 def test_chat_only_setup_has_no_workstation_tools() -> None:
     names = build_registry(None, Settings()).names()
     assert not {"list_workstation_tools", "create_job"} & set(names)

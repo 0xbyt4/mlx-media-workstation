@@ -4,6 +4,7 @@ sandbox, so no test runs a model, reaches the network or starts sandbox-exec."""
 
 import json
 import os
+import stat
 import sys
 import threading
 import time
@@ -14,7 +15,7 @@ from typing import Any
 import pytest
 
 from app import chat, llm, models, server, tools
-from app.agent import Limits, RunResult, Settings, build_registry
+from app.agent import Context, Limits, RunResult, Settings, build_registry
 from app.agent.net import HttpRequest, HttpResponse
 from app.agent.web_tools import Net
 from tests.conftest import app_client
@@ -37,12 +38,14 @@ class FakeSandbox:
 
     def __init__(self) -> None:
         self.codes: list[str] = []
+        self.walls: list[float] = []  # the wall-clock limit of each run
 
     def unavailable(self) -> str | None:
         return None
 
     def run_python(self, code, workdir, limits, abort, read_only=()) -> RunResult:
         self.codes.append(code)
+        self.walls.append(limits.wall_s)
         workdir.mkdir(parents=True, exist_ok=True)
         if "WAIT" in code:
             abort.wait(5)
@@ -574,6 +577,25 @@ def test_a_call_in_the_last_step_does_not_run(client, monkeypatch):
     assert evs[-1]["finish"] == "steps" and evs[-1]["content"] == ""
 
 
+def test_tool_cards_say_whether_the_tool_leaves_this_mac(client):
+    """The tool_call and tool_result events and the saved tool message carry the tool's network flag, so the page
+    labels a local R2 tool (create_job) "Uses this Mac", not "Leaves this Mac"."""
+    cid = agent_chat(client)
+    path = chat.CHATS / cid / "chat.json"
+    data = json.loads(path.read_text())
+    data["agent"]["grants"] = ["web_search", "create_job"]
+    path.write_text(json.dumps(data))
+    job = call("create_job", tool="image.klein", fields={"prompt": "a fox"})
+    evs = send(client, cid, script([job, call("web_search", query="fox")], "RESULT"))
+    for kind in ("tool_call", "tool_result"):
+        assert [(e["name"], e["network"]) for e in evs if e["event"] == kind] == [
+            ("create_job", False),
+            ("web_search", True),
+        ]
+    tools = [m for m in saved(client, cid)["messages"] if m["role"] == "tool"]
+    assert [m["network"] for m in tools] == [False, True]
+
+
 def test_a_repeated_call_points_to_the_first_result(client):
     cid = agent_chat(client)
     steps = script(
@@ -598,7 +620,7 @@ def test_a_third_identical_call_ends_the_answer(client):
 
 def test_repeats_within_one_step(client):
     cid = agent_chat(client)
-    same = call("job_status", job_id="20261103-120000-abcd")
+    same = call("update_plan", items=[{"step": "Look", "status": "pending"}])
     evs = send(client, cid, script([same, same, call("list_workstation_tools")]))
     assert [e["status"] for e in evs if e["event"] == "tool_result"] == [
         "ok", "repeat", "ok"
@@ -609,6 +631,51 @@ def test_repeats_within_one_step(client):
         "ok", "repeat", "skipped", "skipped"
     ]  # fmt: skip
     assert evs[-1]["finish"] == "repeat"
+
+
+def test_polling_calls_run_again(client, ws):
+    """A tool whose result can change (Tool.repeatable) is outside the repeat rule: each wait and each status read
+    runs and shows the job as it is now."""
+    cid = agent_chat(client)
+    jid = ws.create_job("image.klein", {"prompt": "x"}, None, cid)
+    wait = [call("wait_for_job", job_id=jid, seconds=1)]
+    evs = send(client, cid, script(wait, wait, wait, "RESULT"))
+    assert [e["status"] for e in evs if e["event"] == "tool_result"] == ["ok"] * 3
+    assert len(ws.waits) == 3 and evs[-1]["finish"] == "stop"
+    ws.finish[jid] = {"status": "done"}
+    status = [call("job_status", job_id=jid)]
+    steps = script(status, [call("wait_for_job", job_id=jid, seconds=1)], status)
+    results = [e for e in send(client, cid, steps) if e["event"] == "tool_result"]
+    assert [r["status"] for r in results] == ["ok"] * 3
+    assert "status: queued" in results[0]["content"]
+    assert "status: done" in results[2]["content"]
+
+
+def test_only_an_ok_result_counts_as_made(client):
+    """An identical call after an error runs again (here: invalid arguments each time); it never ends the
+    answer."""
+    cid = agent_chat(client)
+    bad = [call("update_plan", items=[{"step": "Look", "status": "bogus"}])]
+    evs = send(client, cid, script(bad, bad, bad, "RESULT"))
+    assert [e["status"] for e in evs if e["event"] == "tool_result"] == ["error"] * 3
+    assert evs[-1]["finish"] == "stop"
+
+
+def test_a_call_that_changes_state_clears_the_repeat_rule(client, ws):
+    """After create_job ran, an earlier identical call runs again (its result may be stale). The state-changing
+    call itself still counts: the same job is not queued twice."""
+    cid = agent_chat(client)
+    path = chat.CHATS / cid / "chat.json"
+    data = json.loads(path.read_text())
+    data["agent"]["grants"] = ["create_job"]
+    path.write_text(json.dumps(data))
+    look = [call("update_plan", items=[{"step": "Look", "status": "pending"}])]
+    job = [call("create_job", tool="image.klein", fields={"prompt": "a fox"})]
+    evs = send(client, cid, script(look, job, look, job, "RESULT"))
+    assert [e["status"] for e in evs if e["event"] == "tool_result"] == [
+        "ok", "ok", "ok", "repeat"
+    ]  # fmt: skip
+    assert ws.created == [("image.klein", {"prompt": "a fox"})]
 
 
 # ---------- the plan ----------
@@ -794,6 +861,43 @@ def test_folder_grant_validation(client, tmp_path, monkeypatch):
         assert grant(str(upper)).json()["folder"] == str(notes.resolve())
 
 
+def test_folders_with_programs_or_code_are_refused(client, tmp_path, monkeypatch):
+    """Programs (/Applications, ~/Applications, /opt), bundles (.app, .framework, ...) and Python's code folders are
+    never granted: a file written there can run."""
+    monkeypatch.setattr(
+        chat, "SHARED_FOLDERS", ()
+    )  # the temp folder is under /private/var
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    cid = agent_chat(client)
+    made = [
+        home / "Applications" / "Tools",
+        home / "Dev" / "Thing.app" / "Contents",
+        home / "Dev" / "Kit.framework",
+        home / "Dev" / "venv" / "lib" / "site-packages" / "pkg",
+        home / "Dev" / "dist-packages",
+    ]
+    for path in made:
+        path.mkdir(parents=True)
+    existing = [
+        p for p in ("/opt/homebrew", "/Applications/Utilities") if Path(p).is_dir()
+    ]
+    for bad in [str(p) for p in made] + existing:
+        r = client.patch(
+            f"/api/chats/{cid}/agent", json={"folder": bad}, headers=ORIGIN
+        )
+        assert r.status_code == 400, bad
+        detail = r.json()["detail"]
+        assert "programs or code" in detail or "system folder" in detail, detail
+    (home / "Dev" / "notes").mkdir()
+    r = client.patch(
+        f"/api/chats/{cid}/agent",
+        json={"folder": str(home / "Dev" / "notes")},
+        headers=ORIGIN,
+    )
+    assert r.status_code == 200
+
+
 def test_shared_and_other_folders_are_refused(client, tmp_path, monkeypatch):
     """/var, /tmp and what is inside them, other users' home folders and the app's own folder are never granted."""
     cid = agent_chat(client)
@@ -908,6 +1012,64 @@ def test_shell_asks_every_time_and_shows_its_folders(
     )
     assert results[1]["status"] == "denied"
     assert saved(client, cid)["agent"]["tainted"] is True
+
+
+def test_code_runs_end_before_the_answer_does(reg, box, shell, tmp_path):
+    """run_shell and run_python never run into the answer's last minute (ANSWER_RESERVE): the time limit is cut,
+    and the result says so; with no time left the call does not run."""
+    soon = time.monotonic() + 60 + 30.5  # 30 s left before the reserve
+    ctx = Context("c1", None, threading.Event(), tmp_path / "ws", soon)
+    r = reg.call("run_shell", {"command": "ls", "timeout_s": 300}, ctx)
+    assert r.status == "ok" and shell.runs[-1][2] == 30.0
+    assert r.content.startswith(
+        "exit code: 0 (0.02 s)\nnote: the time limit was cut from 300 s to 30 s"
+    )
+    r = reg.call("run_python", {"code": "print(1)"}, ctx)
+    assert r.status == "ok" and box.walls[-1] == 30.0
+    assert "\nnote: the time limit was cut from 60 s to 30 s" in r.content
+    # enough time: the limits stay, and no note
+    later = Context(
+        "c1", None, threading.Event(), tmp_path / "ws", time.monotonic() + 600
+    )
+    r = reg.call("run_shell", {"command": "ls", "timeout_s": 120}, later)
+    assert shell.runs[-1][2] == 120.0 and "note:" not in r.content
+    # no time left
+    late = Context(
+        "c1", None, threading.Event(), tmp_path / "ws", time.monotonic() + 30
+    )
+    runs = len(shell.runs)
+    r = reg.call("run_shell", {"command": "ls"}, late)
+    assert (
+        r.status == "error" and "no time left" in r.content and len(shell.runs) == runs
+    )
+    assert reg.call("run_python", {"code": "1"}, late).status == "error"
+
+
+def test_a_chat_with_immutable_files_is_deleted_whole(client):
+    """Code in the sandbox can make a file of the work folder immutable (chflags uchg) or a folder unreadable. Deleting
+    the chat still removes all of it, and the chat is never half deleted."""
+    cid = agent_chat(client)
+    ws = chat.CHATS / cid / "ws"
+    (ws / "locked").mkdir(parents=True)
+    (ws / "locked" / "f.txt").write_text("x")
+    (ws / "closed").mkdir()
+    (ws / "closed" / "g.txt").write_text("y")
+    flagged = [ws / "locked" / "f.txt", ws / "locked"]
+    try:
+        for path in flagged:
+            os.chflags(path, stat.UF_IMMUTABLE)
+        os.chmod(ws / "closed", 0)
+        r = client.delete(f"/api/chats/{cid}", headers=ORIGIN)
+        assert r.status_code == 200 and r.json() == {"status": "deleted"}
+        assert list(chat.CHATS.iterdir()) == []
+        assert client.get("/api/chats").json() == []
+        assert client.get(f"/api/chats/{cid}").status_code == 404
+    finally:  # a failed test must not leave files that pytest cannot remove
+        for path in flagged:
+            if path.exists():
+                os.chflags(path, 0)
+        if (ws / "closed").exists():
+            os.chmod(ws / "closed", 0o700)
 
 
 def test_python_files_are_served_from_the_workspace_only(client, box):

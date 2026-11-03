@@ -757,7 +757,8 @@ def test_transcribe_makes_16k_mono_speech_and_a_job_file(
     )
     speech, spec = tmp_path / "speech.wav", tmp_path / "transcribe_job.json"
     assert media.prepped == [
-        ["ffmpeg", "-v", "error", "-y", "-i", str(clip), "-vn", "-ac", "1", "-ar", "16000", str(speech)]
+        ["ffmpeg", "-v", "error", "-y", "-protocol_whitelist", "file", "-format_whitelist", tools.SPEECH_DEMUXERS,
+         "-i", str(clip), "-vn", "-ac", "1", "-ar", "16000", str(speech)]
     ]  # fmt: skip
     assert plan.commands == [
         [
@@ -781,3 +782,19 @@ def test_transcribe_makes_16k_mono_speech_and_a_job_file(
     assert json.loads(spec.read_text())["language"] == "Turkish"
     with pytest.raises(ValueError, match="Add an audio or video file"):
         tools.plan("voice.transcribe", params("voice.transcribe"), {}, tmp_path)
+
+
+def test_the_transcription_input_is_read_only_as_one_media_file(
+    tmp_path: Path, media: FakeMedia
+) -> None:
+    """The ffmpeg step before a transcription takes the file protocol and the media demuxers only, so a playlist or
+    a concat list named talk.mp4 cannot make it read other files."""
+    src = tmp_path / "talk.mp4"
+    src.write_bytes(b"x")
+    tools.plan("voice.transcribe", {}, {"audio": [src]}, tmp_path)
+    [cmd] = media.prepped
+    assert cmd[cmd.index("-protocol_whitelist") + 1] == "file"
+    allowed = cmd[cmd.index("-format_whitelist") + 1].split(",")
+    assert "mov" in allowed and "wav" in allowed
+    assert not {"hls", "concat", "image2", "tee"} & set(allowed)
+    assert cmd.index("-format_whitelist") < cmd.index("-i")

@@ -368,6 +368,7 @@ def generate(
     tool_choice: str | None = None,
     reasoning_effort: str | None = None,
     thinking_budget: int | None = None,
+    allow_emoji: bool = False,
     session: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Run one request and yield its events: "started" (with the request id), "waiting" when a media job holds the
@@ -383,7 +384,8 @@ def generate(
     under; by default the one of this thread's session() block.
 
     tool_choice "none": the tools stay in the prompt (so its cached start stays the same), but the worker bans the
-    call marker, so the model answers with text.
+    call marker, so the model answers with text. allow_emoji: the worker bans emoji tokens unless this is true
+    (never inside a tool call's arguments).
 
     Closing the iterator early (a client that went away) cancels the request in the worker.
     """
@@ -450,6 +452,7 @@ def generate(
             "tool_choice": tool_choice,
             "reasoning_effort": reasoning_effort,
             "thinking_budget": thinking_budget,
+            "allow_emoji": allow_emoji,
         }
         for ev in run(rid, cancelled, req):
             if tools and ev["event"] == "done":

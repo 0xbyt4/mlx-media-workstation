@@ -24,6 +24,7 @@ the size of the work dir. The process runs in its own session; a timeout, Stop o
 """
 
 import ctypes
+import fcntl
 import json
 import os
 import resource
@@ -176,8 +177,54 @@ def kill_group(pgid: int) -> None:
         pass
 
 
+XATTR_NOFOLLOW = 0x0001
+if _libc is not None:
+    _libc.listxattr.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+        ctypes.c_int,
+    ]
+    _libc.listxattr.restype = ctypes.c_ssize_t
+    _libc.getxattr.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_uint32,
+        ctypes.c_int,
+    ]
+    _libc.getxattr.restype = ctypes.c_ssize_t
+
+
+def xattr_bytes(path: str) -> int:
+    """The bytes of a file's extended attributes (a link's own, never its target's). APFS keeps a large one outside
+    the file's blocks, so neither the size nor the blocks show it."""
+    if _libc is None:
+        return 0
+    raw = os.fsencode(path)
+    size = _libc.listxattr(raw, None, 0, XATTR_NOFOLLOW)
+    if size <= 0:
+        return 0
+    names = ctypes.create_string_buffer(size)
+    size = _libc.listxattr(raw, names, size, XATTR_NOFOLLOW)
+    total = 0
+    for name in names.raw[: max(0, size)].split(b"\0"):
+        if name:
+            total += max(0, _libc.getxattr(raw, name, None, 0, 0, XATTR_NOFOLLOW))
+    return total
+
+
+def disk_bytes(st: os.stat_result, path: str) -> int:
+    """The bytes a file takes: its size, its blocks when they are more (a resource fork takes blocks but does not
+    count in the size), or its size plus its extended attributes (xattr_bytes), whichever is the most. Code in the
+    sandbox can write all three, so the disk limit counts them."""
+    return max(st.st_size, st.st_blocks * 512, st.st_size + xattr_bytes(path))
+
+
 def snapshot(workdir: Path) -> dict[str, tuple[int, int]]:
-    """Visible regular files (no dot names, no symlinks) under the work dir: relative path -> (size, mtime_ns)."""
+    """Visible regular files (no dot names, no symlinks) under the work dir: relative path -> (bytes, mtime_ns), with
+    the bytes of disk_bytes()."""
     found: dict[str, tuple[int, int]] = {}
     for here, dirs, files in os.walk(workdir):
         dirs[:] = sorted(d for d in dirs if not d.startswith("."))
@@ -190,7 +237,10 @@ def snapshot(workdir: Path) -> dict[str, tuple[int, int]]:
             except OSError:
                 continue
             if not os.path.islink(path) and os.path.isfile(path):
-                found[os.path.relpath(path, workdir)] = (st.st_size, st.st_mtime_ns)
+                found[os.path.relpath(path, workdir)] = (
+                    disk_bytes(st, path),
+                    st.st_mtime_ns,
+                )
     return found
 
 
@@ -203,10 +253,49 @@ def all_files(workdir: Path) -> set[str]:
     return found
 
 
+def unlock(path: str) -> None:
+    """Clear the file flags (uchg, uappnd...) of a path and give its owner all rights, so it can be removed. A link
+    itself is changed, never its target."""
+    try:
+        os.chflags(path, 0, follow_symlinks=False)
+    except OSError:
+        pass
+    try:
+        if not os.path.islink(path):
+            os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
+def remove_tree(path: str | Path) -> None:
+    """Remove a folder that sandboxed code wrote in (shutil.rmtree never follows a link). When that fails (a file
+    flag, a folder without rights), unlock() every entry, the folder itself first, and remove it again. What still
+    fails stays."""
+    try:
+        shutil.rmtree(path)
+        return
+    except FileNotFoundError:
+        return
+    except OSError:
+        pass
+    unlock(str(path))
+    # a folder is unlocked before the walk goes into it; a link to a folder is listed but not followed
+    for here, dirs, files in os.walk(path):
+        for name in dirs + files:
+            unlock(os.path.join(here, name))
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def fd_path(fd: int) -> str:
+    """The path of an open folder as the disk spells it (F_GETPATH)."""
+    return os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).split(b"\0", 1)[0])
+
+
 def remove_new(workdir: Path, before: set[str]) -> None:
     """Remove the entries that are not in `before`, deepest first. The run has ended, so nothing writes any more; a
-    folder the code made read-only is opened up first. Each folder is opened from the one above it with O_NOFOLLOW,
-    so a folder that was swapped for a link is never followed, and a link is removed, never its target."""
+    folder the code made read-only or immutable is opened up first, and so is an immutable entry. Each folder is
+    opened from the one above it with O_NOFOLLOW, so a folder that was swapped for a link is never followed, and a
+    link is removed, never its target."""
     root = os.path.realpath(workdir)
     for path in sorted(all_files(workdir) - before, key=len, reverse=True):
         parts = os.path.relpath(path, workdir).split(os.sep)
@@ -222,6 +311,12 @@ def remove_new(workdir: Path, before: set[str]) -> None:
                     )
                 )
             parent, name = fds[-1], parts[-1]
+            here = fd_path(parent)  # the folder opened above, so its path has no link
+            for flagged in (here, os.path.join(here, name)):
+                try:
+                    os.chflags(flagged, 0, follow_symlinks=False)
+                except OSError:
+                    pass
             os.fchmod(parent, 0o700)
             if stat.S_ISDIR(
                 os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode
@@ -249,7 +344,7 @@ def dir_size(workdir: Path) -> tuple[int, int]:
                     if e.is_dir(follow_symlinks=False):
                         stack.append(e.path)
                     elif e.is_file(follow_symlinks=False):
-                        size += e.stat(follow_symlinks=False).st_size
+                        size += disk_bytes(e.stat(follow_symlinks=False), e.path)
         except OSError:
             continue
     return size, count
@@ -445,6 +540,7 @@ def prepare(workdir: Path) -> tuple[str, str]:
         raise ValueError(f"The work dir {workdir} is a symlink; refusing to run.")
     tmp = os.path.join(work, ".tmp")
     if os.path.islink(tmp) or (os.path.exists(tmp) and not os.path.isdir(tmp)):
+        unlock(tmp)  # an immutable file there would block every run
         os.unlink(tmp)  # made by the code: the host never follows it
     os.makedirs(tmp, exist_ok=True)
     return work, tmp
@@ -544,7 +640,7 @@ def execute(
     leftover = leftover or (reap is not None and (out.is_alive() or err.is_alive()))
     if killed is None and code == -signal.SIGXCPU:
         killed = "cpu"
-    shutil.rmtree(tmp, ignore_errors=True)
+    remove_tree(tmp)
     after = snapshot(Path(work))
     changed = sorted(p for p, v in after.items() if before.get(p) != v)
     size, count = dir_size(Path(work))

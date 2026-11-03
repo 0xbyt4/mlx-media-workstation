@@ -337,7 +337,8 @@ Chat and prompt help call the model through these functions; no HTTP endpoint ex
 
 ```python
 llm.generate(messages, images=(), *, thinking=False, schema=None, max_tokens=4096, chat=None,
-             tools=None, reasoning_effort=None, thinking_budget=None, session=None) -> Iterator[dict]
+             tools=None, tool_choice=None, reasoning_effort=None, thinking_budget=None, allow_emoji=False,
+             session=None) -> Iterator[dict]
 llm.complete(messages, images=(), on_start=None, **same_keywords) -> dict   # the "done" event; LLMError on error
 llm.cancel(request_id) -> bool
 with llm.session(abort=lambda: False, limit=600.0) as s: ...
@@ -356,6 +357,11 @@ with llm.session(abort=lambda: False, limit=600.0) as s: ...
   many thinking tokens the worker makes the model end its thinking (mlx-vlm forces `</think>`), so it must answer.
   Keep `max_tokens` larger than the budget, or the answer has no room. The `done` stats then have
   `thinking_tokens`. `app/effort.py` picks these values for a chat answer.
+- `tool_choice` is `None` or `"none"`. With `"none"` the tools stay in the prompt (so the cached start of the prompt
+  stays the same), but the worker bans the call marker, so the model answers with text. Another value raises
+  `ValueError`.
+- `allow_emoji=False` (the default) makes the worker ban emoji tokens. It never bans them inside a tool call's
+  arguments (from the call marker to its end), where an emoji can be data.
 
 **Tools.** `tools` is a list of OpenAI-style function schemas:
 
@@ -424,7 +430,9 @@ return HTTP 404 for an unknown chat.
 - `GET /api/chats/{id}` returns the chat with all messages, `mode` and `running`.
 - `PATCH /api/chats/{id}` with the JSON body `{"mode": "..."}` changes the mode of a chat that has no messages yet
   and returns its summary. HTTP 409 after the first message, HTTP 400 for an unknown mode.
-- `DELETE /api/chats/{id}` deletes it (HTTP 409 while it answers).
+- `DELETE /api/chats/{id}` deletes it (HTTP 409 while it answers). The folder is renamed to a hidden trash name
+  first, so the chat is gone at once, then removed; immutable or locked files that sandboxed code made are removed
+  too.
 - `GET /api/chats/{id}/files/{name}` serves an image of the chat: one sent in it (`img_N.png`, `.jpg` or `.webp`) or
   a copy that `view_image` made for the model (`view_<12 hex digits>.png`). A symlink gives HTTP 404.
 - `POST /api/chats/{id}/messages` takes `multipart/form-data`: `text`, `effort` (a thinking level: `off`, `low`,
@@ -476,7 +484,8 @@ turns that fit in 32K tokens.
 
 A chat message has a thinking level: how long the model may think before it answers. `app/effort.py` holds the
 table. The model writes about 17 tokens a second on an M5 Pro, so 1,000 tokens are about 1 minute. An answer may
-take at most 10 minutes (an agent answer's limit; a waiting media job also stops a chat answer after 10 minutes).
+take at most 10 minutes, in every mode. At the limit the answer stops with `finish: "timeout"` and a `note`, and the
+saved message keeps both. The time that the answer waits for memory (a media job runs) does not count.
 
 | Level | Template effort | Thinking budget (tokens) | `max_tokens` | Thinking time, at most |
 | --- | --- | --- | --- | --- |
@@ -560,28 +569,30 @@ Events. The message stream of an agent chat has these events besides `waiting`, 
 
 - `{"event": "step", "n": 2, "max": 12, "last": false}` before each model request. `last` is `true` for the last
   step, which cannot call tools.
-- `{"event": "tool_call", "id", "name", "label", "arguments", "describe", "risk"}` for each call the model made.
-  `describe` is one line about what the call does, with bidi, zero-width and control characters written as
-  `\uXXXX`. `risk` is 0 to 3, or `null` for an unknown tool. `arguments` are as the model sent them: the page writes
-  those characters as `\uXXXX` when it shows them.
+- `{"event": "tool_call", "id", "name", "label", "arguments", "describe", "risk", "network"}` for each call the model
+  made. `describe` is one line about what the call does, with bidi, zero-width and control characters written as
+  `\uXXXX`. `risk` is 0 to 3, or `null` for an unknown tool. `network` says whether the tool sends data off this Mac
+  (`null` for an unknown tool): the page labels a local R2 tool "Uses this Mac". `arguments` are as the model sent
+  them: the page writes those characters as `\uXXXX` when it shows them.
 - `{"event": "approval", "id", "name", "label", "arguments", "describe", "host", "reason", "risk", "network",
   "chat_scope", "timeout_s", "preview"}` when the call waits for the user. Offer "Allow in this chat" only when
   `chat_scope` is `true`. `host` is the host that `fetch_url` contacts, as the network sees it (IDNA: `xn--...` for a
   non-ASCII name), or `null` for other tools and for a URL without a valid host. The page shows it on its own line.
   `network` says whether the tool sends data off this Mac. `preview` is the change as a unified diff (`edit_file`,
-  `write_file`), at most 400 lines, with hiding characters written as `\uXXXX` and tabs kept, or `null`. The page
+  `write_file`), at most 400 lines, with hiding characters written as `\uXXXX` and tabs kept, or `null`. `edit_file`
+  refuses a change whose diff is longer, so its card always shows the whole change. The page
   shows each line as text, never as HTML. For `run_shell` the event also has `cwd` (the folder the command runs in:
   the chat's work folder) and `read_only` (the granted folder that the command can read, or `null`). The page shows
   the command in a code block and both folders.
 - `{"event": "approval_done", "id", "decision"}` with `once`, `chat`, `deny`, `timeout` or `stopped`.
-- `{"event": "tool_result", "id", "name", "status", "content", "truncated", "files", "seconds", "approval", "risk"}`,
-  plus `"job": "<job id>"` when the call queued or read a media job (`create_job`, `transcribe_audio`). `status` is
-  `ok`, `error`, `cancelled`, `denied`, `refused`, `skipped` or `repeat` (the same call a second time: it did not
-  run). `content` is the first 4,000 characters. `files` are `{path, url, kind}`. `kind` is `image` or `file` for a
-  file in the workspace (`url` under `.../ws/`), `image` for a `view_image` copy (`url` under `.../files/`), or
-  `saved` for a file written in the granted folder (`path` relative to it, `url` empty: the page shows it with a
-  "Show in Finder" button). The page shows a card for `job` with the job's live status from `GET /api/jobs`, a link
-  to the Jobs view and the outputs when the job is done.
+- `{"event": "tool_result", "id", "name", "status", "content", "truncated", "files", "seconds", "approval", "risk",
+  "network"}`, plus `"job": "<job id>"` when the call queued or read a media job (`create_job`, `transcribe_audio`).
+  `status` is `ok`, `error`, `cancelled`, `denied`, `refused`, `skipped` or `repeat` (the same call a second time
+  after an `ok` result: it did not run). `content` is the first 4,000 characters. `files` are `{path, url, kind}`.
+  `kind` is `image` or `file` for a file in the workspace (`url` under `.../ws/`), `image` for a `view_image` copy
+  (`url` under `.../files/`), or `saved` for a file written in the granted folder (`path` relative to it, `url` empty:
+  the page shows it with a "Show in Finder" button). The page shows a card for `job` with the job's live status from
+  `GET /api/jobs`, a link to the Jobs view and the outputs when the job is done.
 - `{"event": "plan", "id", "items": [{"step", "status"}]}` after an `update_plan` call that ran, before its
   `tool_result`. `status` is `pending`, `in_progress` or `done`. Each event has the whole plan: the page replaces the
   checklist of the answer and shows no card for such a call.
@@ -605,8 +616,13 @@ Rules of the loop (`app/chat.py`, `Turn`):
 3. Stop is checked before each step, before each call, while a call waits for approval and inside the tools.
 4. A malformed call, an unknown or disabled tool, a refusal and a denial each give the model a tool message. The
    answer goes on.
-5. The same call (name and arguments) a second time in one answer does not run: its tool message (`status: "repeat"`)
-   says that the first result is above. A third time ends the answer with a note.
+5. The same call (name and arguments) a second time in one answer, after the first one returned `ok`, does not run:
+   its tool message (`status: "repeat"`) says that the call already ran and its result is above. A third time ends
+   the answer with a note. The rule does not apply to the tools whose result can change (`job_status`, `list_jobs`,
+   `wait_for_job`, `transcribe_audio`, `search_library`, `list_files`, `read_file`, `search_files`, `media_info`,
+   `view_image`, `fetch_url`). After a call that changes state ran (a tool that writes files, `run_python`,
+   `run_shell`, `copy_to_workspace`, `create_job`, `cancel_job`, `transcribe_audio`), the rule forgets the earlier
+   calls; that call itself still counts.
 6. An approval waits at most 10 minutes (less when the answer's time runs out). No answer counts as a denial.
 7. `create_job` queues the job and returns its id at once. `wait_for_job` and `transcribe_audio` wait only for a job
    that fits next to the model. A job that needs the model's memory (or a job behind one in the queue) waits for the

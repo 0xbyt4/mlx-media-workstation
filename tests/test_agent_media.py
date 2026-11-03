@@ -19,6 +19,7 @@ from app.agent import (
     file_tools,
     media_tools,
 )
+from app.agent import sandbox as sb
 from tests.fake_workstation import FakeWorkstation
 
 pytestmark = pytest.mark.skipif(
@@ -232,7 +233,12 @@ def test_ffprobe_runs_with_an_argument_list_and_a_time_limit(
     r = call(reg, ctx, "media_info", path="clip.mp4")
     assert r.status == "error" and "took longer than 20 s" in r.content
     cmd, kw = seen[0]
-    assert isinstance(cmd, list) and cmd[0] == "ffprobe" and "shell" not in kw
+    # ffprobe runs in its own sandbox: sandbox-exec -p <profile> <ffprobe's real path> ...
+    assert isinstance(cmd, list) and cmd[:2] == [sb.SANDBOX_EXEC, "-p"]
+    assert os.path.basename(cmd[3]) == "ffprobe" and "shell" not in kw
+    assert "(deny default)" in cmd[2] and "file-write*" not in cmd[2]
+    assert f'(literal "/dev/fd/{kw["pass_fds"][0]}")' in cmd[2]
+    assert "network" not in cmd[2] and "mach-lookup" not in cmd[2]
     assert cmd[cmd.index("-protocol_whitelist") + 1] == "file"
     assert "-format_whitelist" in cmd and cmd[-1].startswith("/dev/fd/")
     assert kw["timeout"] == media_tools.PROBE_SECONDS and kw["pass_fds"]
@@ -244,6 +250,29 @@ def test_a_missing_ffprobe_is_named(
     monkeypatch.setattr(media_tools, "FFPROBE", "no-such-ffprobe-here")
     r = call(reg, ctx, "media_info", path="clip.mp4")
     assert r.status == "error" and "is not installed" in r.content
+
+
+def test_ffprobe_and_ffmpeg_run_in_a_sandbox(tmp_path: Path, folder: Path) -> None:
+    """They parse files that sandboxed code wrote, so they run sandboxed: they read only the open file they get and
+    write only the one output file."""
+    fd = os.open(folder / "wide.png", os.O_RDONLY)
+    try:
+        # the open file reads; another file (named by its path) does not
+        media_tools.run_media(["ffprobe", "-v", "error", f"/dev/fd/{fd}"], fd, 20, "x")
+        with pytest.raises(file_tools.ToolError, match="not permitted"):
+            media_tools.run_media(
+                ["ffprobe", "-v", "error", str(tmp_path / "private.png")], fd, 20, "x"
+            )
+        out, other = tmp_path / "out.png", tmp_path / "other.png"
+        convert = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "png_pipe", "-i", f"/dev/fd/{fd}", "-frames:v", "1",
+                   "-update", "1", "-f", "image2"]  # fmt: skip
+        media_tools.run_media([*convert, str(out)], fd, 30, "x", str(out))
+        assert out.stat().st_size > 0
+        with pytest.raises(file_tools.ToolError, match="could not read it"):
+            media_tools.run_media([*convert, str(other)], fd, 30, "x", str(out))
+        assert not other.exists()
+    finally:
+        os.close(fd)
 
 
 # ---------- view_image ----------

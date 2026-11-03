@@ -544,6 +544,7 @@ def build(settings: Settings, net: Net, cache: PageCache | None = None) -> list[
             },
             risk=Risk.R2,
             run=fetch_url,
+            repeatable=True,
             network=True,
             untrusted_output=True,
             explain=lambda a: (

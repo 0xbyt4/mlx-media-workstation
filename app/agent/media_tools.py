@@ -5,7 +5,9 @@ A file comes from one of three places ("location"): the granted folder, the chat
 wrote) or the Library (a finished job's output). Each is opened by the app with O_NOFOLLOW and the same checks as the
 file tools; ffprobe and ffmpeg get the open file as /dev/fd/N, so a link swapped in after the check cannot redirect
 them. They run with an argument list (no shell), a time limit, the "file" protocol only, and a list of the
-demuxers they may use, so a playlist cannot make them read other files or the network.
+demuxers they may use, so a playlist cannot make them read other files or the network. They parse files that code
+in the sandbox may have written, so they run in a Seatbelt sandbox too (media_profile): they read only the system
+and Homebrew folders and that one open file, write only view_image's PNG, and have no network and no services.
 
 view_image writes a copy of the image, at most IMAGE_SIDE pixels on its long side, as PNG into the chat's folder
 (outputs/chats/<id>/view_<hex>.png; the sandbox cannot write there). The tool result names it (Output.images), and
@@ -15,6 +17,7 @@ the chat loop puts that image into the tool message of the model's next request.
 import json
 import os
 import secrets
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -25,6 +28,8 @@ from app.agent.file_tools import _rel, _root, human, open_file, resolve
 from app.agent.policy import Risk
 from app.agent.ports import WorkstationPort
 from app.agent.registry import Context, Output, Tool, ToolError
+from app.agent.sandbox import DEVICES, SANDBOX_EXEC, SYSCTLS, SYSTEM_READ, _quote
+from app.agent.shell_sandbox import HOMEBREW_READ, homebrew
 
 FFPROBE = "ffprobe"  # from PATH, like the rest of the app (start.py puts Homebrew's folders first)
 FFMPEG = "ffmpeg"
@@ -103,12 +108,62 @@ def open_media(
     return fd, st, f"Library: {given}"
 
 
-def run_media(cmd: list[str], fd: int, seconds: float, what: str) -> str:
-    """Run ffprobe or ffmpeg on the open file (as /dev/fd/N, from its start); its stdout, or ToolError."""
+def media_profile(exe: str, fd: int, output: str | None) -> str:
+    """The Seatbelt profile (SBPL) for one ffprobe or ffmpeg run: exec the program, read the system folders,
+    Homebrew's program folders, the program's own prefix and the one open file (/dev/fd/N), write only `output`. No
+    network, no services (mach-lookup), no other processes, no fork."""
+    brew = homebrew()
+    reads = [
+        *SYSTEM_READ,
+        *([f"{brew}/{d}" for d in HOMEBREW_READ] if brew else []),
+        os.path.dirname(
+            os.path.dirname(exe)
+        ),  # a program outside Homebrew: its own lib folder
+    ]
+    sysctls = " ".join(
+        ['(sysctl-name-prefix "hw.")'] + [f"(sysctl-name {_quote(n)})" for n in SYSCTLS]
+    )
+    lines = [
+        "(version 1)",
+        "(deny default)",
+        "(deny process-info*)",
+        "(allow process-info* (target self))",
+        f"(allow process-exec (literal {_quote(exe)}))",
+        f"(allow sysctl-read {sysctls})",
+        "(allow file-read-metadata)",
+        "(allow file-read* "
+        + " ".join(
+            [f"(subpath {_quote(r)})" for r in reads]
+            + [f"(literal {_quote(r)})" for r in ("/", f"/dev/fd/{fd}", *DEVICES)]
+        )
+        + ")",
+        '(allow file-write-data (literal "/dev/null"))',
+    ]
+    if output is not None:  # the sandbox sees real paths (/private/var, not /var)
+        real = os.path.join(
+            os.path.realpath(os.path.dirname(output)), os.path.basename(output)
+        )
+        lines.append(f"(allow file-write* (literal {_quote(real)}))")
+    return "\n".join(lines) + "\n"
+
+
+def run_media(
+    cmd: list[str], fd: int, seconds: float, what: str, output: str | None = None
+) -> str:
+    """Run ffprobe or ffmpeg on the open file (as /dev/fd/N, from its start) in its sandbox (media_profile), which
+    may write only `output`; its stdout, or ToolError."""
     os.lseek(fd, 0, os.SEEK_SET)
+    found = shutil.which(cmd[0])
+    if found is None:
+        raise ToolError(f"{cmd[0]} is not installed (brew install ffmpeg).")
+    if not os.path.exists(SANDBOX_EXEC):
+        raise ToolError(
+            f"{cmd[0]} runs only in a sandbox, and sandbox-exec is not on this system."
+        )
+    exe = os.path.realpath(found)
     try:
         done = subprocess.run(
-            cmd,
+            [SANDBOX_EXEC, "-p", media_profile(exe, fd, output), exe, *cmd[1:]],
             pass_fds=(fd,),
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -268,6 +323,7 @@ def build(port: WorkstationPort | None) -> list[Tool]:
                 fd,
                 CONVERT_SECONDS,
                 label,
+                str(tmp),
             )
             if not tmp.is_file() or tmp.is_symlink():
                 raise ToolError(f"{label}: ffmpeg made no image.")
@@ -319,6 +375,7 @@ def build(port: WorkstationPort | None) -> list[Tool]:
             parameters=params,
             risk=Risk.R1,
             run=media_info,
+            repeatable=True,
             untrusted_output=True,
             needs_folder=False,
             explain=lambda a: (
@@ -338,6 +395,7 @@ def build(port: WorkstationPort | None) -> list[Tool]:
             parameters=params,
             risk=Risk.R1,
             run=view_image,
+            repeatable=True,
             untrusted_output=True,  # an image can hold written instructions
             needs_folder=False,
             explain=lambda a: (

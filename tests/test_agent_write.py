@@ -123,6 +123,13 @@ def test_the_link_step_refuses_a_name_taken_after_the_check(folder: Path) -> Non
         ("setup.exe", "can run code"),
         ("Thing.app", "can run code"),
         ("Thing.app/Contents/x.txt", "cannot write inside Thing.app"),
+        ("evil.pth", "can run code"),
+        ("page.js", "can run code"),
+        ("x.hta", "can run code"),
+        ("x.reg", "can run code"),
+        ("x.osascript", "can run code"),
+        ("lib/site-packages/notes.txt", "cannot write inside site-packages"),
+        ("Dist-Packages/notes.txt", "cannot write inside Dist-Packages"),
         ("missing/x.txt", "no such file or folder"),
         ("notes/", "give a file name"),
         ("bad\nname.txt", "control character"),
@@ -136,6 +143,28 @@ def test_write_file_refusals(
     assert r.status == "error"
     assert message in r.content, r.content
     assert not leftovers(folder)
+
+
+def test_no_write_when_the_granted_folder_is_code(
+    reg: Registry, tmp_path: Path
+) -> None:
+    """A folder granted before the app refused such grants: inside site-packages (Python loads code from there) the
+    write tools refuse to write."""
+    root = tmp_path / "venv" / "lib" / "site-packages" / "pkg"
+    root.mkdir(parents=True)
+    (root / "data.txt").write_text("old\n")
+    fd = os.open(root, os.O_RDONLY)
+    try:
+        real = Path(file_tools.fd_path(fd))
+    finally:
+        os.close(fd)
+    (tmp_path / "chat").mkdir()
+    ctx = Context("c1", real, threading.Event(), tmp_path / "chat" / "ws")
+    r = call(reg, ctx, "write_file", path="new.txt", content="x")
+    assert r.status == "error" and "inside site-packages" in r.content
+    r = call(reg, ctx, "edit_file", path="data.txt", old_text="old", new_text="new")
+    assert r.status == "error" and "inside site-packages" in r.content
+    assert sorted(p.name for p in root.iterdir()) == ["data.txt"]
 
 
 def test_write_file_refuses_a_path_through_a_link(
@@ -361,6 +390,44 @@ def test_edit_file_runs_only_while_the_approved_diff_holds(
     assert (
         folder / "notes" / "todo.md"
     ).read_text() == "# Todo\nbuy bread\nCall Grace\n"
+
+
+def test_the_approved_diff_is_compared_before_the_escaping(
+    reg: Registry, ctx: Context, folder: Path
+) -> None:
+    """The card writes a zero-width space as the text \\u200b. A file that has that text now, where it had the
+    character when the user looked, gives the same card but another change: it is not written."""
+    tool = reg.get("edit_file")
+    path = folder / "zw.txt"
+    path.write_text("Call Ada\nx\u200by\n")
+    args = {"path": "zw.txt", "old_text": "Call Ada", "new_text": "Call Grace"}
+    ctx.preview = tool.show(args, ctx)
+    path.write_text("Call Ada\nx\\u200by\n")
+    assert (
+        tool.show(args, Context("c1", folder, ctx.abort, ctx.work_dir)) == ctx.preview
+    )
+    r = reg.call("edit_file", args, ctx)
+    assert r.status == "error" and "changed after the user saw" in r.content
+    assert path.read_text() == "Call Ada\nx\\u200by\n"
+
+
+def test_an_edit_too_large_for_the_card_is_refused(
+    reg: Registry, ctx: Context, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The card shows at most MAX_DIFF_LINES lines of a diff: edit_file refuses a larger change, so the user never
+    approves a part they did not see."""
+    monkeypatch.setattr(write_tools, "MAX_DIFF_LINES", 10)
+    tool = reg.get("edit_file")
+    (folder / "long.txt").write_text("a\n" * 19 + "end\n")
+    args = {"path": "long.txt", "content": "b\n" * 20}
+    with pytest.raises(file_tools.ToolError, match="too large to show"):
+        tool.show(args, ctx)
+    r = reg.call("edit_file", args, ctx)
+    assert r.status == "error" and "Split it into smaller" in r.content
+    assert (folder / "long.txt").read_text() == "a\n" * 19 + "end\n"
+    small = {"path": "long.txt", "old_text": "end", "new_text": "END"}
+    ctx.preview = tool.show(small, ctx)
+    assert reg.call("edit_file", small, ctx).status == "ok"
 
 
 def test_the_preview_escapes_hidden_characters_and_is_cut(

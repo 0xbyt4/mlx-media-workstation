@@ -73,7 +73,8 @@ const RISK = [
 // the tools that write in the granted folder: their risk pill names that, not the network or code
 const WRITERS = {write_file: 'Writes files', export_from_workspace: 'Writes files', edit_file: 'Changes files'};
 
-// network: false names an R2 tool that uses this Mac (create_job); undefined (a saved tool card) keeps the level's label
+// network: false names an R2 tool that uses this Mac (create_job); undefined (a tool card saved before cards had
+// it) keeps the level's label
 function riskLabel(name, risk, network) {
   if (WRITERS[name]) return WRITERS[name];
   if (risk === 2 && network === false) return 'Uses this Mac';
@@ -1086,7 +1087,7 @@ function toolSegNode(seg, live) {
   if (planCallHidden(seg.call.name, r.status)) return h('div', {hidden: true});
   const c = seg.call;
   return toolBlock({
-    id: c.id, name: c.name, label: c.label, arguments: c.arguments, describe: c.describe, risk: c.risk,
+    id: c.id, name: c.name, label: c.label, arguments: c.arguments, describe: c.describe, risk: c.risk, network: c.network,
     status: r.status || (seg.decision && seg.decision !== 'once' && seg.decision !== 'chat' ? 'denied' : null),
     content: r.content, truncated: r.truncated, files: r.files, seconds: r.seconds,
     approval: r.approval || seg.decision, job: r.job,
@@ -1226,7 +1227,7 @@ function diffBlock(text) {
 function toolBlock(t, seg) {
   const st = t.status ? STATUS[t.status] || ['idle', t.status] : ['run', 'Running'];
   const sum = t.describe ? visible(t.describe) : argsLine(t.arguments);
-  const risk = t.risk === null || t.risk === undefined ? null : {...RISK[t.risk], label: riskLabel(t.name, t.risk)};
+  const risk = t.risk === null || t.risk === undefined ? null : {...RISK[t.risk], label: riskLabel(t.name, t.risk, t.network)};
   const shell = t.name === 'run_shell' && t.status === 'ok' && t.content ? shellResult(t) : null;
   const body = h('div', {class: 'tool-body'},
     t.approval && DECISION[t.approval] ? h('p', {class: 'tool-note'}, icon('lock', 'ic-sm'), DECISION[t.approval]) : null,
@@ -1367,6 +1368,7 @@ function agentTurn(run, isLast) {
       if (planCallHidden(c.name, r.status || 'skipped')) continue;
       body.push(toolBlock({
         id: c.id, name: c.name, label: r.label || c.name, arguments: c.arguments, describe: r.describe, risk: r.risk,
+        network: r.network,
         status: r.status || 'skipped', content: r.content, files: r.files, seconds: r.seconds, approval: r.approval,
         job: r.job,
       }));

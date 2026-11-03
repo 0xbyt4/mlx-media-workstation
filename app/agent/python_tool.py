@@ -1,10 +1,13 @@
 """run_python (R3): run Python code in the sandbox (app/agent/sandbox.py). The user approves every call."""
 
+import time
+from dataclasses import replace
 from typing import Any
 
 from app.agent.policy import Risk
 from app.agent.registry import Cancelled, Context, Output, Tool, ToolError
 from app.agent.sandbox import Limits, Sandbox
+from app.agent.ws_tools import ANSWER_RESERVE
 
 MAX_CODE = 100_000  # characters of code in one call
 REASONS = {
@@ -15,8 +18,28 @@ REASONS = {
 }
 
 
-def format_result(r: Any, limits: Limits) -> str:
+def time_limit(seconds: float, ctx: Context) -> tuple[float, str]:
+    """A run's wall-clock limit: `seconds`, but never into the answer's last ANSWER_RESERVE seconds (as a job wait),
+    and a note for the result when it was cut. Raises ToolError when the answer has no time left for a run."""
+    if ctx.deadline is None:
+        return seconds, ""
+    left = int(ctx.deadline - time.monotonic() - ANSWER_RESERVE)
+    if left >= seconds:
+        return seconds, ""
+    if left < 1:
+        raise ToolError(
+            "Not run: this answer has no time left for it. Tell the user what is still to do; they can ask "
+            "again in a new message."
+        )
+    return float(left), (
+        f"note: the time limit was cut from {seconds:g} s to {left} s, because this answer ends soon"
+    )
+
+
+def format_result(r: Any, limits: Limits, note: str = "") -> str:
     lines = [f"exit code: {r.exit_code} ({r.seconds} s)"]
+    if note:
+        lines.append(note)
     if r.killed in REASONS:
         lines.append(
             REASONS[r.killed].format(
@@ -43,13 +66,15 @@ def format_result(r: Any, limits: Limits) -> str:
 
 def build(sandbox: Sandbox, limits: Limits, packages: str) -> Tool:
     def run_python(args: dict[str, Any], ctx: Context) -> Output:
+        wall, note = time_limit(limits.wall_s, ctx)
+        run_limits = replace(limits, wall_s=wall)
         try:
-            r = sandbox.run_python(args["code"], ctx.work_dir, limits, ctx.abort)
+            r = sandbox.run_python(args["code"], ctx.work_dir, run_limits, ctx.abort)
         except ValueError as e:
             raise ToolError(str(e)) from None
         if r.killed == "aborted":
             raise Cancelled
-        return Output(format_result(r, limits), r.files)
+        return Output(format_result(r, run_limits, note), r.files)
 
     return Tool(
         name="run_python",
@@ -74,6 +99,7 @@ def build(sandbox: Sandbox, limits: Limits, packages: str) -> Tool:
         },
         risk=Risk.R3,
         run=run_python,
+        side_effects=True,
         untrusted_output=True,  # it can print files and text that earlier untrusted content made
         explain=lambda a: (
             "Runs this Python code in the sandbox: no network, no access to your files, "

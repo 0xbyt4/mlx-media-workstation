@@ -802,6 +802,10 @@ def check_extend_source(path: Path, end_at: float | None) -> float:
     return used
 
 
+# the demuxers the transcription's ffmpeg step may use (audio and video files; nothing that reads other files)
+SPEECH_DEMUXERS = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,wav,w64,mp3,aac,flac,ogg,aiff,caf,asf,amr,mpeg,mpegts"
+
+
 def prep(cmd: list[str]) -> None:
     """Run a quick ffmpeg step while a job is planned; a failure is shown to the user with ffmpeg's own words."""
     r = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -986,6 +990,12 @@ def plan(
                 "-v",
                 "error",
                 "-y",
+                # the file protocol and the audio and video demuxers only: no playlist or concat list that makes
+                # ffmpeg read other files or the network
+                "-protocol_whitelist",
+                "file",
+                "-format_whitelist",
+                SPEECH_DEMUXERS,
                 "-i",
                 str(src),
                 "-vn",

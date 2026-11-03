@@ -8,7 +8,9 @@ It shares the limits and the supervision of run_python (sandbox.execute). The pr
 - read: the system folders the programs need, Homebrew's program folders (not its etc or var), the work dir, and
   the chat's granted folder read-only (without hidden and secret files, as the file tools). Nothing else of the
   home folder.
-- write: the work dir only (and /dev/null). The work dir node itself is not writable.
+- write: the work dir only (and /dev/null). The work dir node itself is not writable. Extended attributes, resource
+  forks and file flags stay allowed (cp, tar and Python's shutil.copy2 set them); the disk limit counts the first two
+  (sandbox.disk_bytes), and the host clears the flags before it removes a file (sandbox.unlock).
 - process information about itself only, also for each child: (deny process-info*) + (allow process-info* (target
   self)). No sysctl of the process table. So no child reads other processes' arguments or environment.
 - no network rule and no mach-lookup (except one random name that no service has, see below): every socket, DNS

@@ -6,6 +6,7 @@ caps the text the model gets. A tool reports a problem the model can act on with
 becomes an error result too, so a broken tool never ends the turn.
 """
 
+import hashlib
 import re
 import threading
 import time
@@ -41,6 +42,11 @@ def visible_lines(text: str) -> str:
     )
 
 
+def digest(text: str) -> str:
+    """The SHA-256 of a preview, as hex: what a tool compares to see that the change is still the one approved."""
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
 class ToolError(Exception):
     """A failure the model should read ("No such file: notes.txt")."""
 
@@ -62,6 +68,9 @@ class Context:
     # the preview the user approved on the approval card (Tool.preview), or None when the call did not ask: a tool
     # that writes refuses to run when its preview is different now (the file changed after the user looked)
     preview: str | None = None
+    # the SHA-256 of that preview before visible_lines() (Tool.show sets both): escaping can give two texts the same
+    # card, the digest tells them apart
+    digest: str | None = None
 
     def check_abort(self) -> None:
         if self.abort.is_set():
@@ -93,6 +102,12 @@ class Tool:
     needs_folder: bool | None = None
     # what the tool does and when it asks, in plain words, for the Tools menu; "" = the text of its risk level
     effect: str = ""
+    # an identical call can give a new result (it reads jobs, files, pages or the clock): the chat loop's repeat
+    # rule does not apply to it
+    repeatable: bool = False
+    # it changes what other tools read (the work folder, the jobs) without writing the user's files; after it, or
+    # a tool with writes=True, ran, the repeat rule forgets the calls made before
+    side_effects: bool = False
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -116,15 +131,18 @@ class Tool:
         return self.risk == Risk.R1 if self.needs_folder is None else self.needs_folder
 
     def show(self, args: Any, ctx: Context) -> str | None:
-        """The approval card's preview (visible_lines), or None for a tool without one. Raises ToolError when the
-        call cannot run: invalid arguments, or a change that cannot be made."""
+        """The approval card's preview (visible_lines), or None for a tool without one; ctx.digest gets the digest
+        of the preview before the escaping (digest()). Raises ToolError when the call cannot run: invalid arguments,
+        or a change that cannot be made."""
         if self.preview is None:
             return None
         try:
             checked = schema.check(self.parameters, args)
         except schema.ArgumentError as e:
             raise ToolError(f"Invalid arguments for {self.name}: {e}") from None
-        return visible_lines(self.preview(checked, ctx))
+        raw = self.preview(checked, ctx)
+        ctx.digest = digest(raw)
+        return visible_lines(raw)
 
 
 @dataclass

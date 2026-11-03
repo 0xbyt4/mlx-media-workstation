@@ -183,7 +183,15 @@ def tool_answer(req, cancel):
             time.sleep(0.02)
     seen = {
         k: req.get(k)
-        for k in ("messages", "images", "tools", "tool_choice", "chat", *LIMITS)
+        for k in (
+            "messages",
+            "images",
+            "tools",
+            "tool_choice",
+            "chat",
+            "allow_emoji",
+            *LIMITS,
+        )
     }
     done = {
         "id": rid,

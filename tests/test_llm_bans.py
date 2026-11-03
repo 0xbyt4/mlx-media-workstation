@@ -55,7 +55,10 @@ PIECES = [
     "️".encode(),  # 18: the emoji variation selector
     "中文".encode(),  # 19: Chinese text
 ]
-VOCAB = {bpe(p): i for i, p in enumerate(PIECES)} | {"<tool_call>": 20}
+VOCAB = {bpe(p): i for i, p in enumerate(PIECES)} | {
+    "<tool_call>": 20,
+    "</tool_call>": 21,
+}
 NEG = -float("inf")
 
 
@@ -72,6 +75,10 @@ class Lists:
 
     @staticmethod
     def where(mask, x, y):
+        if not isinstance(
+            mask, list
+        ):  # one condition for the whole row, as mlx broadcasts it
+            return x if mask else y
         return [x if m else v for m, v in zip(mask, y, strict=True)]
 
 
@@ -86,9 +93,14 @@ def table() -> ByteBan:
     return ByteBan(token_pieces(VOCAB))
 
 
-def run(table: ByteBan, ids: list[int], width: int = 24) -> list[set[int]]:
+def run(
+    table: ByteBan,
+    ids: list[int],
+    width: int = 24,
+    calls: tuple[int, int] | None = None,
+) -> list[set[int]]:
     """The banned ids before each token of `ids` is sampled, and after the last one."""
-    proc = NoEmoji(Lists, table)
+    proc = NoEmoji(Lists, table, calls)
     tokens, out = [99], []  # the prompt
     for i in [None, *ids]:
         if i is not None:
@@ -144,11 +156,27 @@ def test_the_tables_are_padded_to_the_model_vocabulary(table):
     assert 13 in banned[1] and not any(t >= 21 for t in banned[1])
 
 
+def test_nothing_is_banned_inside_a_tool_call_block(table):
+    """A call's arguments (a file's text) may hold an emoji: the ban stops at the start marker and comes back after
+    the end marker."""
+    banned = run(table, [0, 20, 3, 4, 21, 1], calls=(20, 21))
+    assert {2, 3, 8} <= banned[1]  # before the call
+    assert (
+        banned[2] == banned[3] == banned[4] == set()
+    )  # inside it, also in the middle of a split emoji
+    assert banned[5] == banned[0] and banned[6] == banned[0]  # after it
+    # without the marker ids (a request without tools) the ban holds everywhere
+    assert run(table, [20, 3])[1] == banned[0]
+
+
 def test_bans_follow_the_request():
     table = ByteBan(token_pieces(VOCAB))
     req = {"tools": [{"type": "function"}]}
     kinds = [type(p) for p in bans(Lists, req, table, VOCAB, "<tool_call>")]
     assert kinds == [NoEmoji]  # every request bans emoji
+    assert bans(Lists, req, table, VOCAB, "<tool_call>")[0].calls == (20, 21)
+    assert bans(Lists, {}, table, VOCAB, "<tool_call>")[0].calls is None
+    assert bans(Lists, req, table, VOCAB, "<tool_call>", "<x>")[0].calls is None
     assert bans(Lists, {"allow_emoji": True}, table, VOCAB, "<tool_call>") == []
     none = bans(Lists, {**req, "tool_choice": "none"}, table, VOCAB, "<tool_call>")
     assert [type(p) for p in none] == [NoEmoji, BanIds]

@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 from app.agent.file_tools import _root
 from app.agent.policy import Risk
-from app.agent.python_tool import REASONS
+from app.agent.python_tool import REASONS, time_limit
 from app.agent.registry import Cancelled, Context, Output, Tool, ToolError
 from app.agent.sandbox import Limits, RunResult
 from app.agent.shell_sandbox import homebrew
@@ -53,10 +53,12 @@ def programs() -> str:
     )
 
 
-def format_result(r: RunResult, limits: Limits) -> str:
+def format_result(r: RunResult, limits: Limits, note: str = "") -> str:
     """The exit code, then stdout and stderr, each headed by its length in characters, so the page can split them
-    again even when the output itself holds such a heading."""
+    again even when the output itself holds such a heading. note: a line after the exit code (a cut time limit)."""
     lines = [f"exit code: {r.exit_code} ({r.seconds} s)"]
+    if note:
+        lines.append(note)
     if r.killed in REASONS:
         lines.append(
             REASONS[r.killed].format(
@@ -91,10 +93,11 @@ def build(shell: ShellSandbox, limits: Limits, programs: str) -> Tool:
     def run_shell(args: dict[str, Any], ctx: Context) -> Output:
         # the granted folder, checked as the file tools check it (moved or replaced by a link: refused)
         granted = Path(_root(ctx)) if ctx.folder is not None else None
-        seconds = args["timeout_s"]
+        # never into the answer's last minute: the model needs it to answer
+        seconds, note = time_limit(args["timeout_s"], ctx)
         # each process gets the CPU time of all cores for the whole time: the wall-clock limit is the real one
         run_limits = replace(
-            limits, wall_s=float(seconds), cpu_s=seconds * (os.cpu_count() or 1)
+            limits, wall_s=float(seconds), cpu_s=int(seconds) * (os.cpu_count() or 1)
         )
         try:
             r = shell.run_shell(
@@ -104,7 +107,7 @@ def build(shell: ShellSandbox, limits: Limits, programs: str) -> Tool:
             raise ToolError(str(e)) from None
         if r.killed == "aborted":
             raise Cancelled
-        return Output(format_result(r, run_limits), r.files)
+        return Output(format_result(r, run_limits, note), r.files)
 
     return Tool(
         name="run_shell",
@@ -135,6 +138,7 @@ def build(shell: ShellSandbox, limits: Limits, programs: str) -> Tool:
         },
         risk=Risk.R3,
         run=run_shell,
+        side_effects=True,
         untrusted_output=True,  # it prints files and program output
         explain=lambda a: (
             "Runs this shell command in the sandbox for at most "

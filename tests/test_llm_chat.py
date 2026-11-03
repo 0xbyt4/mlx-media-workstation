@@ -119,6 +119,16 @@ def test_generate_streams_started_deltas_and_done():
     assert llm.status()["state"] == "ready"
 
 
+def test_generate_bans_emoji_unless_allowed():
+    """The worker gets allow_emoji: False by default (it bans emoji tokens), True when the caller allows them. (The
+    fake worker echoes the request of a call with tools.)"""
+    tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+    done = list(llm.generate(user("hi"), tools=tools))[-1]
+    assert done["stats"]["seen"]["allow_emoji"] is False
+    done = list(llm.generate(user("hi"), tools=tools, allow_emoji=True))[-1]
+    assert done["stats"]["seen"]["allow_emoji"] is True
+
+
 def test_thinking_streams_reasoning_first():
     evs = list(llm.generate(user("hi"), thinking=True))
     kinds = [e["event"] for e in evs]
@@ -490,6 +500,44 @@ def test_chat_round_trip(client):
     assert [m["role"] for m in c["messages"]] == ["user", "assistant"]
     assert c["messages"][1]["content"] == "Hello world"
     assert client.get("/api/chats").json()[0]["messages"] == 2
+
+
+def test_a_chat_answer_ends_at_the_time_limit(client, monkeypatch):
+    """A plain answer (the "max" level has no thinking budget) has the agent's time limit: cancelled at the limit,
+    saved with finish "timeout" and a note."""
+    monkeypatch.setattr(chat, "TURN_SECONDS", 0.5)
+    cid = new_chat(client)
+    box = {}
+    t = threading.Thread(
+        target=lambda: box.update(
+            r=client.post(f"/api/chats/{cid}/messages", data={"text": "SLOW"})
+        ),
+        daemon=True,
+    )
+    t.start()
+    t.join(5)
+    if t.is_alive():  # no limit: stop the endless answer, then fail
+        client.post(f"/api/chats/{cid}/stop")
+        t.join(5)
+        pytest.fail("the answer did not end at its time limit")
+    done = events(box["r"])[-1]
+    assert done["event"] == "done" and done["finish"] == "timeout"
+    assert done["note"] == chat.NOTE_TIMEOUT.format(minutes=f"{0.5 / 60:g}")
+    msg = client.get(f"/api/chats/{cid}").json()["messages"][-1]
+    assert msg["finish"] == "timeout" and msg["note"] == done["note"]
+    assert msg["content"].startswith("tick")
+
+
+def test_the_wait_for_memory_does_not_count_against_a_chat_answer(client, monkeypatch):
+    monkeypatch.setattr(chat, "TURN_SECONDS", 1.0)
+    cid = new_chat(client)
+    assert llm.claim(
+        35.0
+    )  # a big media job holds the memory, longer than the answer's limit
+    threading.Timer(1.5, llm.release).start()
+    evs = events(client.post(f"/api/chats/{cid}/messages", data={"text": "hi"}))
+    assert "waiting" in [e["event"] for e in evs]
+    assert evs[-1]["finish"] == "stop" and evs[-1]["content"] == "Hello world"
 
 
 def test_history_goes_to_the_model(client):

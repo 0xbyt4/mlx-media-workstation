@@ -477,6 +477,7 @@ def build(port: WorkstationPort) -> list[Tool]:
             },
             risk=Risk.R0,
             run=job_status,
+            repeatable=True,
         ),
         Tool(
             name="search_library",
@@ -500,6 +501,7 @@ def build(port: WorkstationPort) -> list[Tool]:
             },
             risk=Risk.R0,
             run=search_library,
+            repeatable=True,
             untrusted_output=True,  # prompts can hold text that came from a web page
         ),
         Tool(
@@ -528,6 +530,7 @@ def build(port: WorkstationPort) -> list[Tool]:
             },
             risk=Risk.R2,
             run=create_job,
+            side_effects=True,
             explain=explain_job,
         ),
         Tool(
@@ -547,6 +550,7 @@ def build(port: WorkstationPort) -> list[Tool]:
             },
             risk=Risk.R0,
             run=list_jobs,
+            repeatable=True,
         ),
         Tool(
             name="wait_for_job",
@@ -563,6 +567,7 @@ def build(port: WorkstationPort) -> list[Tool]:
             },
             risk=Risk.R0,
             run=wait_for_job,
+            repeatable=True,
         ),
         Tool(
             name="cancel_job",
@@ -575,6 +580,7 @@ def build(port: WorkstationPort) -> list[Tool]:
             },
             risk=Risk.R2,
             run=cancel_job,
+            side_effects=True,
             explain=lambda a: (
                 f"Cancels the media job {a.get('job_id')}. The work it did is lost."
             ),
@@ -599,6 +605,8 @@ def build(port: WorkstationPort) -> list[Tool]:
             },
             risk=Risk.R2,
             run=transcribe,
+            repeatable=True,
+            side_effects=True,
             untrusted_output=True,  # the transcript is text from outside the app
             explain=explain_transcribe,
         ),

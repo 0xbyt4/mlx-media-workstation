@@ -21,8 +21,8 @@ held back, parsed with mlx-vlm's parser for the model at the end, and the "done"
 top level and has no side effects on import).
 
 Every request bans emoji with a logits processor (ByteBan, NoEmoji), unless it has "allow_emoji": true: the prompt
-rule alone did not stop them. "tool_choice": "none" also bans the call marker, so the model answers with text while
-the tools stay in the prompt.
+rule alone did not stop them. Inside a tool-call block (the arguments) nothing is banned. "tool_choice": "none" also
+bans the call marker, so the model answers with text while the tools stay in the prompt.
 """
 
 import json
@@ -390,22 +390,37 @@ class ByteBan:
 
 class NoEmoji:
     """A logits processor (one per request) that keeps a ByteBan's state and bans its tokens. The state stays an
-    array of xp (mlx.core in the worker), so a step never waits for the token before it."""
+    array of xp (mlx.core in the worker), so a step never waits for the token before it.
 
-    def __init__(self, xp: Any, ban: ByteBan) -> None:
-        self.xp, self.bans = xp, ban
+    calls: the ids of the tool-call start and end markers, or None. From a start marker to its end marker the model
+    writes a call's arguments (a file's text, a command), where an emoji can be the data: nothing is banned there."""
+
+    def __init__(
+        self, xp: Any, ban: ByteBan, calls: tuple[int, int] | None = None
+    ) -> None:
+        self.xp, self.bans, self.calls = xp, ban, calls
         self.state: Any = None
+        # whether the text is inside a call block (an array of xp)
+        self.inside: Any = None
 
     def __call__(self, tokens: Any, logits: Any) -> Any:
         xp = self.xp
         width = logits.shape[-1]
         nxt, ban = self.bans.tables(xp, width)
-        # the first call sees the prompt, which ends with a whole character
+        # the first call sees the prompt, which ends with a whole character and is outside a call
         if self.state is None:
-            self.state = xp.array(0)
+            self.state, self.inside = xp.array(0), xp.array(False)
         else:
             self.state = xp.take(nxt, self.state * width + tokens[-1])
-        return xp.where(xp.take(ban, self.state, axis=0), -float("inf"), logits)
+            if self.calls is not None:
+                start, end = self.calls
+                self.inside = xp.where(
+                    tokens[-1] == start,
+                    True,
+                    xp.where(tokens[-1] == end, False, self.inside),
+                )
+        banned = xp.where(xp.take(ban, self.state, axis=0), -float("inf"), logits)
+        return banned if self.calls is None else xp.where(self.inside, logits, banned)
 
 
 class BanIds:
@@ -424,11 +439,25 @@ class BanIds:
 
 
 def bans(
-    xp: Any, req: dict[str, Any], emoji: ByteBan, vocab: dict[str, int], marker: str
+    xp: Any,
+    req: dict[str, Any],
+    emoji: ByteBan,
+    vocab: dict[str, int],
+    marker: str,
+    end: str = TOOL_END,
 ) -> list[Any]:
-    """The logits processors that ban tokens for a request: emoji unless "allow_emoji" is true, and the tool-call
-    marker with "tool_choice": "none" (the marker must be one token)."""
-    out: list[Any] = [] if req.get("allow_emoji") else [NoEmoji(xp, emoji)]
+    """The logits processors that ban tokens for a request: emoji unless "allow_emoji" is true (but not inside a
+    tool-call block, from `marker` to `end`, when the request has tools), and the tool-call marker with
+    "tool_choice": "none". Each marker must be one token."""
+    calls = None
+    if req.get("tools"):
+        if marker in vocab and end in vocab:
+            calls = (vocab[marker], vocab[end])
+        else:
+            print(
+                f"tool calls: {marker!r} or {end!r} is not one token", file=sys.stderr
+            )
+    out: list[Any] = [] if req.get("allow_emoji") else [NoEmoji(xp, emoji, calls)]
     if req.get("tools") and req.get("tool_choice") == "none":
         if marker in vocab:
             out.append(BanIds(xp, [vocab[marker]]))
@@ -508,9 +537,13 @@ class Engine:
             kwargs["logits_processors"] = [
                 self.json_processor(self.processor.tokenizer, req["schema"])
             ]
-        marker = self.tool_parser().tool_call_start if tools else TOOL_START
+        marker, end = (
+            (parser.tool_call_start, parser.tool_call_end)
+            if tools
+            else (TOOL_START, TOOL_END)
+        )
         kwargs["logits_processors"] = kwargs.get("logits_processors", []) + bans(
-            self.mx, req, self.no_emoji, self.vocab, marker
+            self.mx, req, self.no_emoji, self.vocab, marker, end
         )
         state = None
         if req.get(

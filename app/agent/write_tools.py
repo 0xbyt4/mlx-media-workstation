@@ -22,7 +22,7 @@ from typing import Any
 from app.agent import safe_fs
 from app.agent.file_tools import _rel, _root, human, open_file, resolve
 from app.agent.policy import Risk
-from app.agent.registry import Context, Output, Tool, ToolError, visible_lines
+from app.agent.registry import Context, Output, Tool, ToolError, digest, visible_lines
 from app.agent.sandbox import dir_size
 
 MAX_COPY = (
@@ -38,9 +38,11 @@ def plural(n: int, word: str) -> str:
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
-def diff(old: str, new: str, rel: str, created: bool = False) -> str:
-    """The change as a unified diff, cut at MAX_DIFF_LINES lines or MAX_DIFF_CHARS characters with a note."""
-    lines = list(
+LINE_ENDS = "(Only the line breaks change: the end of a line or of the file.)"
+
+
+def unified(old: str, new: str, rel: str, created: bool = False) -> list[str]:
+    return list(
         difflib.unified_diff(
             old.splitlines(),
             new.splitlines(),
@@ -50,8 +52,31 @@ def diff(old: str, new: str, rel: str, created: bool = False) -> str:
             lineterm="",
         )
     )
+
+
+def whole_diff(old: str, new: str, rel: str) -> str:
+    """The whole change as a unified diff, for edit_file. A change whose diff does not fit on the approval card
+    (MAX_DIFF_LINES lines, MAX_DIFF_CHARS characters) is refused, so the user always sees all of what they approve."""
+    lines = unified(old, new, rel)
     if not lines:
-        return "(Only the line breaks change: the end of a line or of the file.)"
+        return LINE_ENDS
+    if (
+        len(lines) > MAX_DIFF_LINES
+        or sum(len(x) + 1 for x in lines) - 1 > MAX_DIFF_CHARS
+    ):
+        raise ToolError(
+            f"{rel}: the change is too large to show the user ({len(lines)} diff lines; the approval card shows at "
+            f"most {MAX_DIFF_LINES} lines and {MAX_DIFF_CHARS:,} characters). Split it into smaller edit_file "
+            "calls with old_text and new_text."
+        )
+    return "\n".join(lines)
+
+
+def diff(old: str, new: str, rel: str, created: bool = False) -> str:
+    """The change as a unified diff, cut at MAX_DIFF_LINES lines or MAX_DIFF_CHARS characters with a note."""
+    lines = unified(old, new, rel, created)
+    if not lines:
+        return LINE_ENDS
     shown: list[str] = []
     size = 0
     for line in lines:
@@ -116,7 +141,7 @@ def plan_edit(args: dict[str, Any], ctx: Context) -> Edit:
         raise ToolError(f"{given}: a folder, not a file.")
     parent, name = os.path.split(path)
     safe_fs.check_name(name, given)
-    safe_fs.check_parts(rel, given)
+    safe_fs.check_parts(rel, given, root)
     fd, st = open_file(path, root)
     try:
         if st.st_mode & safe_fs.EXEC_BITS:
@@ -201,13 +226,14 @@ def build(limits_disk_mb: int) -> list[Tool]:
 
     def edit_preview(args: dict[str, Any], ctx: Context) -> str:
         e = plan_edit(args, ctx)
-        return diff(e.old, e.new, e.rel)
+        return whole_diff(e.old, e.new, e.rel)
 
     def edit_file(args: dict[str, Any], ctx: Context) -> Output:
         e = plan_edit(args, ctx)
-        if (
-            ctx.preview is not None
-            and visible_lines(diff(e.old, e.new, e.rel)) != ctx.preview
+        change = whole_diff(e.old, e.new, e.rel)
+        # the whole diff, unescaped, must be the one the user approved (Tool.show set ctx.digest)
+        if ctx.preview is not None and (
+            digest(change) != ctx.digest or visible_lines(change) != ctx.preview
         ):
             raise ToolError(
                 f"{e.rel}: the file changed after the user saw the change, so nothing was written. Read it "
@@ -422,6 +448,7 @@ def build(limits_disk_mb: int) -> list[Tool]:
             },
             risk=Risk.R1,
             run=copy_to_workspace,
+            side_effects=True,
             untrusted_output=True,
             explain=lambda a: (
                 f"Copies {a.get('path', '')!r} from the granted folder to the chat's work folder."
