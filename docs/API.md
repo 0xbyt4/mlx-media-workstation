@@ -464,6 +464,11 @@ turns that fit in 32K tokens.
           "defaults": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full"},
           "idle_choices": [5, 10, 30, 60, 0], "profiles": ["full", "chat"]},
   "llm": {"idle_stop_s": 600.0},
+  "agent": {"python": "", "searxng_url": "", "wikipedia_language": "en", "marginalia": true,
+            "defaults": {"python": "", "searxng_url": "", "wikipedia_language": "en", "marginalia": true},
+            "python_path": null, "python_found": false,
+            "default_python": "/opt/homebrew/Cellar/python@3.12/3.12.15_1/Frameworks/Python.framework/Versions/3.12/bin/python3.12",
+            "languages": ["en", "tr", "de", "fr", "es", "it", "ja", "zh"], "restart_required": false},
   "about": {"version": "0.1.0", "commit": "8172e42 2026-11-02", "root": "/Users/me/mlx-media-workstation",
             "outputs": "/Users/me/mlx-media-workstation/outputs",
             "readme": "/Users/me/mlx-media-workstation/README.md",
@@ -479,28 +484,37 @@ turns that fit in 32K tokens.
 - `used_by` lists the entries of `GET /api/models`, the tools and the app features that need the path.
 - `config.error` is set when `config.toml` is not valid TOML; the values are then the defaults.
 - `about.commit` is `null` when git or the git checkout is not there.
-- `restart_required` is true when `config.toml` holds other `[paths]` or `[assist]` values than the ones the app read
-  at start.
+- `restart_required` is true when `config.toml` holds other `[paths]`, `[assist]` or `[agent]` values than the ones
+  the app read at start.
 - `app` holds the `[app]` values the app uses now (Settings > Profile and Settings > Jobs): `keep_awake` (no system
   sleep while a job is queued or running), `notify` (a macOS notification when a job is done or failed; none for a
   cancelled job), `llm_idle_minutes` (minutes without use before the local LLM unloads; 0 = never) and `profile`
   (one of `profiles`; see [System](#system)). `idle_choices` are the minutes the screen offers. After
   `start.py --chat`, `profile` is `"chat"` although `config.toml` may say `"full"`.
+- `agent` holds the `[agent]` values in `config.toml` (Settings > Agent; [AGENT.md](AGENT.md#settings)): `python` (the
+  sandbox interpreter of `run_python`; `""` = the app's own Python with the standard library only), `searxng_url`,
+  `wikipedia_language` and `marginalia`. A key the file does not set, or sets to a bad value, shows its default.
+  `python_path` is `python` with "~" expanded (`null` when empty), and `python_found` tells whether it is an
+  executable file now. `default_python` is the interpreter the sandbox uses when `python` is empty (it runs with
+  `-I -S`). `languages` are the Wikipedia languages the screen offers. `agent.restart_required` is true when these
+  values differ from the ones the agent tools were built from at start.
 
 `PUT /api/settings` takes JSON with the values to change: `{"paths": {"ltx_model": "/Volumes/Models/ltx-2.5-mlx-q8"},
-"assist": {"provider": "local"}, "app": {"notify": false, "llm_idle_minutes": 30}}`. Each part is optional. It writes `config.toml` and returns the same object as
+"assist": {"provider": "local"}, "app": {"notify": false, "llm_idle_minutes": 30}, "agent": {"wikipedia_language": "de"}}`.
+Each part is optional. It writes `config.toml` and returns the same object as
 `GET /api/settings`, plus `changed` (for example `["paths.ltx_model"]`; empty when nothing changed).
 
 - Only the lines of the changed keys change. Comments, blank lines, other keys and other sections stay. A key that
   is not in the file goes after the last key of its section; a missing section goes at the end; a missing file is
   made.
 - The write is atomic (a temp file, then a rename) and keeps the file mode. A symbolic link stays a link.
-- The app reads `[paths]` and `[assist]` only at start, so such a change takes effect after a restart
-  (`restart_required`). An `[app]` value applies at once: the running app uses it as soon as the request returns.
+- The app reads `[paths]`, `[assist]` and `[agent]` only at start, so such a change takes effect after a restart
+  (`restart_required`). The agent tools get the `[agent]` values once, when they are built. An `[app]` value applies at once: the running app uses it as soon as the request returns.
 - Errors: HTTP 400 with `{"detail": {"message": "...", "fields": {"paths.ltx_model": "message"}}}` for an unknown
   key, an unknown provider, an empty path, a path with a double quote, a backslash or a line break, an `[app]` switch
-  that is not `true` or `false`, `llm_idle_minutes` that is not a whole number from 0 to 1440, or a `profile` that
-  is not `"full"` or `"chat"`. HTTP 409
+  that is not `true` or `false`, `llm_idle_minutes` that is not a whole number from 0 to 1440, a `profile` that
+  is not `"full"` or `"chat"`, or a bad `[agent]` value (the rules are in
+  [AGENT.md](AGENT.md#settings)). HTTP 409
   when `config.toml` is not valid TOML or sets the key in a form this endpoint cannot edit (for example an inline
   table); the file is then not changed.
 - Settings hold no secrets.
