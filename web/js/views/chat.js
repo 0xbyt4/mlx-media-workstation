@@ -18,7 +18,7 @@ const MODE_INFO = {
   workstation: {
     label: 'Workstation', icon: 'wand', help: 'Knows the app\'s tools. A text written for a tool gets a "Use in" button.',
     title: 'Ask about a prompt, a shot list or lyrics',
-    text: 'The model runs on this Mac and nothing is uploaded. Attach an image to ask about it. A text written for a tool gets a "Use in" button.',
+    text: 'The model runs on this Mac and nothing is uploaded. Attach an image to ask about it.',
     examples: [
       {title: 'Write a video prompt', text: 'Write a Text to Video prompt for a 5 second shot: a lighthouse keeper climbs a spiral staircase during a storm. Add the sounds.'},
       {title: 'Lyrics for a song', text: 'Write a style caption and lyrics (two short verses and a chorus) for a calm synth-pop song about a city in the rain.'},
@@ -28,6 +28,7 @@ const MODE_INFO = {
   },
   general: {
     label: 'General', icon: 'chat', help: 'A plain assistant for any question. It does not know the app\'s tools.',
+    chatHelp: 'A plain assistant for any question.', // the chat profile has no media tools to compare with
     title: 'Ask anything',
     text: 'The model runs on this Mac and nothing is uploaded. It has no internet access. Attach an image to ask about it.',
     examples: [
@@ -71,6 +72,11 @@ const DECISION = {
 // The modes a new chat can take here: the chat profile has no media tools, so it has no Workstation mode.
 function offered() {
   return s.ctx.store.profile() === 'chat' ? MODES.filter((m) => m !== 'workstation') : MODES;
+}
+
+function modeHelp(mode) {
+  const info = MODE_INFO[mode] || MODE_INFO.workstation;
+  return s.ctx.store.profile() === 'chat' && info.chatHelp ? info.chatHelp : info.help;
 }
 
 // "Use in" cards need the media tools: only Workstation chats in the full profile show them.
@@ -334,7 +340,7 @@ function renderHead() {
   els.modeChip.hidden = !mode;
   if (mode) {
     const info = MODE_INFO[mode] || MODE_INFO.workstation;
-    els.modeChip.title = info.label + ' mode: ' + info.help;
+    els.modeChip.title = info.label + ' mode: ' + modeHelp(mode);
     els.modeChip.replaceChildren(icon(info.icon, 'ic-sm'), h('span', {class: 'sr-only'}, 'Mode: '), info.label);
   }
   const f = modelFacts();
@@ -519,13 +525,12 @@ function chatMode() {
 function modePicker() {
   if (offered().length < 2) return null;
   const mode = chatMode();
-  const info = MODE_INFO[mode] || MODE_INFO.workstation;
   const seg = h('div', {class: 'seg', role: 'group', 'aria-label': 'Chat mode', 'aria-describedby': 'chat-mode-help'},
     offered().map((m) => h('button', {
       type: 'button', 'data-mode': m, 'aria-pressed': String(m === mode), disabled: s.sending || s.modeBusy,
       onclick: () => pickMode(m),
     }, icon(MODE_INFO[m].icon, 'ic-sm'), MODE_INFO[m].label)));
-  return h('div', {class: 'mode-pick'}, seg, h('p', {class: 'mode-help', id: 'chat-mode-help'}, info.help));
+  return h('div', {class: 'mode-pick'}, seg, h('p', {class: 'mode-help', id: 'chat-mode-help'}, modeHelp(mode)));
 }
 
 async function pickMode(mode) {
