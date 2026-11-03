@@ -285,6 +285,7 @@ def test_get_reports_the_switches(client: TestClient, cfg: Path) -> None:
         },
         "idle_choices": [5, 10, 30, 60, 0],
         "profiles": ["full", "chat"],
+        "saved_profile": "full",
     }
     assert data["llm"] == {"idle_stop_s": 600.0}
 
@@ -382,7 +383,8 @@ def test_put_switch_keeps_the_profile_of_this_run(
 ) -> None:
     # started with --chat: the file says nothing about the profile, and another switch does not change it
     monkeypatch.setattr(config, "APP", replace(config.APP, profile="chat"))
-    assert client.get("/api/settings").json()["app"]["profile"] == "chat"
+    app = client.get("/api/settings").json()["app"]
+    assert (app["profile"], app["saved_profile"]) == ("chat", "full")
     put(client, {"app": {"notify": False}})
     assert config.APP.profile == "chat"
     assert "profile" not in cfg.read_text()
@@ -392,6 +394,9 @@ def test_put_switch_keeps_the_profile_of_this_run(
     ]
     assert config.APP.profile == "full"
     assert config.load_app(cfg).profile == "full"
+    # and back: the next start is now in the chat profile, and Settings says so
+    app = put(client, {"app": {"profile": "chat"}}).json()["app"]
+    assert (app["profile"], app["saved_profile"]) == ("chat", "chat")
 
 
 def test_put_switch_over_an_int_that_means_true(client: TestClient, cfg: Path) -> None:

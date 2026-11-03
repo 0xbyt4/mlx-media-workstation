@@ -275,6 +275,7 @@ function rowFor(key, label, help, control) {
 }
 
 // The profile: what the sidebar shows. A window opened with ?profile= keeps its own, so it cannot change it here.
+// The select shows this run's profile, which --chat can set. The help names the saved one, so a change is not hidden.
 function profile() {
   const a = s.data.app;
   const pinned = s.ctx.store.profilePinned();
@@ -285,8 +286,9 @@ function profile() {
   const help = pinned
     ? 'This window opened next to the running app and always shows ' + (shown === 'chat' ? 'Chat only' : 'every section') +
       '. Change the profile in the app\'s own window.'
-    : 'Chat only hides Create, Jobs and Library, for a Mac with only the local LLM. It applies at once and is the ' +
-      'profile for the next start. start.py --chat and Workstation Chat.app always start in Chat only.';
+    : ['Chat only hides Create, Jobs and Library, for a Mac with only the local LLM. A change applies at once and is ' +
+      'saved for the next start. start.py --chat and Workstation Chat.app always start in Chat only. ' +
+      'Saved for Workstation.app and start.py: ', h('strong', null, a.saved_profile === 'chat' ? 'Chat only' : 'Full'), '.'];
   return section('set-pf', 'Profile', null, h('div', {class: 'card set-card'}, rowFor('profile', 'Sections', help, select)));
 }
 
