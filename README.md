@@ -357,6 +357,7 @@ The code that runs the models is MIT-licensed: mflux, mlx-audio, ACE-Step 1.5, l
   loaded between requests.
 - `app/assist.py` (prompt help), `app/chat.py` (Chat), `app/library.py` (Library) and `app/settings_api.py`
   (Settings).
+- `app/agent/`: the tools, the approval policy and the Python sandbox for the Chat's agent mode (`docs/AGENT.md`).
 - `app/config.py`: reads `config.toml` (where the models are, the prompt help provider and the job options).
 - `app/macos.py`: keeps the Mac awake while jobs run (`caffeinate`) and shows notifications (`osascript`).
 - `app/runners/`: small scripts that run inside a model's own environment: Fish Drama 3 and ACE-Step (they have no

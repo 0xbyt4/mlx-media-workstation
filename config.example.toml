@@ -32,3 +32,15 @@ llm_idle_minutes = 10
 # what the app shows: "full" (every section) or "chat" (Chat, Models and Settings only). start.py --chat always
 # starts with "chat".
 profile = "full"
+
+[agent]
+# Chat agent mode (docs/AGENT.md). Read at start.
+# the Python that run_python uses in the sandbox; "" = the app's own Python with the standard library only. For
+# numpy, pandas or matplotlib, make a separate environment for the sandbox and give its python here
+python = ""
+# a SearXNG instance you run yourself (JSON format on), used first by web_search; "" = none
+searxng_url = ""
+# the Wikipedia that web_search asks: a language code such as en, de or tr
+wikipedia_language = "en"
+# also ask Marginalia Search with its shared key "public" (often rate limited): true or false
+marginalia = true
