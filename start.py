@@ -80,6 +80,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def port_free() -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        # as uvicorn binds: a port left in TIME_WAIT by the last run counts as free, a listening one does not
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((HOST, PORT))
         except OSError:
@@ -186,7 +188,11 @@ def main(argv: list[str] | None = None) -> None:
     # touch a running instance's jobs.
     try:
         from app import config
-    except (SystemExit, tomllib.TOMLDecodeError) as e:  # config.toml could not be read
+    except (
+        SystemExit,
+        tomllib.TOMLDecodeError,
+        UnicodeDecodeError,
+    ) as e:  # config.toml could not be read
         notify("config.toml has an error; see the log.")
         raise SystemExit(f"config.toml: {e}") from None
     profile = "chat" if args.chat else config.APP.profile
@@ -198,7 +204,14 @@ def main(argv: list[str] | None = None) -> None:
 
     srv.start()
     server = uvicorn.Server(
-        uvicorn.Config(srv.app, host=HOST, port=PORT, log_level="warning")
+        # Ctrl-C in --browser mode: open answer streams get 3 s, then shutdown() stops them
+        uvicorn.Config(
+            srv.app,
+            host=HOST,
+            port=PORT,
+            log_level="warning",
+            timeout_graceful_shutdown=3,
+        )
     )
     try:
         if args.browser:
