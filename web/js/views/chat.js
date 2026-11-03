@@ -42,6 +42,16 @@ const OFFER_AGENT = false; // agent mode has no tools yet; true offers it in the
 const MODES = ['workstation', 'general'].concat(OFFER_AGENT ? ['agent'] : []);
 const MODE_KEY = 'ws.chatMode'; // the mode of the last new chat, per browser
 
+// The modes a new chat can take here: the chat profile has no media tools, so it has no Workstation mode.
+function offered() {
+  return s.ctx.store.profile() === 'chat' ? MODES.filter((m) => m !== 'workstation') : MODES;
+}
+
+// "Use in" cards need the media tools: only Workstation chats in the full profile show them.
+function showCards() {
+  return chatMode() === 'workstation' && s.ctx.store.profile() !== 'chat';
+}
+
 // Kept across mounts for this session: the open chat, the composer draft, the chosen images, the Thinking switch and
 // the mode for the next new chat.
 const memo = {activeId: null, draft: '', attach: [], thinking: false, mode: null};
@@ -131,7 +141,8 @@ function build() {
   els.newMode = h('button', {
     type: 'button', class: 'btn btn-icon new-chat-mode', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
     'aria-label': 'New chat in a mode', title: 'New chat in a mode',
-    onclick: () => menu(els.newMode, MODES.map((m) => ({
+    hidden: offered().length < 2,
+    onclick: () => menu(els.newMode, offered().map((m) => ({
       label: 'New ' + MODE_INFO[m].label + ' chat', icon: MODE_INFO[m].icon, run: () => newChat(m),
     }))),
   }, icon('chev-down', 'ic-sm'));
@@ -423,9 +434,9 @@ function newChat(mode) {
 function nextMode() {
   if (!memo.mode) {
     const saved = lsGet(MODE_KEY);
-    memo.mode = MODES.includes(saved) ? saved : 'workstation';
+    memo.mode = saved;
   }
-  return memo.mode;
+  return offered().includes(memo.mode) ? memo.mode : offered()[0];
 }
 
 function rememberMode(mode) {
@@ -443,10 +454,11 @@ function chatMode() {
 // The segmented control on an empty chat. With no chat yet it only picks the mode for the chat that the first message
 // creates; an existing empty chat changes on the server.
 function modePicker() {
+  if (offered().length < 2) return null;
   const mode = chatMode();
   const info = MODE_INFO[mode] || MODE_INFO.workstation;
   const seg = h('div', {class: 'seg', role: 'group', 'aria-label': 'Chat mode', 'aria-describedby': 'chat-mode-help'},
-    MODES.map((m) => h('button', {
+    offered().map((m) => h('button', {
       type: 'button', 'data-mode': m, 'aria-pressed': String(m === mode), disabled: s.sending || s.modeBusy,
       onclick: () => pickMode(m),
     }, icon(MODE_INFO[m].icon, 'ic-sm'), MODE_INFO[m].label)));
@@ -753,7 +765,7 @@ function paintLive(live) {
     live.thinkBody.classList.toggle('caret', thinking);
     if (!live.thinkTouched) live.think.open = thinking;
   }
-  live.bubble.replaceChildren(renderMarkdown(m.content, true, chatMode() === 'workstation'));
+  live.bubble.replaceChildren(renderMarkdown(m.content, true, showCards()));
   live.bubble.hidden = !m.content;
   if (m.content && !m.finish) addCaret(live.bubble);
   live.state.replaceChildren(...liveStatus(live));
@@ -852,7 +864,7 @@ function aiMessage(m, isLast) {
     m.reasoning ? h('details', {class: 'think'},
       h('summary', null, icon('chev', 'chev ic-sm'), h('span', {class: 'think-label'}, 'Thinking', h('span', {class: 'think-n'}, words + ' words'))),
       h('div', {class: 'think-body'}, m.reasoning)) : null,
-    m.content ? h('div', {class: 'bubble md'}, renderMarkdown(m.content, false, chatMode() === 'workstation')) : null,
+    m.content ? h('div', {class: 'bubble md'}, renderMarkdown(m.content, false, showCards())) : null,
     finishNote(m),
     h('div', {class: 'msg-tools'},
       m.content ? copyButton(m.content, 'Copy', 'Copy the answer') : null,
