@@ -51,6 +51,7 @@ def test_list_files_hides_hidden_and_secret_files(reg: Registry, ctx: Context) -
         "image.png  (160 B)",
         "notes/",
         "readme.txt  (8.7 KB)",
+        "[Hidden or secret files are here; they are not shown and cannot be read.]",
     ]
     _, deep = call(reg, ctx, "list_files", recursive=True)
     assert "notes/todo.md  (25 B)" in deep
@@ -171,7 +172,7 @@ def test_list_stops_at_the_entry_cap(
 ) -> None:
     monkeypatch.setattr(file_tools, "MAX_ENTRIES", 2)
     _, text = call(reg, ctx, "list_files")
-    assert text.splitlines()[-1] == "[Stopped at 2 entries: list a subfolder.]"
+    assert "[Stopped at 2 entries: list a subfolder.]" in text.splitlines()
 
 
 @pytest.mark.parametrize(

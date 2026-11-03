@@ -282,7 +282,7 @@ def test_allow_once_runs_the_call_and_taints_the_chat(client, net):
         client, cid, script([call("web_search", query="Antikythera")], "RESULT")
     )
     ask = pending(cid)
-    assert ask["name"] == "web_search" and ask["chat_scope"] is True
+    assert ask["name"] == "web_search" and ask["chat_scope"] is False
     assert ask["describe"] == "Sends the query 'Antikythera' to en.wikipedia.org."
     assert ask["timeout_s"] > 0 and ask["risk"] == 2
     assert ask["host"] is None  # only fetch_url names one host
@@ -311,7 +311,7 @@ def test_allow_in_this_chat_skips_the_next_question(client, ws):
     )
     t, box = start(client, cid, steps)
     ask = pending(cid)
-    assert "Queues a image.klein job" in ask["describe"]
+    assert "Queues a job for image.klein" in ask["describe"]
     approve(client, cid, ask["id"], "chat")
     t.join(5)
     evs = events(box["r"])
@@ -334,17 +334,30 @@ def test_untrusted_content_makes_a_network_tool_ask_again(client):
     )
     t, box = start(client, cid, steps)
     first = pending(cid)
-    approve(client, cid, first["id"], "chat")
-    second = pending(
-        cid, 2
-    )  # granted for the chat, but the first result is in the context now
+    # its result taints the chat, so "Allow in this chat" is not offered: it would not hold
+    assert first["chat_scope"] is False
+    assert approve(client, cid, first["id"], "chat").status_code == 400
+    approve(client, cid, first["id"], "once")
+    second = pending(cid, 2)
     assert second["chat_scope"] is False and "Untrusted content" in second["reason"]
-    assert approve(client, cid, second["id"], "chat").status_code == 400
     assert approve(client, cid, second["id"], "once").status_code == 200
     t.join(5)
     assert events(box["r"])[-1]["finish"] == "stop"
     state = saved(client, cid)["agent"]
-    assert state["grants"] == ["web_search"] and state["tainted"] is True
+    assert state["grants"] == [] and state["tainted"] is True
+
+
+def test_the_agent_prompt_names_only_the_offered_tools(client, reg):
+    cid = agent_chat(client)
+    prompt = chat.system_prompt(saved(client, cid))
+    assert "web_search" in prompt and "You reach the internet only through" in prompt
+    assert "read_file" not in prompt  # no folder: the file tools are not offered
+    client.patch(
+        f"/api/chats/{cid}/agent", json={"tools": ["job_status"]}, headers=ORIGIN
+    )
+    prompt = chat.system_prompt(saved(client, cid))
+    assert "You can call tools: job_status." in prompt
+    assert "web_search" not in prompt and "no internet access in this chat" in prompt
 
 
 def test_a_denied_call_goes_back_to_the_model(client, net):

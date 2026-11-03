@@ -139,7 +139,7 @@ def build(port: WorkstationPort) -> list[Tool]:
         shown = ", ".join(
             f"{k}={str(v)[:80]!r}" for k, v in (args.get("fields") or {}).items()
         )
-        return f"Queues a {args.get('tool')} job ({shown or 'default values'}). It uses this Mac for minutes."
+        return f"Queues a job for {args.get('tool')} ({shown or 'default values'}). It uses this Mac for minutes."
 
     return [
         Tool(

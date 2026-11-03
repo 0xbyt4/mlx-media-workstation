@@ -12,7 +12,7 @@ Each tool has a risk level. `app/agent/policy.py` decides from that level whethe
 |---|---|---|
 | R0 | Reads app state only. | Runs. |
 | R1 | Reads the user's files in the granted folder. | Runs when the chat has a granted folder. Refused without one. The grant is the consent. |
-| R2 | Sends text off this Mac, or queues minutes of compute. | Asks on the first use in a chat. The user can answer "Allow in this chat". When the chat is tainted, it asks every time, also with that grant. |
+| R2 | Sends text off this Mac, or queues minutes of compute. | Asks on the first use in a chat. The user can answer "Allow in this chat", except for a tool whose result taints the chat (web_search, fetch_url): after its first result it asks every time, so a chat-wide grant would do nothing. When the chat is tainted, every R2 call asks, also with that grant. |
 | R3 | Runs code, or has effects the app cannot check. | Asks every time. "Allow in this chat" is not offered. |
 
 A tool that is off in the chat's Tools menu is refused. An unknown tool name is refused. The model gets the reason as

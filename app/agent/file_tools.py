@@ -163,9 +163,15 @@ def read_text(path: str, root: str, limit: int | None = None) -> tuple[str, int,
     return data.decode("utf-8", errors="replace"), st.st_size, len(data) < st.st_size
 
 
-def walk(start: str, root: str, ctx: Context, recursive: bool):
+def walk(
+    start: str,
+    root: str,
+    ctx: Context,
+    recursive: bool,
+    hidden: list[str] | None = None,
+):
     """(path, is_dir, size) of the visible entries under `start`, sorted, folders followed by their contents, without
-    leaving the folder. Symlinked folders are listed but not entered."""
+    leaving the folder. Symlinked folders are listed but not entered. The names it skips go to `hidden`."""
     ctx.check_abort()
     try:
         names = sorted(os.listdir(start))
@@ -173,6 +179,8 @@ def walk(start: str, root: str, ctx: Context, recursive: bool):
         return
     for name in names:
         if blocked(name):
+            if hidden is not None:
+                hidden.append(name)
             continue
         path = os.path.join(start, name)
         real = os.path.realpath(path)
@@ -190,7 +198,7 @@ def walk(start: str, root: str, ctx: Context, recursive: bool):
             continue
         yield path, is_dir, st.st_size
         if is_dir and recursive and not os.path.islink(path):
-            yield from walk(path, root, ctx, recursive)
+            yield from walk(path, root, ctx, recursive, hidden)
 
 
 def human(size: int) -> str:
@@ -207,8 +215,8 @@ def build() -> list[Tool]:
         start = resolve(root, args["path"])
         if not os.path.isdir(start):
             raise ToolError(f"{args['path']}: not a folder.")
-        lines, more = [], False
-        for path, is_dir, size in walk(start, root, ctx, args["recursive"]):
+        lines, more, hidden = [], False, []
+        for path, is_dir, size in walk(start, root, ctx, args["recursive"], hidden):
             if len(lines) == MAX_ENTRIES:
                 more = True
                 break
@@ -218,6 +226,10 @@ def build() -> list[Tool]:
             return f"{_rel(start, root)}: empty (hidden files are not shown)."
         if more:
             lines.append(f"[Stopped at {MAX_ENTRIES} entries: list a subfolder.]")
+        if hidden:  # so the model does not tell the user that there are none
+            lines.append(
+                "[Hidden or secret files are here; they are not shown and cannot be read.]"
+            )
         return "\n".join(lines)
 
     def read_file(args: dict[str, Any], ctx: Context) -> str:
@@ -301,6 +313,10 @@ def build() -> list[Tool]:
             risk=Risk.R1,
             run=list_files,
             untrusted_output=True,
+            explain=lambda a: (
+                f"Lists {a.get('path', '.')!r} in the granted folder"
+                + (" and its subfolders." if a.get("recursive") else ".")
+            ),
         ),
         Tool(
             name="read_file",
@@ -324,6 +340,7 @@ def build() -> list[Tool]:
             risk=Risk.R1,
             run=read_file,
             untrusted_output=True,
+            explain=lambda a: f"Reads {a.get('path', '')!r} in the granted folder.",
         ),
         Tool(
             name="search_files",
@@ -350,5 +367,8 @@ def build() -> list[Tool]:
             risk=Risk.R1,
             run=search_files,
             untrusted_output=True,
+            explain=lambda a: (
+                f"Searches for {a.get('query', '')!r} in {a.get('path', '.')!r} of the granted folder."
+            ),
         ),
     ]

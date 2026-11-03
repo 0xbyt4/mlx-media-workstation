@@ -605,10 +605,13 @@ def test_model_input_keeps_the_newest_turns_that_fit(monkeypatch):
 def test_system_prompt_names_every_tool_with_prompt_help():
     system = chat.system_prompt({"mode": "workstation"})
     for tool in tools.TOOLS:
-        names = [f["name"] for f in tool["fields"] if f.get("assist")]
-        if names:
+        fields = [f for f in tool["fields"] if f.get("assist")]
+        if fields:
             assert f"- {tool['id']}: {tool['label']}" in system
-            assert ", ".join(names) in system
+        for f in fields:  # each field with its advice, so the model follows it
+            assert (
+                f"{f['name']} ({f['help']})" if f.get("help") else f["name"]
+            ) in system
     assert "edit.mix" not in system  # nothing to write for it
     assert "emoji" in system
 
@@ -621,10 +624,12 @@ def test_system_prompt_follows_the_mode(monkeypatch):
     assert "Tuesday 3 November 2026" in general and "emoji" in general
     assert "video.t2v" not in general and chat.PROMPT_FENCE + " " not in general
     assert "Workstation" not in general
-    # agent mode: the general prompt, with internet only through the tools, plus the tool rules
+    # agent mode: the general prompt plus the tool rules
     agent = chat.system_prompt({"mode": "agent", "agent": {"tools": []}})
     assert agent.startswith(general.removesuffix(" You have no internet access."))
-    assert "no internet access" not in agent and "untrusted data" in agent
+    assert (
+        "untrusted data" in agent
+    )  # the tools and the internet line: tests/test_agent_chat.py
     assert "No folder is granted" in agent
     folder = {"mode": "agent", "agent": {"tools": [], "folder": "/Users/me/notes"}}
     assert "granted this chat the folder /Users/me/notes" in chat.system_prompt(folder)
