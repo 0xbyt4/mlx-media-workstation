@@ -163,7 +163,10 @@ export const api = {
   llm: () => request('/api/llm'),
   unloadLlm: () => post('/api/llm/unload'),
   chats: () => request('/api/chats'),
-  createChat: () => post('/api/chats'),
+  // mode: 'workstation', 'general' or 'agent'; setChatMode works only while the chat has no messages (else HTTP 409).
+  createChat: (mode) => post('/api/chats', JSON.stringify({mode}), {headers: {'Content-Type': 'application/json'}}),
+  setChatMode: (id, mode) => request('/api/chats/' + enc(id),
+    {method: 'PATCH', body: JSON.stringify({mode}), headers: {'Content-Type': 'application/json'}}),
   chat: (id) => request('/api/chats/' + enc(id)),
   deleteChat: (id) => del('/api/chats/' + enc(id)),
   chatFileUrl: (id, name) => '/api/chats/' + enc(id) + '/files/' + enc(name),

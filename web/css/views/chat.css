@@ -20,6 +20,23 @@
   gap: 8px;
   padding: 14px 12px 8px;
 }
+.v-chat .new-chat {
+  display: flex;
+}
+.v-chat .new-chat-main {
+  flex: 1;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.v-chat .new-chat-mode {
+  margin-left: -1px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.v-chat .new-chat .btn:focus-visible {
+  position: relative;
+  z-index: 1;
+}
 .v-chat .search {
   position: relative;
 }
@@ -133,14 +150,23 @@
   padding: 12px 24px;
   border-bottom: 1px solid var(--border);
 }
-.v-chat .thread-head h2 {
+.v-chat .thread-title {
   flex: 1;
-  min-width: 160px;
+  min-width: 240px; /* the title keeps about 160 px next to the mode chip */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.v-chat .thread-head h2 {
+  min-width: 0;
   font-size: var(--fs-md);
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.v-chat .mode-chip {
+  flex: none;
 }
 .v-chat .conv-toggle {
   display: none;
@@ -180,7 +206,9 @@
   outline-offset: -2px;
 }
 .v-chat .msgs.is-empty {
-  align-content: center;
+  /* auto margins center the empty state; unlike align-content, a tall one stays scrollable from its top */
+  display: flex;
+  flex-direction: column;
 }
 .v-chat .chat-loading {
   display: flex;
@@ -490,11 +518,30 @@
   gap: 16px;
   width: 100%;
   max-width: 640px;
-  justify-self: center;
+  margin: auto;
 }
 .v-chat .chat-empty .empty {
   border: 0;
   padding: 8px 16px;
+}
+.v-chat .mode-pick {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  text-align: center;
+}
+.v-chat .mode-pick .seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.v-chat .mode-pick .seg button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.v-chat .mode-help {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
 }
 .v-chat .examples {
   display: grid;
@@ -631,7 +678,7 @@
     padding-left: 16px;
     padding-right: 16px;
   }
-  .v-chat .thread-head h2 {
+  .v-chat .thread-title {
     min-width: 0;
   }
   .v-chat .composer-hint {

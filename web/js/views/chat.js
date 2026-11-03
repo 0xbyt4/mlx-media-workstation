@@ -3,20 +3,48 @@
 // Markdown by building DOM nodes; it never goes into the page as HTML.
 
 import {store} from '../store.js';
-import {h, icon, toolIcon, grow, fmtBytes, fmtLeft, fmtTime, timeAgo, toast, inlineConfirm, lightbox} from '../ui.js';
+import {h, icon, toolIcon, grow, fmtBytes, fmtLeft, fmtTime, timeAgo, toast, inlineConfirm, lightbox, lsGet, lsSet, menu, closeMenu} from '../ui.js';
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 const MAX_IMAGES = 4; // per message (app/chat.py MAX_IMAGES)
 const MAX_IMAGE = 20 * 1024 * 1024;
-const EXAMPLES = [
-  {title: 'Write a video prompt', text: 'Write a Text to Video prompt for a 5 second shot: a lighthouse keeper climbs a spiral staircase during a storm. Add the sounds.'},
-  {title: 'Lyrics for a song', text: 'Write a style caption and lyrics (two short verses and a chorus) for a calm synth-pop song about a city in the rain.'},
-  {title: 'Plan a short scene', text: 'Plan a 20 second museum scene at night as 4 shots. For each shot, say which tool to use and why.'},
-  {title: 'Ask about an image', text: 'What should move in this image in a 5 second Image to Video clip? Write the prompt.', attach: true},
-];
+// A chat's mode picks its system prompt (app/chat.py MODES) and is fixed after the first message. Only workstation
+// answers get "Use in" cards.
+const MODE_INFO = {
+  workstation: {
+    label: 'Workstation', icon: 'wand', help: 'Knows the app\'s tools. A text written for a tool gets a "Use in" button.',
+    title: 'Ask about a prompt, a shot list or lyrics',
+    text: 'The model runs on this Mac and nothing is uploaded. Attach an image to ask about it. A text written for a tool gets a "Use in" button.',
+    examples: [
+      {title: 'Write a video prompt', text: 'Write a Text to Video prompt for a 5 second shot: a lighthouse keeper climbs a spiral staircase during a storm. Add the sounds.'},
+      {title: 'Lyrics for a song', text: 'Write a style caption and lyrics (two short verses and a chorus) for a calm synth-pop song about a city in the rain.'},
+      {title: 'Plan a short scene', text: 'Plan a 20 second museum scene at night as 4 shots. For each shot, say which tool to use and why.'},
+      {title: 'Ask about an image', text: 'What should move in this image in a 5 second Image to Video clip? Write the prompt.', attach: true},
+    ],
+  },
+  general: {
+    label: 'General', icon: 'chat', help: 'A plain assistant for any question. It does not know the app\'s tools.',
+    title: 'Ask anything',
+    text: 'The model runs on this Mac and nothing is uploaded. It has no internet access. Attach an image to ask about it.',
+    examples: [
+      {title: 'Explain something', text: 'Explain how a heat pump works, in plain words and in under 150 words.'},
+      {title: 'Make a text clearer', text: 'Make this text shorter and clearer. Keep the meaning and the tone:\n\n'},
+      {title: 'Make a plan', text: 'Make a plan to learn the basics of Python in two weeks, one hour a day.'},
+      {title: 'Ask about an image', text: 'What is in this image? Describe it in a few sentences.', attach: true},
+    ],
+  },
+  agent: {
+    label: 'Agent', icon: 'chip', help: 'A general assistant that can use tools.',
+    title: 'Ask anything', text: 'The model runs on this Mac.', examples: [],
+  },
+};
+const OFFER_AGENT = false; // agent mode has no tools yet; true offers it in the picker and the New chat menu
+const MODES = ['workstation', 'general'].concat(OFFER_AGENT ? ['agent'] : []);
+const MODE_KEY = 'ws.chatMode'; // the mode of the last new chat, per browser
 
-// Kept across mounts for this session: the open chat, the composer draft, the chosen images and the Thinking switch.
-const memo = {activeId: null, draft: '', attach: [], thinking: false};
+// Kept across mounts for this session: the open chat, the composer draft, the chosen images, the Thinking switch and
+// the mode for the next new chat.
+const memo = {activeId: null, draft: '', attach: [], thinking: false, mode: null};
 
 let s = null; // the mounted view
 
@@ -53,6 +81,7 @@ function mount(root, ctx, params) {
 
 function unmount() {
   if (!s) return;
+  closeMenu();
   detachLive();
   s.listPoll.stop();
   for (const off of s.offs) off();
@@ -98,10 +127,17 @@ function build() {
       renderList();
     },
   });
-  els.newBtn = h('button', {type: 'button', class: 'btn btn-block', onclick: newChat}, icon('plus', 'ic-sm'), 'New chat');
+  els.newBtn = h('button', {type: 'button', class: 'btn new-chat-main', onclick: () => newChat()}, icon('plus', 'ic-sm'), 'New chat');
+  els.newMode = h('button', {
+    type: 'button', class: 'btn btn-icon new-chat-mode', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    'aria-label': 'New chat in a mode', title: 'New chat in a mode',
+    onclick: () => menu(els.newMode, MODES.map((m) => ({
+      label: 'New ' + MODE_INFO[m].label + ' chat', icon: MODE_INFO[m].icon, run: () => newChat(m),
+    }))),
+  }, icon('chev-down', 'ic-sm'));
   els.list = h('ul', {class: 'convo-list', role: 'list', 'aria-label': 'Chats'});
   els.convos = h('aside', {class: 'convos', id: 'chat-convos', 'aria-label': 'Conversations'},
-    h('div', {class: 'convos-head'}, els.newBtn,
+    h('div', {class: 'convos-head'}, h('div', {class: 'new-chat'}, els.newBtn, els.newMode),
       h('div', {class: 'search'}, h('label', {class: 'sr-only', for: 'chat-search'}, 'Search chats'), icon('search', 'ic-sm'), els.search)),
     els.list);
 
@@ -111,6 +147,7 @@ function build() {
     onclick: () => showConvos(!els.chat.classList.contains('show-convos')),
   }, icon('menu'));
   els.title = h('h2', {id: 'chat-title'});
+  els.modeChip = h('span', {class: 'chip mode-chip'});
   els.chip = h('span', {class: 'model-chip', role: 'status'});
   els.unload = h('button', {type: 'button', class: 'btn btn-ghost btn-sm', hidden: true, onclick: unload}, 'Unload');
   els.msgs = h('div', {class: 'msgs', role: 'region', 'aria-labelledby': 'chat-title', tabindex: '0'});
@@ -157,7 +194,7 @@ function build() {
       els.send));
 
   els.thread = h('section', {class: 'thread', 'aria-label': 'Conversation'},
-    h('div', {class: 'thread-head'}, els.toggle, els.title, els.chip, els.unload),
+    h('div', {class: 'thread-head'}, els.toggle, h('div', {class: 'thread-title'}, els.title, els.modeChip), els.chip, els.unload),
     els.msgs,
     h('div', {class: 'composer-wrap'}, els.notices, els.note, composer),
     els.status);
@@ -220,6 +257,13 @@ function chipState(f) {
 function renderHead() {
   const els = s.els;
   els.title.textContent = s.chat ? s.chat.title : memo.activeId ? 'Chat' : 'New chat';
+  const mode = chatMode();
+  els.modeChip.hidden = !mode;
+  if (mode) {
+    const info = MODE_INFO[mode] || MODE_INFO.workstation;
+    els.modeChip.title = info.label + ' mode: ' + info.help;
+    els.modeChip.replaceChildren(icon(info.icon, 'ic-sm'), h('span', {class: 'sr-only'}, 'Mode: '), info.label);
+  }
   const f = modelFacts();
   const [pill, label, sub] = chipState(f);
   els.chip.replaceChildren(icon('chip', 'ic-sm'), h('b', null, f.llm ? f.llm.model : 'Local model'),
@@ -361,10 +405,80 @@ function focusRow(id, part) {
   if (el) el.focus();
 }
 
-function newChat() {
+// A new chat in the given mode, or in the mode of the last new chat.
+function newChat(mode) {
   showConvos(false);
+  if (mode) rememberMode(mode);
   if (memo.activeId || s.chat) openChat(null);
+  else if (mode) {
+    renderHead();
+    renderThread(true);
+  }
   s.els.input.focus();
+}
+
+// ---------- modes ----------
+
+// The mode for the next new chat: the last one chosen in this browser, if the page still offers it.
+function nextMode() {
+  if (!memo.mode) {
+    const saved = lsGet(MODE_KEY);
+    memo.mode = MODES.includes(saved) ? saved : 'workstation';
+  }
+  return memo.mode;
+}
+
+function rememberMode(mode) {
+  memo.mode = mode;
+  lsSet(MODE_KEY, mode);
+}
+
+// The open chat's mode (a chat saved before modes is workstation), the next mode when no chat is open yet, or null
+// while a chat loads.
+function chatMode() {
+  if (s.chat) return s.chat.mode || 'workstation';
+  return memo.activeId ? null : nextMode();
+}
+
+// The segmented control on an empty chat. With no chat yet it only picks the mode for the chat that the first message
+// creates; an existing empty chat changes on the server.
+function modePicker() {
+  const mode = chatMode();
+  const info = MODE_INFO[mode] || MODE_INFO.workstation;
+  const seg = h('div', {class: 'seg', role: 'group', 'aria-label': 'Chat mode', 'aria-describedby': 'chat-mode-help'},
+    MODES.map((m) => h('button', {
+      type: 'button', 'data-mode': m, 'aria-pressed': String(m === mode), disabled: s.sending || s.modeBusy,
+      onclick: () => pickMode(m),
+    }, icon(MODE_INFO[m].icon, 'ic-sm'), MODE_INFO[m].label)));
+  return h('div', {class: 'mode-pick'}, seg, h('p', {class: 'mode-help', id: 'chat-mode-help'}, info.help));
+}
+
+async function pickMode(mode) {
+  if (mode === chatMode() || s.sending || s.modeBusy) return;
+  const me = s;
+  rememberMode(mode);
+  if (s.chat) {
+    const id = s.chat.id;
+    s.modeBusy = true;
+    try {
+      const c = await me.api.setChatMode(id, mode);
+      if (s !== me || !s.chat || s.chat.id !== id) return;
+      s.chat.mode = c.mode;
+      const row = s.chats.find((x) => x.id === id);
+      if (row) row.mode = c.mode;
+    } catch (e) {
+      if (s !== me) return;
+      showNote(errText(e)); // 409: a message arrived from another window
+      reloadChat(id);
+    } finally {
+      me.modeBusy = false;
+    }
+  }
+  renderHead();
+  renderThread(false);
+  const btn = s.els.msgs.querySelector('.mode-pick [data-mode="' + mode + '"]');
+  if (btn) btn.focus();
+  announce(MODE_INFO[mode].label + ' mode.');
 }
 
 // ---------- open and reload ----------
@@ -449,7 +563,7 @@ async function send() {
     me.sending = true;
     renderComposer();
     try {
-      const c = await me.api.createChat();
+      const c = await me.api.createChat(nextMode());
       if (s !== me) return;
       id = c.id;
       memo.activeId = id;
@@ -639,7 +753,7 @@ function paintLive(live) {
     live.thinkBody.classList.toggle('caret', thinking);
     if (!live.thinkTouched) live.think.open = thinking;
   }
-  live.bubble.replaceChildren(renderMarkdown(m.content, true));
+  live.bubble.replaceChildren(renderMarkdown(m.content, true, chatMode() === 'workstation'));
   live.bubble.hidden = !m.content;
   if (m.content && !m.finish) addCaret(live.bubble);
   live.state.replaceChildren(...liveStatus(live));
@@ -700,11 +814,13 @@ function renderThread(toEnd) {
 
 function emptyChat() {
   const blocked = modelFacts().blocked;
+  const info = MODE_INFO[chatMode()] || MODE_INFO.workstation;
   return h('div', {class: 'chat-empty'},
-    h('div', {class: 'empty'}, icon('chat'),
-      h('h3', null, 'Ask about a prompt, a shot list or lyrics'),
-      h('p', null, 'The model runs on this Mac and nothing is uploaded. Attach an image to ask about it. A text written for a tool gets a "Use in" button.')),
-    h('div', {class: 'examples', role: 'list', 'aria-label': 'Examples'}, EXAMPLES.map((ex) => h('button', {
+    modePicker(),
+    h('div', {class: 'empty'}, icon(info.icon),
+      h('h3', null, info.title),
+      h('p', null, info.text)),
+    h('div', {class: 'examples', role: 'list', 'aria-label': 'Examples'}, info.examples.map((ex) => h('button', {
       type: 'button', class: 'example', role: 'listitem', disabled: blocked, onclick: () => useExample(ex),
     }, h('b', null, ex.title), h('span', null, ex.text)))));
 }
@@ -736,7 +852,7 @@ function aiMessage(m, isLast) {
     m.reasoning ? h('details', {class: 'think'},
       h('summary', null, icon('chev', 'chev ic-sm'), h('span', {class: 'think-label'}, 'Thinking', h('span', {class: 'think-n'}, words + ' words'))),
       h('div', {class: 'think-body'}, m.reasoning)) : null,
-    m.content ? h('div', {class: 'bubble md'}, renderMarkdown(m.content, false)) : null,
+    m.content ? h('div', {class: 'bubble md'}, renderMarkdown(m.content, false, chatMode() === 'workstation')) : null,
     finishNote(m),
     h('div', {class: 'msg-tools'},
       m.content ? copyButton(m.content, 'Copy', 'Copy the answer') : null,
@@ -939,7 +1055,8 @@ async function copyText(text) {
 // A small renderer for model text: headings, paragraphs (single line breaks kept), bold, italic, strikethrough,
 // inline code, fenced code, nested lists, block quotes, rules, tables and links. It builds element and text nodes
 // only. Only http(s) links become links; they open in the system browser (target _blank, rel noopener).
-// A fence "```prompt <tool id> [field]" for a known tool becomes a card with "Use in <tool>".
+// With cards on (workstation chats), a fence "```prompt <tool id> [field]" for a known tool becomes a card with
+// "Use in <tool>"; otherwise it stays a code block.
 
 const RE = {
   fence: /^( {0,3})(`{3,}|~{3,})(.*)$/,
@@ -963,9 +1080,9 @@ const INLINE = new RegExp([
   '\\\\([!-\\/:-@\\[-`{-~])', // 11: escaped punctuation
 ].join('|'), 'gu');
 
-export function renderMarkdown(src, streaming) {
+export function renderMarkdown(src, streaming, cards = true) {
   const out = document.createDocumentFragment();
-  renderBlocks(String(src || '').replace(/\r\n?/g, '\n').replace(/\t/g, '    ').split('\n'), out, streaming);
+  renderBlocks(String(src || '').replace(/\r\n?/g, '\n').replace(/\t/g, '    ').split('\n'), out, {streaming, cards});
   return out;
 }
 
@@ -978,7 +1095,8 @@ function startsBlock(lines, i) {
   return RE.fence.test(l) || RE.heading.test(l) || RE.hr.test(l) || RE.quote.test(l) || RE.item.test(l) || isTableStart(lines, i);
 }
 
-function renderBlocks(lines, out, streaming) {
+// o: {streaming, cards}
+function renderBlocks(lines, out, o) {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
@@ -1001,7 +1119,7 @@ function renderBlocks(lines, out, streaming) {
         }
         body.push(lines[i].slice(Math.min(indent, indentOf(lines[i]))));
       }
-      out.append(fenced(m[3].trim(), body.join('\n'), closed || !streaming));
+      out.append(fenced(m[3].trim(), body.join('\n'), closed || !o.streaming, o.cards));
       continue;
     }
     if (RE.hr.test(line)) {
@@ -1021,12 +1139,12 @@ function renderBlocks(lines, out, streaming) {
         i++;
       }
       const q = h('blockquote');
-      renderBlocks(body, q, streaming);
+      renderBlocks(body, q, o);
       out.append(q);
       continue;
     }
     if (RE.item.test(line)) {
-      i = renderMdList(lines, i, out, streaming);
+      i = renderMdList(lines, i, out, o);
       continue;
     }
     if (isTableStart(lines, i)) {
@@ -1043,7 +1161,7 @@ function renderBlocks(lines, out, streaming) {
   }
 }
 
-function renderMdList(lines, start, out, streaming) {
+function renderMdList(lines, start, out, o) {
   const first = RE.item.exec(lines[start]);
   const base = first[1].length;
   const ordered = /\d/.test(first[2]);
@@ -1076,7 +1194,7 @@ function renderMdList(lines, start, out, streaming) {
       else body.push(l.trim()); // a lazy continuation line
     }
     const li = h('li');
-    renderBlocks(body, li, streaming);
+    renderBlocks(body, li, o);
     list.append(li);
     let j = i;
     while (j < lines.length && !lines[j].trim()) j++;
@@ -1137,8 +1255,8 @@ function link(parent, label, url) {
   }
 }
 
-function fenced(info, text, done) {
-  const m = /^prompt\s+([\w.-]+)(?:\s+([\w-]+))?\s*$/i.exec(info);
+function fenced(info, text, done, cards) {
+  const m = cards && /^prompt\s+([\w.-]+)(?:\s+([\w-]+))?\s*$/i.exec(info);
   const target = m && promptTarget(m[1], m[2]);
   return target ? promptCard(target, text, done) : codeBlock(info.split(/\s+/)[0], text, done);
 }

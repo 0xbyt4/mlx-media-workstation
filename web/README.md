@@ -105,4 +105,4 @@ adds the file, up to its limit.
 ## Saved in the browser
 
 Only per-viewer conveniences go to `localStorage`: `ws.theme`, `ws.view`, `ws.lastTool`, `ws.advancedOpen`,
-`ws.jobsFilter` and the form values per tool (`ws.form.<tool id>`). Chosen files stay in memory for the session.
+`ws.jobsFilter`, `ws.chatMode` (the mode of the last new chat) and the form values per tool (`ws.form.<tool id>`). Chosen files stay in memory for the session.

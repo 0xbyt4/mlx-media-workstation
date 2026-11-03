@@ -4,6 +4,11 @@ Each chat is a folder outputs/chats/<id>/ with chat.json (the messages) and the 
 its own thread and is saved when it ends, whether or not the page still listens: the page reads it as server-sent
 events from POST .../messages and can reconnect with GET .../stream. Stop cancels it between tokens. The model sees as
 many recent turns as fit in CONTEXT_TOKENS.
+
+A chat has a mode that picks its system prompt: "workstation" knows the app's tools and writes prompt blocks for them,
+"general" is a plain assistant, "agent" is reserved for tool use and gets the general prompt for now. A chat saved
+before modes existed has no "mode" key and is a workstation chat. The mode can change only while the chat is empty: a
+new system prompt would change what the earlier answers meant.
 """
 
 import asyncio
@@ -18,6 +23,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 
 from app import llm, tools
 from app.config import ROOT
@@ -33,9 +39,11 @@ MAX_TEXT = 20000  # characters per message
 CONTEXT_TOKENS = 32768
 IMAGE_TOKENS = 1100  # an image at the worker's 1024x1024 pixel cap
 PROMPT_FENCE = "prompt"  # a fenced block "```prompt <tool id> [field]" gets a "Use in <tool>" button in the app
+MODES = ("workstation", "general", "agent")
+DEFAULT_MODE = "workstation"  # also the mode of a chat saved before modes existed
 
 
-def system_prompt() -> str:
+def workstation_prompt() -> str:
     lines = []
     for tool in tools.TOOLS:
         names = [f["name"] for f in tool["fields"] if f.get("assist")]
@@ -44,7 +52,7 @@ def system_prompt() -> str:
                 f"- {tool['id']}: {tool['label']} ({tool['group']}); fields: {', '.join(names)}"
             )
     return f"""You are a helpful assistant in Workstation, a media app that runs open models locally on the user's Mac. \
-Answer in the user's language. Be clear and concise; use Markdown when it helps.
+Answer in the user's language. Be clear and concise; use Markdown when it helps. Do not use emoji.
 
 When you write a ready-to-use text for one of the app's tools (a prompt, a voice script, lyrics), put it in its own \
 fenced block whose info string is "{PROMPT_FENCE}" and the tool id, for example ```{PROMPT_FENCE} video.t2v. A tool with \
@@ -55,7 +63,28 @@ which stay in the user's language. The tools:
 {chr(10).join(lines)}"""
 
 
-SYSTEM = system_prompt()
+WORKSTATION_PROMPT = workstation_prompt()  # the tool list is fixed while the app runs
+
+
+def today() -> str:
+    d = datetime.now()
+    return f"{d:%A} {d.day} {d:%B %Y}"
+
+
+def general_prompt() -> str:
+    return f"""You are a helpful assistant running locally on the user's Mac. Today is {today()}. Answer in the \
+user's language. Be direct: give the answer first, then only the detail that helps. Use Markdown when it helps. Do \
+not use emoji. You have no internet access."""
+
+
+def mode_of(chat: dict[str, Any]) -> str:
+    return chat.get("mode", DEFAULT_MODE)
+
+
+def system_prompt(chat: dict[str, Any]) -> str:
+    """The system prompt for the chat's mode. Agent gets the general prompt until it has tools."""
+    return WORKSTATION_PROMPT if mode_of(chat) == "workstation" else general_prompt()
+
 
 router = APIRouter(prefix="/api")
 lock = threading.Lock()  # guards chat files and live
@@ -100,6 +129,7 @@ def summary(chat: dict[str, Any]) -> dict[str, Any]:
         "created": chat["created"],
         "updated": chat["updated"],
         "messages": len(chat["messages"]),
+        "mode": mode_of(chat),
         "running": chat["id"] in live,
     }
 
@@ -114,7 +144,8 @@ def model_input(
     chat: dict[str, Any], max_tokens: int
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """The messages and image paths for the model: the newest turns that fit, oldest dropped first."""
-    budget = CONTEXT_TOKENS - max_tokens - len(SYSTEM) // 3
+    system = system_prompt(chat)
+    budget = CONTEXT_TOKENS - max_tokens - len(system) // 3
     kept: list[dict[str, Any]] = []
     for msg in reversed(chat["messages"]):
         if msg["role"] == "assistant" and msg.get("finish") == "cancelled":
@@ -126,7 +157,7 @@ def model_input(
     kept.reverse()
     while kept and kept[0]["role"] != "user":  # a turn starts with the user
         kept.pop(0)
-    messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM}]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     images: list[str] = []
     for msg in kept:
         if msg["role"] == "user":
@@ -231,12 +262,29 @@ def list_chats() -> list[dict[str, Any]]:
     return sorted(out, key=lambda c: c["updated"], reverse=True)
 
 
+class NewChat(BaseModel):
+    mode: str = DEFAULT_MODE
+
+
+class ChatChange(BaseModel):
+    mode: str
+
+
+def check_mode(mode: str) -> str:
+    if mode not in MODES:
+        raise HTTPException(400, f"Unknown chat mode: {mode}. Use {', '.join(MODES)}.")
+    return mode
+
+
 @router.post("/chats")
-def create_chat() -> dict[str, Any]:
+def create_chat(body: NewChat | None = None) -> dict[str, Any]:
+    """An empty chat; the JSON body {"mode": ...} is optional (default workstation)."""
+    mode = check_mode(body.mode if body else DEFAULT_MODE)
     chat_id = datetime.now().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
     chat = {
         "id": chat_id,
         "title": "New chat",
+        "mode": mode,
         "created": now(),
         "updated": now(),
         "messages": [],
@@ -251,7 +299,24 @@ def create_chat() -> dict[str, Any]:
 def get_chat(chat_id: str) -> dict[str, Any]:
     with lock:
         chat = load(chat_id)
-    return {**chat, "running": chat_id in live}
+    return {**chat, "mode": mode_of(chat), "running": chat_id in live}
+
+
+@router.patch("/chats/{chat_id}")
+def change_chat(chat_id: str, body: ChatChange) -> dict[str, Any]:
+    """Change the mode of a chat that has no messages yet (HTTP 409 after the first message)."""
+    mode = check_mode(body.mode)
+    with lock:
+        chat = load(chat_id)
+        if chat["messages"] or chat_id in live:
+            raise HTTPException(
+                409, "The mode is fixed after the first message. Start a new chat."
+            )
+        if mode_of(chat) != mode:
+            chat["mode"] = mode
+            chat["updated"] = now()
+            save(chat)
+    return summary(chat)
 
 
 @router.delete("/chats/{chat_id}")
