@@ -86,7 +86,7 @@ PREVIEW = 4000  # characters of a tool result in the page's event; the saved cha
 MAX_FILES = 20  # files of one tool result linked on the page
 # the largest workspace file the page may fetch (run_python writes at most 50 MB a file)
 MAX_SERVED = 64 * 1024 * 1024
-OFF_BY_DEFAULT = ("run_python",)  # see default_agent()
+OFF_BY_DEFAULT = ("run_python", "run_shell")  # see default_agent()
 SHORTENED = "[This older tool result was removed to save space.]"
 # the notes of an answer that ended without a final text
 NOTE_STEPS = (
@@ -130,6 +130,7 @@ LABELS = {
     "export_from_workspace": "Save to your folder",
     "media_info": "Media facts",
     "view_image": "View an image",
+    "run_shell": "Shell",
 }
 # workspace files the page shows inline (images) or as text; anything else is a download
 INLINE_TYPES = {
@@ -343,11 +344,12 @@ def registry() -> Registry:
 
 
 def default_agent() -> dict[str, Any]:
-    """A new agent chat's state: every tool on except run_python, no folder, no chat-wide approvals, not tainted.
+    """A new agent chat's state: every tool on except run_python and run_shell, no folder, no chat-wide approvals,
+    not tainted.
 
-    run_python is off until the user turns it on: it asks before every call, and the model reaches for a general tool
-    more often than it needs to (docs/AGENT.md), so it would fill the chat with approval cards. The other risky tools
-    still ask (policy.py)."""
+    run_python and run_shell are off until the user turns them on: they ask before every call, and the model reaches
+    for a general tool more often than it needs to (docs/AGENT.md), so it would fill the chat with approval cards. The
+    other risky tools still ask (policy.py)."""
     try:
         names = registry().names()
     except RuntimeError:
@@ -408,6 +410,11 @@ def risk_text(tool: Tool) -> str:
         return (
             f"{what} Asks first; you can allow it for the whole chat. Once web pages or files are in the chat, it "
             "asks before every call."
+        )
+    if tool.name == "run_shell":
+        return (
+            "Runs shell commands in a sandbox with no network. Writes only to this chat's work folder and reads the "
+            "granted folder without changing it. Asks before every call."
         )
     return "Runs code in a sandbox with no network and no access to your files. Asks before every call."
 
@@ -904,6 +911,7 @@ class Turn:
                 host,
                 verdict.reason,
                 verdict.chat_scope,
+                grants,
                 ctx.preview,
             )
             if approval == "stopped":
@@ -957,6 +965,7 @@ class Turn:
         host: str | None,
         reason: str,
         chat_scope: bool,
+        grants: Grants,
         preview: str | None = None,
     ) -> str:
         """Show the approval card and wait for the answer: "once", "chat", "deny", "timeout" or "stopped"."""
@@ -978,6 +987,15 @@ class Turn:
                 "chat_scope": chat_scope,
                 "timeout_s": round(wait),
                 "preview": preview,
+                # run_shell: the folder the command runs in and the folder it may read
+                **(
+                    {
+                        "cwd": str(work_dir(CHATS, self.chat_id)),
+                        "read_only": str(grants.folder) if grants.folder else None,
+                    }
+                    if tool.name == "run_shell"
+                    else {}
+                ),
             }
         )
         # Stop sets run.stop before it looks at run.approval: one of the two sees the other

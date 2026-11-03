@@ -23,6 +23,7 @@ from app.agent import (
     media_tools,
     plan_tool,
     python_tool,
+    shell_tool,
     web_tools,
     write_tools,
     ws_tools,
@@ -41,6 +42,8 @@ from app.agent.registry import (
 from app.agent.sandbox import Limits, RunResult, Sandbox, SeatbeltSandbox
 from app.agent.settings import Settings
 from app.agent.settings import load as load_settings
+from app.agent.shell_sandbox import SeatbeltShell
+from app.agent.shell_tool import ShellSandbox
 from app.agent.web_tools import Net
 
 __all__ = [
@@ -57,7 +60,9 @@ __all__ = [
     "RunResult",
     "Sandbox",
     "SeatbeltSandbox",
+    "SeatbeltShell",
     "Settings",
+    "ShellSandbox",
     "Tool",
     "ToolError",
     "Verdict",
@@ -71,7 +76,7 @@ __all__ = [
 
 
 def work_dir(chats: Path, chat_id: str) -> Path:
-    """The chat's workspace, where run_python reads and writes: outputs/chats/<id>/ws."""
+    """The chat's workspace, where run_python and run_shell read and write: outputs/chats/<id>/ws."""
     return chats / chat_id / "ws"
 
 
@@ -82,9 +87,11 @@ def build_registry(
     net: Net | None = None,
     sandbox: Sandbox | None = None,
     limits: Limits | None = None,
+    shell: ShellSandbox | None = None,
 ) -> Registry:
     """Every agent tool this setup can offer. No port (chat-only profile) = no Workstation tools; no usable
-    sandbox = no run_python. Pass `net` and `sandbox` to replace the network and the sandbox (tests)."""
+    sandbox = no run_python or run_shell. Pass `net`, `sandbox` and `shell` to replace the network and the
+    sandboxes (tests)."""
     tools = plan_tool.build()
     if port is not None:
         tools += ws_tools.build(port)
@@ -100,4 +107,7 @@ def build_registry(
             else "The packages of the sandbox environment are available."
         )
         tools.append(python_tool.build(box, limits or Limits(), packages))
+    sh = shell if shell is not None else SeatbeltShell()
+    if sh.unavailable() is None:
+        tools.append(shell_tool.build(sh, limits or Limits(), shell_tool.programs()))
     return Registry(tools)

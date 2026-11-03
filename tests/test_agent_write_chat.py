@@ -32,6 +32,7 @@ fake_llm = base.fake_llm
 reg = base.reg
 ws = base.ws
 box = base.box
+shell = base.shell
 net = base.net
 client = base.client
 

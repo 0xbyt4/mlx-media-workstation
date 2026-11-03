@@ -54,6 +54,23 @@ class FakeSandbox:
         return RunResult(0, "42\n", "", 0.01, files=files)
 
 
+class FakeShell:
+    """Records each command with the folder it may read."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.runs: list[tuple[str, Path | None, float]] = []
+
+    def unavailable(self) -> str | None:
+        return None
+
+    def run_shell(self, command, workdir, limits, abort, read_only=None) -> RunResult:
+        self.runs.append((command, read_only, limits.wall_s))
+        workdir.mkdir(parents=True, exist_ok=True)
+        return RunResult(0, "listed\n", "", 0.02)
+
+
 class FakeNet:
     """Every host resolves to a public address; every request gets one Wikipedia hit."""
 
@@ -107,18 +124,24 @@ def box() -> FakeSandbox:
 
 
 @pytest.fixture
+def shell() -> FakeShell:
+    return FakeShell()
+
+
+@pytest.fixture
 def net() -> FakeNet:
     return FakeNet()
 
 
 @pytest.fixture(autouse=True)
-def reg(monkeypatch, ws, box, net):
+def reg(monkeypatch, ws, box, shell, net):
     r = build_registry(
         ws,
         Settings(marginalia=False),
         net=Net(net.resolve, net.transport),
         sandbox=box,
         limits=Limits(),
+        shell=shell,
     )
     monkeypatch.setattr(chat, "registry", lambda: r)
     return r
@@ -359,7 +382,10 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
         in prompt
     )
     assert "You reach the internet only through" in prompt
-    assert "These tools are off in this chat: run_python. Never call them." in prompt
+    assert (
+        "These tools are off in this chat: run_python, run_shell. Never call them."
+        in prompt
+    )
     assert "write a short plan with update_plan" in prompt
     client.patch(
         f"/api/chats/{cid}/agent", json={"tools": ["job_status"]}, headers=ORIGIN
@@ -368,8 +394,9 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
     assert "You can call tools: job_status.\n" in prompt
     assert (
         "These tools are off in this chat: update_plan, list_workstation_tools, search_library, create_job, "
-        "list_jobs, wait_for_job, cancel_job, transcribe_audio, list_files, read_file, search_files, write_file, edit_file, copy_to_workspace, export_from_workspace, "
-        "media_info, view_image, web_search, fetch_url, run_python." in prompt
+        "list_jobs, wait_for_job, cancel_job, transcribe_audio, list_files, read_file, search_files, write_file, "
+        "edit_file, copy_to_workspace, export_from_workspace, media_info, view_image, web_search, fetch_url, "
+        "run_python, run_shell." in prompt
     )
     assert "Tools menu" in prompt and "no internet access in this chat" in prompt
     assert "You reach the internet" not in prompt and "short plan" not in prompt
@@ -811,6 +838,10 @@ def test_tools_menu_state(client, reg):
     assert list(by) == reg.names()
     assert by["run_python"]["enabled"] is False and by["web_search"]["enabled"] is True
     assert "Asks before every call" in by["run_python"]["risk_text"]
+    assert by["run_shell"]["enabled"] is False and by["run_shell"]["risk"] == 3
+    assert by["run_shell"]["label"] == "Shell"
+    assert "Asks before every call" in by["run_shell"]["risk_text"]
+    assert "granted folder without changing it" in by["run_shell"]["risk_text"]
     assert "Sends text off this Mac" in by["web_search"]["risk_text"]
     assert by["web_search"]["network"] is True and by["web_search"]["risk"] == 2
     assert view["limits"]["steps"] == chat.MAX_STEPS
@@ -833,6 +864,50 @@ def test_tools_menu_state(client, reg):
     assert r.json()["grants"] == ["create_job"]
     general = client.post("/api/chats", json={"mode": "general"}).json()["id"]
     assert client.get(f"/api/chats/{general}/agent").status_code == 409
+
+
+def test_shell_asks_every_time_and_shows_its_folders(
+    client, shell, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        chat, "SHARED_FOLDERS", ()
+    )  # the temp folder is under /private/var
+    home = tmp_path / "home"
+    (home / "notes").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    cid = agent_chat(client)
+    r = client.patch(
+        f"/api/chats/{cid}/agent",
+        json={"tools": ["run_shell"], "folder": str(home / "notes")},
+        headers=ORIGIN,
+    )
+    folder = r.json()["folder"]
+    steps = script(
+        [call("run_shell", command="ls -l | wc -l", timeout_s=30)],
+        [call("run_shell", command="rm -rf x")],
+        "RESULT",
+    )
+    t, resp = start(client, cid, steps)
+    ask = pending(cid)
+    assert (
+        ask["name"] == "run_shell" and ask["risk"] == 3 and ask["chat_scope"] is False
+    )
+    assert ask["arguments"] == {"command": "ls -l | wc -l", "timeout_s": 30}
+    assert ask["cwd"] == str(chat.CHATS / cid / "ws") and ask["read_only"] == folder
+    assert "at most 30 s" in ask["describe"]
+    assert approve(client, cid, ask["id"], "chat").status_code == 400
+    approve(client, cid, ask["id"], "once")
+    ask = pending(cid, 2)  # the next call asks again
+    approve(client, cid, ask["id"], "deny")
+    t.join(5)
+    assert shell.runs == [("ls -l | wc -l", Path(folder), 30.0)]
+    results = [e for e in events(resp["r"]) if e["event"] == "tool_result"]
+    assert results[0]["status"] == "ok"
+    assert results[0]["content"].startswith(
+        "exit code: 0 (0.02 s)\nstdout (7 characters):\nlisted\n"
+    )
+    assert results[1]["status"] == "denied"
+    assert saved(client, cid)["agent"]["tainted"] is True
 
 
 def test_python_files_are_served_from_the_workspace_only(client, box):

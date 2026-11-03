@@ -500,8 +500,8 @@ take at most 10 minutes (an agent answer's limit; a waiting media job also stops
 
 ### Agent mode
 
-An agent chat can call tools: the Workstation tools, the file tools (read and write), the media tools, the web tools
-and `run_python`. `docs/AGENT.md`
+An agent chat can call tools: the Workstation tools, the file tools (read and write), the media tools, the web tools,
+`run_python` and `run_shell`. `docs/AGENT.md`
 describes each tool, its risk level and when it asks. An answer is a loop of steps. Each step is one model request.
 When the model calls tools, the server runs them (or asks the user first) and sends the results back in the next step.
 
@@ -515,8 +515,8 @@ The chat's agent state is in `chat.json` under `agent`:
  "folder": null, "grants": [], "tainted": false}
 ```
 
-- `tools` are the tools this chat offers. A new agent chat has every tool except `run_python`. `run_python` runs code
-  that the model writes, so the user turns it on in the Tools menu.
+- `tools` are the tools this chat offers. A new agent chat has every tool except `run_python` and `run_shell`. They
+  run code and commands that the model writes, so the user turns them on in the Tools menu.
 - `folder` is the folder that the file tools may use, or `null`. The tools that read or write the user's files are
   offered only while a folder is granted. `media_info` and `view_image` are offered without one: they also read the
   chat's work folder and the Library.
@@ -550,7 +550,7 @@ with another one).
   -R`). The page uses it for the files that `write_file`, `edit_file` and `export_from_workspace` wrote. The path gets
   the file tools' checks. It returns `{"status": "shown"}`. HTTP 409 without a granted folder, HTTP 404 for a path
   outside the folder, a hidden or secret part or a missing file, HTTP 500 when Finder fails.
-- `GET /api/chats/{id}/ws/{path}` serves a file that `run_python` wrote in the chat's workspace
+- `GET /api/chats/{id}/ws/{path}` serves a file that `run_python` or `run_shell` wrote in the chat's workspace
   (`outputs/chats/<id>/ws`). PNG, JPEG, GIF and WebP come as images. `.txt`, `.csv`, `.tsv`, `.json`, `.md`, `.py`
   and `.log` come as `text/plain`. Every other file is a download (`Content-Disposition: attachment`). Each response
   has `Content-Security-Policy: sandbox; default-src 'none'; frame-ancestors 'none'`. Symlinks, hidden names, files
@@ -570,7 +570,9 @@ Events. The message stream of an agent chat has these events besides `waiting`, 
   non-ASCII name), or `null` for other tools and for a URL without a valid host. The page shows it on its own line.
   `network` says whether the tool sends data off this Mac. `preview` is the change as a unified diff (`edit_file`,
   `write_file`), at most 400 lines, with hiding characters written as `\uXXXX` and tabs kept, or `null`. The page
-  shows each line as text, never as HTML.
+  shows each line as text, never as HTML. For `run_shell` the event also has `cwd` (the folder the command runs in:
+  the chat's work folder) and `read_only` (the granted folder that the command can read, or `null`). The page shows
+  the command in a code block and both folders.
 - `{"event": "approval_done", "id", "decision"}` with `once`, `chat`, `deny`, `timeout` or `stopped`.
 - `{"event": "tool_result", "id", "name", "status", "content", "truncated", "files", "seconds", "approval", "risk"}`,
   plus `"job": "<job id>"` when the call queued or read a media job (`create_job`, `transcribe_audio`). `status` is

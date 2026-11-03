@@ -7,16 +7,21 @@ Every request names the app and its repository in the User-Agent, as Wikimedia's
 fetch_url downloads one http(s) page as text. It refuses non-public addresses for every address of the host and
 again after every redirect (redirects are followed by hand, at most MAX_REDIRECTS), connects to the address it
 checked (app/agent/net.py), and stops at MAX_PAGE bytes and FETCH_SECONDS. It sends no cookies or credentials and
-refuses URLs with a user name or password in them.
+refuses URLs with a user name or password in them. A page longer than one part (PART characters) comes in parts:
+the result says the page's length and the start of the next part. The page's text stays in a small cache per chat
+(PageCache: CACHE_SECONDS, CACHE_CHARS), so reading a later part (start > 0) does not download the page again. A
+call with start = 0 always downloads.
 """
 
 import codecs
 import html
 import json
 import re
+import threading
 import time
 import tomllib
 import zlib
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlencode, urljoin, urlsplit
@@ -43,6 +48,9 @@ MAX_REDIRECTS = 5
 MAX_PAGE = 2 * 1024 * 1024  # bytes of one page (after decompression too)
 FETCH_SECONDS = 15.0  # for the whole fetch, redirects included
 SEARCH_SECONDS = 10.0  # per search request
+PART = 10_000  # characters of a page in one fetch_url result (the model gets at most registry.MAX_RESULT)
+CACHE_SECONDS = 600.0  # how long a fetched page's text is kept for the next parts
+CACHE_CHARS = 8_000_000  # characters of page text kept for all chats together
 MAX_SEARCH_BYTES = 1024 * 1024
 MAX_TRIES = 3  # addresses of one host tried in turn when a connection fails
 REDIRECTS = {301, 302, 303, 307, 308}
@@ -97,6 +105,51 @@ class Page:
     content_type: str
     text: str
     truncated: bool
+
+
+class PageCache:
+    """The text of recently fetched pages, per chat and URL, for CACHE_SECONDS. Bounded: when the texts hold more
+    than CACHE_CHARS characters, the oldest go first. Safe to use from several answers at once."""
+
+    def __init__(
+        self, seconds: float = CACHE_SECONDS, chars: int = CACHE_CHARS
+    ) -> None:
+        self.seconds, self.chars = seconds, chars
+        self.pages: OrderedDict[tuple[str, str], tuple[float, Page]] = OrderedDict()
+        self.lock = threading.Lock()
+
+    def get(self, chat_id: str, url: str) -> tuple[Page, float] | None:
+        """The page and its age in seconds, or None."""
+        with self.lock:
+            self._expire()
+            hit = self.pages.get((chat_id, url))
+            return (hit[1], time.monotonic() - hit[0]) if hit else None
+
+    def put(self, chat_id: str, url: str, page: Page) -> None:
+        if len(page.text) > self.chars:
+            return
+        with self.lock:
+            self.pages.pop((chat_id, url), None)
+            self.pages[(chat_id, url)] = (time.monotonic(), page)
+            self._expire()
+            while sum(len(p.text) for _, p in self.pages.values()) > self.chars:
+                self.pages.popitem(last=False)
+
+    def _expire(self) -> None:
+        now = time.monotonic()
+        for key in [k for k, (t, _) in self.pages.items() if now - t > self.seconds]:
+            del self.pages[key]
+
+
+def part(text: str, start: int, size: int = PART) -> tuple[str, int]:
+    """The part of the text from `start`, at most `size` characters, and the start of the next part (len(text) at
+    the end). A part ends after a line break in its last fifth when there is one, so lines stay whole."""
+    end = min(len(text), start + size)
+    if end < len(text):
+        cut = text.rfind("\n", start + size * 4 // 5, end)
+        if cut != -1:
+            end = cut + 1
+    return text[start:end], end
 
 
 def _clean(snippet: str) -> str:
@@ -360,7 +413,9 @@ def search_hosts(settings: Settings) -> list[str]:
     return hosts
 
 
-def build(settings: Settings, net: Net) -> list[Tool]:
+def build(settings: Settings, net: Net, cache: PageCache | None = None) -> list[Tool]:
+    pages = cache if cache is not None else PageCache()
+
     def web_search(args: dict[str, Any], ctx: Context) -> str:
         query, n = args["query"], args["max_results"]
         sources = []
@@ -411,11 +466,33 @@ def build(settings: Settings, net: Net) -> list[Tool]:
         return text
 
     def fetch_url(args: dict[str, Any], ctx: Context) -> str:
-        page = read_page(args["url"], net, ctx.abort)
+        url, start = args["url"], args["start"]
+        # start=0 always downloads (a new look at the page); a later part uses the copy when there is one
+        hit = pages.get(ctx.chat_id, url) if start > 0 else None
+        if hit is None:
+            page, age = read_page(url, net, ctx.abort), None
+            pages.put(ctx.chat_id, url, page)
+        else:
+            page, age = hit
+        total = len(page.text)
+        if start >= total and not (start == 0 and total == 0):
+            raise ToolError(
+                f"start={start:,} is past the end: the page has {total:,} characters."
+            )
+        text, end = part(page.text, start)
         head = f"URL: {page.url}"
         if page.truncated:
             head += f"\n[Only the first {MAX_PAGE // 1024 // 1024} MB of the page was read.]"
-        return f"{head}\n\n{page.text}"
+        if start or end < total:
+            head += f"\n[Characters {start:,} to {end:,} of {total:,}."
+            head += (
+                f" The next part: fetch_url with the same url and start={end}.]"
+                if end < total
+                else " This is the last part.]"
+            )
+        if age is not None:
+            head += f"\n[From the copy fetched {age:.0f} s ago in this chat.]"
+        return f"{head}\n\n{text}"
 
     return [
         Tool(
@@ -451,12 +528,16 @@ def build(settings: Settings, net: Net) -> list[Tool]:
             name="fetch_url",
             description=(
                 "Download one public web page (http or https) and return its readable text and links. The URL "
-                "leaves this Mac; never put private text in it."
+                f"leaves this Mac; never put private text in it. A long page comes in parts of about {PART:,} "
+                "characters: the result says the page's length and the start of the next part. To read on, call "
+                "it again with the same url and that start; the page is not downloaded again for "
+                f"{CACHE_SECONDS / 60:g} minutes."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "minLength": 1, "maxLength": 2048}
+                    "url": {"type": "string", "minLength": 1, "maxLength": 2048},
+                    "start": {"type": "integer", "minimum": 0, "default": 0},
                 },
                 "required": ["url"],
                 "additionalProperties": False,
@@ -467,6 +548,12 @@ def build(settings: Settings, net: Net) -> list[Tool]:
             untrusted_output=True,
             explain=lambda a: (
                 f"Downloads {a.get('url', '')} (the site sees this Mac's IP address)."
+                + (
+                    f" Shows its text from character {a['start']:,}; a copy fetched in this chat in the last "
+                    f"{CACHE_SECONDS / 60:g} minutes is used without a new download."
+                    if isinstance(a.get("start"), int) and a["start"] > 0
+                    else ""
+                )
             ),
             host=lambda a: url_host(a.get("url", "")),
         ),

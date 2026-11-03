@@ -173,7 +173,7 @@ def test_schemas_are_openai_function_schemas() -> None:
     assert {"list_files", "read_file", "search_files", "web_search", "fetch_url"} <= (
         set(names)
     )
-    assert "run_shell" not in names and "shell" not in names
+    assert "shell" not in names
     for s in reg.schemas():
         assert s["type"] == "function"
         f = s["function"]
@@ -199,6 +199,9 @@ def test_risk_levels_of_the_tools() -> None:
     assert risks["edit_file"] == Risk.R3
     assert risks["copy_to_workspace"] == risks["media_info"] == Risk.R1
     assert risks["view_image"] == Risk.R1
+    if "run_shell" in risks:
+        assert risks["run_shell"] == Risk.R3
+        assert not reg.get("run_shell").network
     assert reg.get("web_search").network and reg.get("fetch_url").network
     assert not reg.get("create_job").network
     writers = {n for n in reg.names() if reg.get(n).writes}
@@ -227,7 +230,7 @@ def test_risk_levels_of_the_tools() -> None:
         "copy_to_workspace",
         "media_info",
         "view_image",
-    } | ({"run_python"} if "run_python" in risks else set())
+    } | ({"run_python", "run_shell"} & set(risks))
 
 
 def test_chat_only_setup_has_no_workstation_tools() -> None:

@@ -29,11 +29,12 @@ import os
 import resource
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -41,6 +42,9 @@ from typing import Protocol
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 POLL = 0.05  # seconds between watchdog checks
 DISK_EVERY = 0.5  # seconds between work dir size checks
+MEMBERS_EVERY = (
+    0.25  # seconds between looks for a run's processes outside its group (members)
+)
 MAX_WORK_FILES = 10000
 
 SYSTEM_READ = (
@@ -74,6 +78,7 @@ class Limits:
     file_mb: int = 50  # size of one written file (RLIMIT_FSIZE)
     disk_mb: int = 500  # size of the whole work dir (watchdog)
     output_chars: int = 20000  # kept of stdout and of stderr each
+    processes: int = 64  # processes a shell run may add (RLIMIT_NPROC); run_python cannot fork at all
 
 
 @dataclass
@@ -89,6 +94,7 @@ class RunResult:
     )  # new or changed, relative to the work dir
     stdout_truncated: bool = False
     stderr_truncated: bool = False
+    leftover: bool = False  # processes of the run could not all be stopped
 
 
 class Sandbox(Protocol):
@@ -148,10 +154,15 @@ def group_pids(pgid: int) -> list[int]:
 
 def group_bytes(pgid: int) -> int:
     """The memory of every process in the group, in bytes (0 when it is gone)."""
+    return pids_bytes(group_pids(pgid))
+
+
+def pids_bytes(pids: Sequence[int]) -> int:
+    """The memory of these processes, in bytes (0 for one that is gone)."""
     if _libc is None:
         return 0
     total = 0
-    for pid in group_pids(pgid):
+    for pid in pids:
         info = _RUsage()
         if _libc.proc_pid_rusage(pid, RUSAGE_INFO_V0, ctypes.byref(info)) == 0:
             total += max(info.ri_resident_size, info.ri_phys_footprint)
@@ -194,17 +205,36 @@ def all_files(workdir: Path) -> set[str]:
 
 def remove_new(workdir: Path, before: set[str]) -> None:
     """Remove the entries that are not in `before`, deepest first. The run has ended, so nothing writes any more; a
-    folder the code made read-only is opened up first. A link is removed, never its target."""
+    folder the code made read-only is opened up first. Each folder is opened from the one above it with O_NOFOLLOW,
+    so a folder that was swapped for a link is never followed, and a link is removed, never its target."""
+    root = os.path.realpath(workdir)
     for path in sorted(all_files(workdir) - before, key=len, reverse=True):
+        parts = os.path.relpath(path, workdir).split(os.sep)
+        fds: list[int] = []
         try:
-            os.chmod(os.path.dirname(path), 0o700)
-            if os.path.isdir(path) and not os.path.islink(path):
-                os.chmod(path, 0o700)
-                os.rmdir(path)  # empty by now: its entries came first
+            fds.append(os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))
+            for part in parts[:-1]:
+                fds.append(
+                    os.open(
+                        part,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=fds[-1],
+                    )
+                )
+            parent, name = fds[-1], parts[-1]
+            os.fchmod(parent, 0o700)
+            if stat.S_ISDIR(
+                os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode
+            ):
+                os.chmod(name, 0o700, dir_fd=parent, follow_symlinks=False)
+                os.rmdir(name, dir_fd=parent)  # empty by now: its entries came first
             else:
-                os.unlink(path)
+                os.unlink(name, dir_fd=parent)
         except OSError:
             pass  # what stays counts against the next run, which the watchdog stops in time
+        finally:
+            for fd in fds:
+                os.close(fd)
 
 
 def dir_size(workdir: Path) -> tuple[int, int]:
@@ -389,17 +419,7 @@ class SeatbeltSandbox:
         abort: threading.Event,
         read_only: Sequence[Path] = (),
     ) -> RunResult:
-        workdir.mkdir(parents=True, exist_ok=True)
-        work = os.path.realpath(workdir)
-        # an earlier run must not have turned the work dir into a link to another folder
-        if workdir.is_symlink() or work != os.path.join(
-            os.path.realpath(workdir.parent), workdir.name
-        ):
-            raise ValueError(f"The work dir {workdir} is a symlink; refusing to run.")
-        tmp = os.path.join(work, ".tmp")
-        if os.path.islink(tmp) or (os.path.exists(tmp) and not os.path.isdir(tmp)):
-            os.unlink(tmp)  # made by the code: the host never follows it
-        os.makedirs(tmp, exist_ok=True)
+        work, tmp = prepare(workdir)
         interp = self.interpreter()
         sbpl = profile(interp, work, [os.path.realpath(p) for p in read_only])
         env = {
@@ -410,93 +430,142 @@ class SeatbeltSandbox:
             "MPLBACKEND": "Agg",
             "MPLCONFIGDIR": os.path.join(tmp, "matplotlib"),
         }
+        argv = [SANDBOX_EXEC, "-p", sbpl, *interp.argv, "-B", "-X", "utf8", "-"]
+        return execute(argv, work, tmp, env, limits, abort, stdin=code.encode("utf-8"))
 
-        def limit_child() -> None:  # runs in the child between fork and exec
-            resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_s, limits.cpu_s + 1))
-            size = limits.file_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_FSIZE, (size, size))
-            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
-        before = snapshot(Path(work))
-        before_all = all_files(Path(work))
-        t0 = time.monotonic()
-        proc = subprocess.Popen(
-            [SANDBOX_EXEC, "-p", sbpl, *interp.argv, "-B", "-X", "utf8", "-"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=work,
-            env=env,
-            start_new_session=True,
-            preexec_fn=limit_child,  # noqa: PLW1509 - only setrlimit calls
-        )
-        out = _Capture(proc.stdout, limits.output_chars * 4)
-        err = _Capture(proc.stderr, limits.output_chars * 4)
-        out.start()
-        err.start()
-        killed = None
-        peak = 0
-        try:
+def prepare(workdir: Path) -> tuple[str, str]:
+    """The work dir's real path and an empty-or-kept .tmp folder in it. Refuses a work dir that is a symlink."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    work = os.path.realpath(workdir)
+    # an earlier run must not have turned the work dir into a link to another folder
+    if workdir.is_symlink() or work != os.path.join(
+        os.path.realpath(workdir.parent), workdir.name
+    ):
+        raise ValueError(f"The work dir {workdir} is a symlink; refusing to run.")
+    tmp = os.path.join(work, ".tmp")
+    if os.path.islink(tmp) or (os.path.exists(tmp) and not os.path.isdir(tmp)):
+        os.unlink(tmp)  # made by the code: the host never follows it
+    os.makedirs(tmp, exist_ok=True)
+    return work, tmp
+
+
+def execute(
+    argv: list[str],
+    work: str,
+    tmp: str,
+    env: dict[str, str],
+    limits: Limits,
+    abort: threading.Event,
+    *,
+    stdin: bytes | None = None,
+    nproc: int | None = None,
+    members: Callable[[], list[int]] | None = None,
+    reap: Callable[[], bool] | None = None,
+) -> RunResult:
+    """Run argv (sandbox-exec and its profile) in its own session with cwd = work, watch the limits and return when
+    nothing of the run is left.
+
+    stdin: the bytes the process reads (None = /dev/null). nproc: RLIMIT_NPROC for the process. members: the
+    processes of the run that can leave its process group (a shell's children can call setsid); they count for the
+    memory limit. reap: kills them once the main process is gone and returns whether none is left (False sets
+    RunResult.leftover; the work dir is then not cleaned, because a process may still change it)."""
+
+    def limit_child() -> None:  # runs in the child between fork and exec
+        resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_s, limits.cpu_s + 1))
+        size = limits.file_mb * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_FSIZE, (size, size))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        if nproc is not None:
+            resource.setrlimit(resource.RLIMIT_NPROC, (nproc, nproc))
+
+    before = snapshot(Path(work))
+    before_all = all_files(Path(work))
+    t0 = time.monotonic()
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=work,
+        env=env,
+        start_new_session=True,
+        preexec_fn=limit_child,  # noqa: PLW1509 - only setrlimit calls
+    )
+    out = _Capture(proc.stdout, limits.output_chars * 4)
+    err = _Capture(proc.stderr, limits.output_chars * 4)
+    out.start()
+    err.start()
+    killed = None
+    peak = 0
+    try:
+        if stdin is not None:
             try:
-                proc.stdin.write(code.encode("utf-8"))
+                proc.stdin.write(stdin)
                 proc.stdin.close()
             except (BrokenPipeError, OSError):
                 pass
-            next_disk = 0.0
-            while proc.poll() is None:
-                now = time.monotonic()
-                if abort.is_set():
-                    killed = "aborted"
-                elif now - t0 > limits.wall_s:
-                    killed = "timeout"
-                else:
-                    used = group_bytes(proc.pid)
-                    peak = max(peak, used)
-                    if used > limits.memory_mb * 1024 * 1024:
-                        killed = "memory"
-                    elif now >= next_disk:
-                        next_disk = now + DISK_EVERY
-                        size, count = dir_size(Path(work))
-                        if (
-                            size > limits.disk_mb * 1024 * 1024
-                            or count > MAX_WORK_FILES
-                        ):
-                            killed = "disk"
-                if killed:
-                    kill_group(proc.pid)
-                    break
-                abort.wait(POLL)
-            code_ = proc.wait()
-        finally:
-            # nothing of the run may outlive it; once reaped, its id may belong to another process, so not after
-            if proc.returncode is None:
+        next_disk = next_members = 0.0
+        extra: list[int] = []
+        while proc.poll() is None:
+            now = time.monotonic()
+            if abort.is_set():
+                killed = "aborted"
+            elif now - t0 > limits.wall_s:
+                killed = "timeout"
+            else:
+                if members is not None and now >= next_members:
+                    next_members = now + MEMBERS_EVERY
+                    extra = members()
+                used = pids_bytes(sorted(set(group_pids(proc.pid)) | set(extra)))
+                peak = max(peak, used)
+                if used > limits.memory_mb * 1024 * 1024:
+                    killed = "memory"
+                elif now >= next_disk:
+                    next_disk = now + DISK_EVERY
+                    size, count = dir_size(Path(work))
+                    if size > limits.disk_mb * 1024 * 1024 or count > MAX_WORK_FILES:
+                        killed = "disk"
+            if killed:
                 kill_group(proc.pid)
-                proc.wait()
-        out.join(5)
-        err.join(5)
-        if killed is None and code_ == -signal.SIGXCPU:
-            killed = "cpu"
-        shutil.rmtree(tmp, ignore_errors=True)
-        after = snapshot(Path(work))
-        changed = sorted(p for p, v in after.items() if before.get(p) != v)
-        size, count = dir_size(Path(work))
-        if size > limits.disk_mb * 1024 * 1024 or count > MAX_WORK_FILES:
-            # the watchdog looks every DISK_EVERY seconds: code that wrote fast and ended in between loses what it
-            # added (hidden files and folders too), so the folder is back under the limit for the next call. Files
-            # from earlier calls stay, also when this run changed them.
-            remove_new(Path(work), before_all)
-            killed = killed or "disk"
-            changed = [rel for rel in changed if rel in before]
-        stdout, stdout_cut = out.text(limits.output_chars)
-        stderr, stderr_cut = err.text(limits.output_chars)
-        return RunResult(
-            exit_code=code_,
-            stdout=stdout,
-            stderr=stderr,
-            seconds=round(time.monotonic() - t0, 2),
-            killed=killed,
-            peak_mb=round(peak / 2**20, 1),
-            files=changed,
-            stdout_truncated=stdout_cut,
-            stderr_truncated=stderr_cut,
-        )
+                break
+            abort.wait(POLL)
+        code = proc.wait()
+    finally:
+        # nothing of the run may outlive it; once reaped, its id may belong to another process, so not after
+        if proc.returncode is None:
+            kill_group(proc.pid)
+            proc.wait()
+    # children that left the group (setsid) or run in the background: reap() finds each one by its sandbox
+    leftover = reap is not None and not reap()
+    out.join(5)
+    err.join(5)
+    # a process that still holds stdout or stderr is still running: the reaper missed it
+    leftover = leftover or (reap is not None and (out.is_alive() or err.is_alive()))
+    if killed is None and code == -signal.SIGXCPU:
+        killed = "cpu"
+    shutil.rmtree(tmp, ignore_errors=True)
+    after = snapshot(Path(work))
+    changed = sorted(p for p, v in after.items() if before.get(p) != v)
+    size, count = dir_size(Path(work))
+    if not leftover and (size > limits.disk_mb * 1024 * 1024 or count > MAX_WORK_FILES):
+        # the watchdog looks every DISK_EVERY seconds: code that wrote fast and ended in between loses what it
+        # added (hidden files and folders too), so the folder is back under the limit for the next call. Files
+        # from earlier calls stay, also when this run changed them.
+        remove_new(Path(work), before_all)
+        killed = killed or "disk"
+        changed = [rel for rel in changed if rel in before]
+    stdout, stdout_cut = out.text(limits.output_chars)
+    stderr, stderr_cut = err.text(limits.output_chars)
+    return RunResult(
+        exit_code=code,
+        stdout=stdout,
+        stderr=stderr,
+        seconds=round(time.monotonic() - t0, 2),
+        killed=killed,
+        peak_mb=round(peak / 2**20, 1),
+        files=changed,
+        stdout_truncated=stdout_cut,
+        stderr_truncated=stderr_cut,
+        leftover=leftover,
+    )
