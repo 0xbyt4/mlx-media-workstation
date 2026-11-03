@@ -666,6 +666,11 @@ def test_the_sign_in_link_sets_the_session(monkeypatch) -> None:
     ):
         r = bare.get("/auth", params={"t": server.token, "next": elsewhere})
         assert r.headers["location"] == "/", elsewhere
+    assert (
+        bare.get("/auth", params={"t": "\u00e9"}).status_code == 403
+    )  # not ASCII: refused, not a crash
+    r = bare.get("/auth", params={"t": server.token, "next": "/\u2603"})
+    assert r.headers["location"] == "/"
     monkeypatch.setattr(server, "token", None)  # before start(): no token, no session
     assert bare.get("/auth", params={"t": ""}).status_code == 403
     assert bare.get("/api/jobs").status_code == 401

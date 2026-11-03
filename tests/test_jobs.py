@@ -350,6 +350,37 @@ def test_a_failed_job_json_write_fails_the_job_and_the_queue_goes_on(
     worker.join(5)
 
 
+def test_a_model_left_running_by_a_failed_write_is_stopped(
+    state: Path, make_job: Job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tools, "plan", lambda *a: tools.Plan([["/bin/sleep", "30"]], {})
+    )
+    monkeypatch.setattr(llm, "claim", lambda peak, abort=lambda: False: True)
+    started: list[int] = []
+
+    def save(job: dict[str, Any]) -> None:
+        if job.get("pgid") or job.get(
+            "finished"
+        ):  # the disk is full from the model's start on
+            started.append(job.get("pgid") or 0)
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(server, "save", save)
+    job = make_job("full", "queued")
+    worker = threading.Thread(target=server.worker, daemon=True)
+    worker.start()
+    server.wake.set()
+    deadline = time.time() + 20
+    while (job["status"] != "failed" or server.procs) and time.time() < deadline:
+        time.sleep(0.05)
+    assert job["status"] == "failed" and not server.procs
+    assert not server.group_alive(started[0])  # the model's process group is gone
+    server.stopping.set()
+    server.wake.set()
+    worker.join(5)
+
+
 def test_worker_takes_the_new_first_job_after_a_move_during_its_claim(
     state: Path, make_job: Job, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -95,8 +95,8 @@ TOKEN_NAME = ".server-token"
 token: str | None = (
     None  # this run's secret; only start.py (the same user) can read the file that holds it
 )
-# where /auth may go: a path of this app (not //host), with no spaces, control characters or backslashes
-NEXT = re.compile(r"/(?![/\\])[^\s\\]*")
+# where /auth may go: a path of this app (not //host) in printable ASCII, with no spaces or backslashes
+NEXT = re.compile(r"/(?![/\\])[!-\[\]-~]*")
 SESSION_COOKIE = f"workstation_{PORT}"  # holds the token; HttpOnly, SameSite=Strict
 SIGN_IN = """<!doctype html><meta charset="utf-8"><title>Workstation</title>
 <p style="font: 15px -apple-system, sans-serif; margin: 3em">Open Workstation with Workstation.app or
@@ -128,8 +128,8 @@ def frame_headers(response: Response) -> Response:
 
 
 def signed_in(request: Request) -> bool:
-    return token is not None and hmac.compare_digest(
-        request.cookies.get(SESSION_COOKIE, ""), token
+    return token is not None and hmac.compare_digest(  # bytes: any text compares, ASCII or not
+        request.cookies.get(SESSION_COOKIE, "").encode(), token.encode()
     )
 
 
@@ -388,6 +388,10 @@ def worker() -> None:
                 run_next(job)
         except Exception as e:  # noqa: BLE001 - e.g. a full disk: this job fails, the queue keeps running
             traceback.print_exc()
+            with lock:
+                orphan = procs.pop(job["id"], None) if job is not None else None
+            if orphan is not None:  # a save failed while its model ran: stop it, so no two models run at once
+                stop_group(orphan.pid)
             with lock:
                 if job is not None:
                     claiming.discard(job["id"])
@@ -922,7 +926,7 @@ def remove_token() -> None:
 def auth(t: str = "", next: str = "/") -> Response:
     """The sign-in link start.py opens: with this run's token it sets the session cookie and goes to `next` (a path
     of this app only)."""
-    if token is None or not hmac.compare_digest(t, token):
+    if token is None or not hmac.compare_digest(t.encode(), token.encode()):
         return Response(SIGN_IN, status_code=403, media_type="text/html")
     if not NEXT.fullmatch(next):  # no other site, no header breaks
         next = "/"
