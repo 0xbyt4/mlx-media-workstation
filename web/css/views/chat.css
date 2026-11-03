@@ -667,6 +667,87 @@
   display: grid;
   gap: 8px;
 }
+.v-chat .step-n {
+  margin-right: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--sunken);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.v-chat .agent-plan {
+  display: grid;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  min-width: 0;
+}
+.v-chat .agent-plan-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--fs-sm);
+}
+.v-chat .agent-plan-head .num {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.v-chat .plan-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.v-chat .plan-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.v-chat .plan-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.v-chat .plan-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: 1.5px solid var(--text-3);
+  border-radius: 50%;
+}
+.v-chat .plan-mark .ic {
+  width: 11px;
+  height: 11px;
+}
+.v-chat .plan-item.is-done {
+  color: var(--text-3);
+}
+.v-chat .plan-item.is-done .plan-text {
+  text-decoration: line-through;
+}
+.v-chat .plan-item.is-done .plan-mark {
+  border-color: var(--ok);
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.v-chat .plan-item.is-in_progress {
+  color: var(--text);
+  font-weight: 600;
+}
+.v-chat .plan-item.is-in_progress .plan-mark {
+  border-color: var(--accent);
+  background: radial-gradient(var(--accent) 0 3px, transparent 3.5px);
+}
 .v-chat .tool {
   display: grid;
   gap: 6px;

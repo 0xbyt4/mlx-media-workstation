@@ -16,7 +16,7 @@ Nothing here imports app.server: the server's functions come in through Workstat
 
 from pathlib import Path
 
-from app.agent import file_tools, python_tool, web_tools, ws_tools
+from app.agent import file_tools, plan_tool, python_tool, web_tools, ws_tools
 from app.agent.policy import Action, Grants, Risk, Verdict, decide, taints
 from app.agent.ports import WorkstationPort
 from app.agent.registry import (
@@ -75,7 +75,7 @@ def build_registry(
 ) -> Registry:
     """Every agent tool this setup can offer. No port (chat-only profile) = no Workstation tools; no usable
     sandbox = no run_python. Pass `net` and `sandbox` to replace the network and the sandbox (tests)."""
-    tools = []
+    tools = plan_tool.build()
     if port is not None:
         tools += ws_tools.build(port)
     tools += file_tools.build()

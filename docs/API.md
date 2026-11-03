@@ -445,7 +445,8 @@ The mode of a chat sets its system prompt:
 | `general` | A short assistant prompt with today's date. It does not list the tools. | no |
 | `agent` | The `general` prompt without the "no internet" line, plus the agent rules and the granted folder. The model gets the chat's tools (see [Agent mode](#agent-mode)). | no |
 
-Every mode tells the model to answer in the user's language and not to use emoji. A chat saved before modes existed has
+Every mode tells the model to answer in the user's language and not to use emoji. The LLM worker also bans emoji
+tokens in every answer ([AGENT.md](AGENT.md#how-the-chat-loop-uses-the-package)). A chat saved before modes existed has
 no `mode` in `chat.json` and is a `workstation` chat. The mode is fixed after the first message, because a different
 system prompt changes what the earlier answers meant. The context budget counts the chat's own system prompt.
 
@@ -508,7 +509,8 @@ with another one).
 
 Events. The message stream of an agent chat has these events besides `waiting`, `reasoning`, `content` and `error`:
 
-- `{"event": "step", "n": 2, "max": 8}` before each model request.
+- `{"event": "step", "n": 2, "max": 12, "last": false}` before each model request. `last` is `true` for the last
+  step, which cannot call tools.
 - `{"event": "tool_call", "id", "name", "label", "arguments", "describe", "risk"}` for each call the model made.
   `describe` is one line about what the call does, with bidi, zero-width and control characters written as
   `\uXXXX`. `risk` is 0 to 3, or `null` for an unknown tool. `arguments` are as the model sent them: the page writes
@@ -519,10 +521,15 @@ Events. The message stream of an agent chat has these events besides `waiting`, 
   `null` for other tools and for a URL without a valid host. The page shows it on its own line.
 - `{"event": "approval_done", "id", "decision"}` with `once`, `chat`, `deny`, `timeout` or `stopped`.
 - `{"event": "tool_result", "id", "name", "status", "content", "truncated", "files", "seconds", "approval", "risk"}`.
-  `status` is `ok`, `error`, `cancelled`, `denied`, `refused` or `skipped`. `content` is the first 4,000 characters.
-  `files` are `{path, url, kind}` with `kind` `image` or `file`.
-- `done` as above, plus `note` (why the answer ended early, or `""`). `finish` can also be `steps` (the step limit),
-  `repeat` (the same call twice) or `timeout` (the time limit). `stats` adds `steps` and `generation_tokens` over all
+  `status` is `ok`, `error`, `cancelled`, `denied`, `refused`, `skipped` or `repeat` (the same call a second time: it
+  did not run). `content` is the first 4,000 characters. `files` are `{path, url, kind}` with `kind` `image` or
+  `file`.
+- `{"event": "plan", "id", "items": [{"step", "status"}]}` after an `update_plan` call that ran, before its
+  `tool_result`. `status` is `pending`, `in_progress` or `done`. Each event has the whole plan: the page replaces the
+  checklist of the answer and shows no card for such a call.
+- `done` as above, plus `note` (why the answer ended early, or `""`). `finish` can also be `steps` (the step limit:
+  `content` is then the model's summary from the last step, which could not call tools), `repeat` (the same call a
+  third time) or `timeout` (the time limit). `stats` adds `steps`, `tool_calls` and `generation_tokens` over all
   steps; `seconds` is the whole answer.
 
 `GET /api/chats/{id}/stream` replays these events too. A page that comes back while a call waits sees its `approval`
@@ -532,13 +539,16 @@ call with `stopped`.
 Rules of the loop (`app/chat.py`, `Turn`):
 
 1. All steps run in one `llm.session()`, so a queued media job does not unload the model between steps.
-2. An answer has at most 8 steps and 10 minutes. The time a step waits for memory (a media job runs) does not count,
-   and the memory lease's limit counts from the moment it first holds the memory. A call in step 8 does not run,
-   because its result would never reach the model.
+2. An answer has at most 12 steps and 10 minutes. The time a step waits for memory (a media job runs) does not count,
+   and the memory lease's limit counts from the moment it first holds the memory. Step 12 cannot call tools: it keeps
+   the tool schemas (the prompt's start stays the same), gets a user message from the app that says so, and asks the
+   worker with `tool_choice: "none"`, which bans the call marker. So the answer ends with a summary. A call that comes
+   anyway does not run.
 3. Stop is checked before each step, before each call, while a call waits for approval and inside the tools.
 4. A malformed call, an unknown or disabled tool, a refusal and a denial each give the model a tool message. The
    answer goes on.
-5. The same call (name and arguments) twice in one answer ends the answer with a note.
+5. The same call (name and arguments) a second time in one answer does not run: its tool message (`status: "repeat"`)
+   says that the first result is above. A third time ends the answer with a note.
 6. An approval waits at most 10 minutes (less when the answer's time runs out). No answer counts as a denial.
 7. `create_job` queues the job and returns its id at once. It never waits for the job, because the job waits for the
    answer's memory lease.
@@ -548,7 +558,9 @@ Rules of the loop (`app/chat.py`, `Turn`):
 
 The answer's messages are saved when it ends. The assistant messages keep their `tool_calls`. The tool messages are
 `{"role": "tool", "tool_call_id", "name", "label", "status", "content", "describe", "files", "seconds", "approval",
-"risk", "time"}`, with `content` cut at 100,000 characters. The model gets at most 12,000 characters of each result.
+"risk", "time"}`, with `content` cut at 100,000 characters. An `update_plan` message also has `plan` (its items), so a
+saved answer shows its last plan. The message of the last step has `nudge`, the app's note that the model got as a
+user message before it; the next turns send it in the same place. The model gets at most 12,000 characters of each result.
 When the history does not fit the context budget, old tool results are shortened first, oldest first, and then the
 oldest turns are dropped. The budget counts the system prompt and the tool schemas.
 

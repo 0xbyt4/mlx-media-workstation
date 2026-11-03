@@ -365,6 +365,7 @@ def generate(
     max_tokens: int = 4096,
     chat: str | None = None,
     tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | None = None,
     reasoning_effort: str | None = None,
     session: Session | None = None,
 ) -> Iterator[dict[str, Any]]:
@@ -379,11 +380,16 @@ def generate(
     applies with thinking. session: the lease the request runs under; by default the one of this thread's
     session() block.
 
+    tool_choice "none": the tools stay in the prompt (so its cached start stays the same), but the worker bans the
+    call marker, so the model answers with text.
+
     Closing the iterator early (a client that went away) cancels the request in the worker.
     """
     global active
     if reasoning_effort is not None and reasoning_effort not in EFFORTS:
         raise ValueError(f"reasoning_effort must be one of {EFFORTS}")
+    if tool_choice not in (None, "none"):
+        raise ValueError('tool_choice must be None or "none"')
     check_installed()
     lease = session if session is not None else getattr(local, "session", None)
     rid = f"r{next(ids)}"
@@ -435,6 +441,7 @@ def generate(
             "max_tokens": max_tokens,
             "chat": chat,
             "tools": tools or None,
+            "tool_choice": tool_choice,
             "reasoning_effort": reasoning_effort,
         }
         for ev in run(rid, cancelled, req):

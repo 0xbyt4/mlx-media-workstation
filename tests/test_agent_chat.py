@@ -258,7 +258,8 @@ def test_the_next_turn_sends_the_history_as_the_template_needs_it(client, reg):
     # the tools of the request: the enabled ones, without run_python (off) and the file tools (no folder)
     names = [t["function"]["name"] for t in seen["tools"]]
     assert names == [
-        "list_workstation_tools", "job_status", "search_library", "create_job", "web_search", "fetch_url"
+        "update_plan", "list_workstation_tools", "job_status", "search_library", "create_job", "web_search",
+        "fetch_url",
     ]  # fmt: skip
     system = sent[0]["content"]
     assert "untrusted data" in system and "emoji" in system
@@ -347,17 +348,40 @@ def test_untrusted_content_makes_a_network_tool_ask_again(client):
     assert state["grants"] == [] and state["tainted"] is True
 
 
-def test_the_agent_prompt_names_only_the_offered_tools(client, reg):
+def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
     cid = agent_chat(client)
     prompt = chat.system_prompt(saved(client, cid))
-    assert "web_search" in prompt and "You reach the internet only through" in prompt
-    assert "read_file" not in prompt  # no folder: the file tools are not offered
+    # no folder: the file tools are on but not offered
+    assert (
+        "You can call tools: update_plan, list_workstation_tools, job_status, search_library, create_job, "
+        "web_search, fetch_url.\n" in prompt
+    )
+    assert "You reach the internet only through" in prompt
+    assert "These tools are off in this chat: run_python. Never call them." in prompt
+    assert "write a short plan with update_plan" in prompt
     client.patch(
         f"/api/chats/{cid}/agent", json={"tools": ["job_status"]}, headers=ORIGIN
     )
     prompt = chat.system_prompt(saved(client, cid))
-    assert "You can call tools: job_status." in prompt
-    assert "web_search" not in prompt and "no internet access in this chat" in prompt
+    assert "You can call tools: job_status.\n" in prompt
+    assert (
+        "These tools are off in this chat: update_plan, list_workstation_tools, search_library, create_job, "
+        "list_files, read_file, search_files, web_search, fetch_url, run_python."
+        in prompt
+    )
+    assert "Tools menu" in prompt and "no internet access in this chat" in prompt
+    assert "You reach the internet" not in prompt and "short plan" not in prompt
+
+
+def test_the_agent_prompt_does_not_change_between_turns(client):
+    cid = agent_chat(client)
+    before = chat.system_prompt(saved(client, cid))
+    send(client, cid, script([call("job_status", job_id="x")], "RESULT"))
+    after = chat.system_prompt(saved(client, cid))
+    assert after == before
+    assert (
+        chat.AGENT_EXAMPLES in before and len(chat.AGENT_EXAMPLES) < 1800
+    )  # ~600 tokens
 
 
 def test_a_denied_call_goes_back_to_the_model(client, net):
@@ -460,42 +484,181 @@ def test_approve_needs_the_app_s_origin(client):
 
 
 def test_max_steps(client, monkeypatch):
+    assert chat.MAX_STEPS == 12 and chat.TURN_SECONDS == 600.0
     monkeypatch.setattr(chat, "MAX_STEPS", 3)
     cid = agent_chat(client)
     steps = script(*[[call("job_status", job_id=f"j{i}")] for i in range(5)])
     evs = send(client, cid, steps)
-    assert [e["n"] for e in evs if e["event"] == "step"] == [1, 2, 3]
-    assert evs[-1]["finish"] == "steps" and "after 3 steps" in evs[-1]["note"]
+    assert [(e["n"], e["max"], e["last"]) for e in evs if e["event"] == "step"] == [
+        (1, 3, False), (2, 3, False), (3, 3, True)
+    ]  # fmt: skip
+    # j0, j1: no such job. The last step cannot call tools, so it answers with a text.
     results = [e for e in evs if e["event"] == "tool_result"]
-    assert [r["status"] for r in results] == [
-        "error",
-        "error",
-        "skipped",
-    ]  # j0, j1: no such job
+    assert [r["status"] for r in results] == ["error", "error"]
+    done = evs[-1]
+    assert done["finish"] == "steps" and done["content"] == "FINAL"
+    assert "limit of 3 steps" in done["note"]
+    assert done["stats"]["steps"] == 3 and done["stats"]["tool_calls"] == 2
+    seen = done["stats"]["seen"]  # the last request
+    assert seen["tool_choice"] == "none"
+    assert [t["function"]["name"] for t in seen["tools"]][:2] == [
+        "update_plan", "list_workstation_tools"
+    ]  # fmt: skip
+    note = seen["messages"][-1]
+    assert note["role"] == "user" and "limit of 3 steps" in note["content"][0]["text"]
     msgs = saved(client, cid)["messages"]
-    assert [m["role"] for m in msgs].count("tool") == 3
-    assert msgs[-1]["finish"] == "steps" and msgs[-1]["content"] == ""
+    assert [m["role"] for m in msgs].count("tool") == 2
+    assert msgs[-1]["finish"] == "steps" and msgs[-1]["content"] == "FINAL"
+    assert msgs[-1]["nudge"] == note["content"][0]["text"]
+    # the next turn sees the note where the last step saw it, so the prompt cache still fits
+    sent = send(client, cid, "and now?")[-1]["stats"]["seen"]["messages"]
+    assert sent[: len(seen["messages"])] == seen["messages"]
+    assert [m["role"] for m in sent[len(seen["messages"]) :]] == ["assistant", "user"]
+    assert sent[1]["role"] == "user" and sent[-1]["role"] == "user"
 
 
-def test_a_repeated_call_stops_the_answer(client):
+def test_without_tools_the_last_step_is_a_normal_one(client, monkeypatch):
+    monkeypatch.setattr(chat, "MAX_STEPS", 1)
+    cid = agent_chat(client)
+    client.patch(f"/api/chats/{cid}/agent", json={"tools": []}, headers=ORIGIN)
+    evs = send(client, cid, "hi")
+    assert [e["last"] for e in evs if e["event"] == "step"] == [False]
+    done = evs[-1]
+    assert done["finish"] == "stop" and done["note"] == ""
+    assert done["content"] == "Hello world"  # no tools: the fake answers without them
+
+
+def test_a_call_in_the_last_step_does_not_run(client, monkeypatch):
+    """The worker bans the call marker in the last step; if a call came anyway, it is skipped, not run."""
+    monkeypatch.setattr(chat, "MAX_STEPS", 1)
+    real = chat.Turn.generate
+
+    def ignore_the_ban(self, messages, images, schemas, last=False):
+        assert last and messages[-1]["role"] == "user"  # the app's note
+        return real(self, messages[:-1], images, schemas, False)
+
+    monkeypatch.setattr(chat.Turn, "generate", ignore_the_ban)
+    cid = agent_chat(client)
+    evs = send(client, cid, script([call("list_workstation_tools")]))
+    res = next(e for e in evs if e["event"] == "tool_result")
+    assert res["status"] == "skipped" and "limit of 1 steps" in res["content"]
+    assert evs[-1]["finish"] == "steps" and evs[-1]["content"] == ""
+
+
+def test_a_repeated_call_points_to_the_first_result(client):
     cid = agent_chat(client)
     steps = script(
         [call("list_workstation_tools")], [call("list_workstation_tools")], "RESULT"
     )
     evs = send(client, cid, steps)
+    results = [e for e in evs if e["event"] == "tool_result"]
+    assert [r["status"] for r in results] == ["ok", "repeat"]
+    assert results[1]["content"] == chat.REPEAT and results[1]["seconds"] is None
+    done = evs[-1]
+    assert done["finish"] == "stop" and done["content"] == "Result: " + chat.REPEAT
+
+
+def test_a_third_identical_call_ends_the_answer(client):
+    cid = agent_chat(client)
+    same = [call("list_workstation_tools")]
+    evs = send(client, cid, script(same, same, same, "RESULT"))
     results = [e["status"] for e in evs if e["event"] == "tool_result"]
-    assert results == ["ok", "skipped"]
-    assert evs[-1]["finish"] == "repeat" and "same tool call twice" in evs[-1]["note"]
+    assert results == ["ok", "repeat", "skipped"]
+    assert evs[-1]["finish"] == "repeat" and "three times" in evs[-1]["note"]
 
 
-def test_repeat_within_one_step_skips_the_rest(client):
+def test_repeats_within_one_step(client):
     cid = agent_chat(client)
     same = call("job_status", job_id="20261103-120000-abcd")
     evs = send(client, cid, script([same, same, call("list_workstation_tools")]))
     assert [e["status"] for e in evs if e["event"] == "tool_result"] == [
-        "ok", "skipped", "skipped"
+        "ok", "repeat", "ok"
+    ]  # fmt: skip
+    assert evs[-1]["finish"] == "stop"
+    evs = send(client, cid, script([same, same, same, call("list_workstation_tools")]))
+    assert [e["status"] for e in evs if e["event"] == "tool_result"] == [
+        "ok", "repeat", "skipped", "skipped"
     ]  # fmt: skip
     assert evs[-1]["finish"] == "repeat"
+
+
+# ---------- the plan ----------
+
+
+def plan(*items) -> dict[str, Any]:
+    return call("update_plan", items=[{"step": s, "status": st} for s, st in items])
+
+
+def test_the_plan_is_sent_live_and_saved(client):
+    cid = agent_chat(client)
+    steps = script(
+        [plan(("Look up  the year", "in_progress"), ("Compare", "pending"))],
+        [plan(("Look up  the year", "done"), ("Compare", "done"))],
+        "RESULT",
+    )
+    evs = send(client, cid, steps)
+    assert "approval" not in kinds(evs)  # R0: it never asks
+    plans = [e for e in evs if e["event"] == "plan"]
+    assert [p["items"] for p in plans] == [
+        [
+            {"step": "Look up the year", "status": "in_progress"},
+            {"step": "Compare", "status": "pending"},
+        ],
+        [
+            {"step": "Look up the year", "status": "done"},
+            {"step": "Compare", "status": "done"},
+        ],
+    ]
+    results = [e for e in evs if e["event"] == "tool_result"]
+    assert [r["id"] for r in results] == [p["id"] for p in plans]
+    assert results[0]["content"] == (
+        "Plan saved: 0 of 2 done. Current step: Look up the year"
+    )
+    assert "Every step is done" in results[1]["content"]
+    tools = [m for m in saved(client, cid)["messages"] if m["role"] == "tool"]
+    assert [t["plan"] for t in tools] == [p["items"] for p in plans]
+    assert tools[0]["label"] == "Plan"
+    assert saved(client, cid)["agent"]["tainted"] is False
+
+
+def test_a_bad_plan_goes_back_to_the_model(client):
+    cid = agent_chat(client)
+    steps = script(
+        [plan(("a", "in_progress"), ("b", "in_progress"))],
+        [plan(("a", "started"))],
+        [call("update_plan", items=[])],
+        "RESULT",
+    )
+    evs = send(client, cid, steps)
+    results = [e for e in evs if e["event"] == "tool_result"]
+    assert [r["status"] for r in results] == ["error"] * 3
+    assert "More than one item is in_progress" in results[0]["content"]
+    assert "must be one of" in results[1]["content"]
+    assert "The plan is empty" in results[2]["content"]
+    assert not [e for e in evs if e["event"] == "plan"]
+    tools = [m for m in saved(client, cid)["messages"] if m["role"] == "tool"]
+    assert not any("plan" in t for t in tools)
+
+
+# ---------- a call in the reasoning ----------
+
+
+def test_a_call_written_in_the_reasoning_runs(client):
+    cid = agent_chat(client)
+    steps = script(
+        {
+            "think": "The user wants the tools.",
+            "think_calls": [call("list_workstation_tools")],
+        },
+        "RESULT",
+    )
+    evs = send(client, cid, steps)
+    res = next(e for e in evs if e["event"] == "tool_result")
+    assert res["name"] == "list_workstation_tools" and res["status"] == "ok"
+    assert evs[-1]["finish"] == "stop" and evs[-1]["content"].startswith("Result: ")
+    step = saved(client, cid)["messages"][1]
+    assert step["reasoning"] == "The user wants the tools."
+    assert step["tool_calls"][0]["name"] == "list_workstation_tools"
 
 
 def test_malformed_unknown_and_disabled_calls_go_back_to_the_model(client, box):
