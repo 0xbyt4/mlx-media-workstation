@@ -14,9 +14,9 @@ import {h, icon, toolIcon, GROUP_ORDER, fmtGb, fmtLeft, fmtAbout, fit, toast, er
 const LICENCE_NOTES = {
   'Apache-2.0': 'Commercial use allowed.',
   'MIT': 'Commercial use allowed.',
-  'FLUX Kommunity License': 'Commercial output under US$5M revenue; review outputs; AI disclosure where the law asks.',
-  'Fish Audio Community License': 'Commercial use under US$500k revenue; no imitation of real people; keep its watermark.',
-  'LTX-2 Community License': 'Free under US$10M revenue.',
+  'FLUX Kommunity License': 'Output generation only, under US$5M revenue; other commercial use needs a licence from Black Forest Labs.',
+  'Fish Audio Community License': 'Commercial use under US$500k revenue; no hosted speech service; no imitation of a voice without consent; keep its watermark; show "Built with Fish Audio".',
+  'LTX-2.x Community License Agreement': 'Free under US$10M revenue; keep its watermarks and AI disclosures.',
 };
 const CHAT_GROUP = 'Chat';
 const GROUP_TITLE = {Image: 'Image', Voice: 'Voice', Music: 'Music', Video: 'Video', Edit: 'Edit', [CHAT_GROUP]: 'Chat and prompt help'};
@@ -590,10 +590,14 @@ function closeSetup() {
   if (btn) btn.focus();
 }
 
-// Manual entries (environments, checkouts) that a tool of m also needs and that are not installed.
+// True when a and b serve a common tool or app feature (an environment and the weights it runs).
+function shareUse(a, b) {
+  return (a.used_by || []).some((u) => (b.used_by || []).includes(u));
+}
+
+// Manual entries (environments, checkouts) that a tool or feature of m also needs and that are not installed.
 function missingEnvs(m, d) {
-  return d.models.filter((e) => e.kind === 'manual' && !e.installed && e.id !== m.needs &&
-    (e.tools || []).some((t) => (m.tools || []).includes(t)));
+  return d.models.filter((e) => e.kind === 'manual' && !e.installed && e.id !== m.needs && shareUse(e, m));
 }
 
 // Why an entry cannot be picked now, or null.
@@ -854,7 +858,7 @@ function manualBlock(d) {
   const missing = manual.filter((m) => !m.installed);
   const rows = manual.map((m) => {
     const users = d.models.filter((x) => x.kind === 'download' && (x.id !== m.id) &&
-      (x.needs === m.id || (x.tools || []).some((t) => (m.tools || []).includes(t)))).map((x) => x.label);
+      (x.needs === m.id || shareUse(x, m))).map((x) => x.label);
     const head = h('div', {class: 'setup-env-head'}, h('b', null, m.label),
       m.installed ? pill('ok', 'Installed') : pill('idle', 'Not installed'),
       users.length ? h('span', {class: 'faint'}, 'Runs ' + users.join(', ')) : null);

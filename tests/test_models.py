@@ -199,6 +199,12 @@ def test_qwen_entry_and_config_keys():
         "qwen_model",
     )
     assert QWEN.features == ("Prompt help", "Chat")
+    env = models.BY_ID["qwen-venv"]
+    assert (env.manual, env.path_key, env.features) == (
+        True,
+        "qwen_python",
+        QWEN.features,
+    )
     assert config.DEFAULTS["qwen_python"] == "~/mlx-media/venv-qwen/bin/python"
     assert config.DEFAULTS["qwen_model"] == "~/mlx-media/models/qwen3.8-27b-4bit"
     example = (ROOT / "config.example.toml").read_text()
