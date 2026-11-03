@@ -459,7 +459,8 @@ turns that fit in 32K tokens.
 
 ### Agent mode
 
-An agent chat can call tools: the Workstation tools, the file tools, the web tools and `run_python`. `docs/AGENT.md`
+An agent chat can call tools: the Workstation tools, the file tools, the web tools, `run_python` and `run_shell`.
+`docs/AGENT.md`
 describes each tool, its risk level and when it asks. An answer is a loop of steps. Each step is one model request.
 When the model calls tools, the server runs them (or asks the user first) and sends the results back in the next step.
 
@@ -471,8 +472,8 @@ The chat's agent state is in `chat.json` under `agent`:
  "folder": null, "grants": [], "tainted": false}
 ```
 
-- `tools` are the tools this chat offers. A new agent chat has every tool except `run_python`. `run_python` runs code
-  that the model writes, so the user turns it on in the Tools menu.
+- `tools` are the tools this chat offers. A new agent chat has every tool except `run_python` and `run_shell`. They
+  run code and commands that the model writes, so the user turns them on in the Tools menu.
 - `folder` is the folder that the file tools may read, or `null`.
 - `grants` are the tools the user allowed "in this chat".
 - `tainted` is `true` after a tool returned untrusted text (a page, a file, program output). From then on every
@@ -500,7 +501,7 @@ with another one).
   the call that waits. It returns `{"status": "answered", "decision": "..."}`, and the call then runs with that
   answer, also when the wait timed out in the same moment. HTTP 409 when that call does not wait any more (the
   `approval_done` event was sent), HTTP 400 for `"chat"` when the approval did not offer it.
-- `GET /api/chats/{id}/ws/{path}` serves a file that `run_python` wrote in the chat's workspace
+- `GET /api/chats/{id}/ws/{path}` serves a file that `run_python` or `run_shell` wrote in the chat's workspace
   (`outputs/chats/<id>/ws`). PNG, JPEG, GIF and WebP come as images. `.txt`, `.csv`, `.tsv`, `.json`, `.md`, `.py`
   and `.log` come as `text/plain`. Every other file is a download (`Content-Disposition: attachment`). Each response
   has `Content-Security-Policy: sandbox; default-src 'none'; frame-ancestors 'none'`. Symlinks, hidden names, files
@@ -516,7 +517,9 @@ Events. The message stream of an agent chat has these events besides `waiting`, 
 - `{"event": "approval", "id", "name", "label", "arguments", "describe", "host", "reason", "risk", "chat_scope",
   "timeout_s"}` when the call waits for the user. Offer "Allow in this chat" only when `chat_scope` is `true`.
   `host` is the host that `fetch_url` contacts, as the network sees it (IDNA: `xn--...` for a non-ASCII name), or
-  `null` for other tools and for a URL without a valid host. The page shows it on its own line.
+  `null` for other tools and for a URL without a valid host. The page shows it on its own line. For `run_shell` the
+  event also has `cwd` (the folder the command runs in: the chat's work folder) and `read_only` (the granted folder
+  that the command can read, or `null`). The page shows the command in a code block and both folders.
 - `{"event": "approval_done", "id", "decision"}` with `once`, `chat`, `deny`, `timeout` or `stopped`.
 - `{"event": "tool_result", "id", "name", "status", "content", "truncated", "files", "seconds", "approval", "risk"}`.
   `status` is `ok`, `error`, `cancelled`, `denied`, `refused` or `skipped`. `content` is the first 4,000 characters.

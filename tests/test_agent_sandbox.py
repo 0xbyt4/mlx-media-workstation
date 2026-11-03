@@ -226,6 +226,31 @@ def test_a_fast_write_past_the_limit_is_caught_at_the_end(
     assert (work / "results.csv").read_text() == "a,b\n1,2\n"
 
 
+def test_removing_new_files_never_follows_a_folder_link(tmp_path: Path) -> None:
+    """A folder of the work dir that became a link after the walk: the host removes the link, not what it names."""
+    work = tmp_path / "ws"
+    (work / "d").mkdir(parents=True)
+    (work / "d" / "notes.txt").write_text("x")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "notes.txt").write_text("keep me")
+    new = sb.all_files(work)
+    real_walk = sb.all_files
+
+    def swapped(path):  # the walk saw a folder; then the folder is swapped for a link
+        found = real_walk(path)
+        (work / "d" / "notes.txt").unlink()
+        (work / "d").rmdir()
+        (work / "d").symlink_to(elsewhere)
+        return found
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(sb, "all_files", swapped)
+        sb.remove_new(work, set())
+    assert new and (elsewhere / "notes.txt").read_text() == "keep me"
+    assert not (work / "d").exists() and not (work / "d").is_symlink()
+
+
 def test_too_many_new_folders_are_removed(box: sb.SeatbeltSandbox, work: Path) -> None:
     code = "import os\nfor i in range(60):\n    os.mkdir(f'd{i}')"
     r = run(box, work, code, Limits(wall_s=10))

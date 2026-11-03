@@ -1044,13 +1044,68 @@ function argsLine(args) {
   return text.length > 140 ? text.slice(0, 139) + '…' : text;
 }
 
-// The arguments as the user should read them: run_python's code as code, anything else as JSON.
+// The arguments as the user should read them: run_python's code and run_shell's command as code (the other
+// arguments on a line below), anything else as JSON.
+const CODE_ARGS = {run_python: ['code', 'Code'], run_shell: ['command', 'Command']};
+
 function argsBlock(t) {
   const args = t.arguments || {};
   if (!Object.keys(args).length) return null;
-  const code = t.name === 'run_python' && typeof args.code === 'string';
-  return h('div', {class: 'tool-sec'}, h('span', {class: 'eyebrow'}, code ? 'Code' : 'Arguments'),
-    h('pre', {class: 'tool-pre', tabindex: '0'}, h('code', null, visible(code ? args.code : JSON.stringify(args, null, 2), true))));
+  const [key, title] = CODE_ARGS[t.name] || [];
+  const code = key && typeof args[key] === 'string';
+  const rest = code ? Object.fromEntries(Object.entries(args).filter(([k]) => k !== key)) : {};
+  return h('div', {class: 'tool-sec'}, h('span', {class: 'eyebrow'}, code ? title : 'Arguments'),
+    h('pre', {class: 'tool-pre', tabindex: '0'}, h('code', null, visible(code ? args[key] : JSON.stringify(args, null, 2), true))),
+    Object.keys(rest).length ? h('p', {class: 'tool-note'}, argsLine(rest)) : null);
+}
+
+// run_shell's folders on its approval card: where the command runs and what it may read.
+function shellFolders(ap) {
+  if (!ap.cwd) return null;
+  return [
+    h('p', {class: 'approval-host'}, 'Runs in: ', h('code', null, visible(ap.cwd))),
+    h('p', {class: 'approval-host'}, 'Can read: ',
+      ap.read_only ? [h('code', null, visible(ap.read_only)), ' (read-only)'] : 'no granted folder'),
+  ];
+}
+
+// run_shell's result (app/agent/shell_tool.py format_result): the exit code line, then stdout and stderr, each
+// headed by its length in characters (code points), then notes (the file names). After the first note that follows
+// a part, nothing counts as a part any more, so a file name cannot fake one. A long part is folded. null when the
+// text has another form.
+function shellResult(t) {
+  const text = String(t.content).replace(/\n\n\[Truncated: showing the first [\d,]+ of [\d,]+ characters\.\]$/, '');
+  const nl = text.indexOf('\n');
+  const m = /^exit code: (-?\d+) \(([\d.]+) s\)$/.exec(nl < 0 ? text : text.slice(0, nl));
+  if (!m) return null;
+  let rest = nl < 0 ? '' : text.slice(nl + 1);
+  const notes = [];
+  const parts = [];
+  let tail = false;
+  while (rest) {
+    const p = tail ? null : /^(stdout|stderr) \((\d+) characters(, cut at [\d,]+)?\):\n/.exec(rest);
+    if (!p) {
+      const end = rest.indexOf('\n');
+      notes.push(end < 0 ? rest : rest.slice(0, end));
+      rest = end < 0 ? '' : rest.slice(end + 1);
+      tail = tail || parts.length > 0 || notes[notes.length - 1] === 'no output';
+      continue;
+    }
+    rest = rest.slice(p[0].length);
+    const body = Array.from(rest).slice(0, Number(p[2])).join('');
+    rest = rest.slice(body.length).replace(/^\n/, '');
+    parts.push({name: p[1] + (p[3] ? ' (cut)' : ''), body});
+  }
+  return h('div', {class: 'tool-sec'},
+    h('span', {class: 'eyebrow'}, 'Exit code ' + m[1] + ' · ' + m[2] + ' s'),
+    notes.filter(Boolean).map((n) => h('p', {class: 'tool-note'}, n)),
+    parts.map((p) => {
+      const lines = p.body.split('\n').length;
+      const pre = h('pre', {class: 'tool-pre tool-out', tabindex: '0'}, p.body);
+      if (lines <= 12 && p.body.length <= 1200) return h('div', {class: 'tool-sec'}, h('span', {class: 'eyebrow'}, p.name), pre);
+      return h('details', {class: 'tool-fold'}, h('summary', null, p.name + ' · ' + lines + ' lines'), pre);
+    }),
+    t.truncated ? h('p', {class: 'tool-note'}, 'The start of the result. The saved chat has the rest.') : null);
 }
 
 function filesBlock(t) {
@@ -1072,12 +1127,13 @@ function toolBlock(t, seg) {
   const st = t.status ? STATUS[t.status] || ['idle', t.status] : ['run', 'Running'];
   const sum = t.describe ? visible(t.describe) : argsLine(t.arguments);
   const risk = t.risk === null || t.risk === undefined ? null : RISK[t.risk];
+  const shell = t.name === 'run_shell' && t.status === 'ok' && t.content ? shellResult(t) : null;
   const body = h('div', {class: 'tool-body'},
     t.approval && DECISION[t.approval] ? h('p', {class: 'tool-note'}, icon('lock', 'ic-sm'), DECISION[t.approval]) : null,
     argsBlock(t),
-    t.content ? h('div', {class: 'tool-sec'}, h('span', {class: 'eyebrow'}, 'Result'),
+    shell || (t.content ? h('div', {class: 'tool-sec'}, h('span', {class: 'eyebrow'}, 'Result'),
       h('pre', {class: 'tool-pre tool-out', tabindex: '0'}, t.content),
-      t.truncated ? h('p', {class: 'tool-note'}, 'The start of the result. The saved chat has the rest.') : null) : null,
+      t.truncated ? h('p', {class: 'tool-note'}, 'The start of the result. The saved chat has the rest.') : null) : null),
     !t.status ? h('p', {class: 'tool-note'}, h('span', {class: 'spinner sm', 'aria-hidden': 'true'}), 'Running') : null);
   const card = h('details', {class: 'tool-card is-' + (t.status || 'running'), open: !!(seg && seg.open)},
     h('summary', null, icon('chev', 'chev ic-sm'),
@@ -1142,6 +1198,7 @@ function approvalCard(seg, live) {
   ap.host ? h('p', {class: 'approval-host'}, 'Host: ', h('code', null, ap.host)) : null,
   ap.reason ? h('p', {class: 'approval-why'}, ap.reason) : null,
   argsBlock(ap),
+  shellFolders(ap),
   h('div', {class: 'approval-actions'}, buttons),
   err,
   h('p', {class: 'approval-help'}, 'No answer in ' + minutes + (minutes === 1 ? ' minute' : ' minutes') + ' denies it. Escape denies.'));
@@ -1296,10 +1353,10 @@ function renderTools(focusKey) {
     t.error ? h('p', {class: 'field-err', role: 'alert'}, t.error) : null,
     h('ul', {class: 'tool-list', role: 'list'}, rows),
     h('div', {class: 'field tools-folder'},
-      h('label', {class: 'label', for: 'tools-folder'}, 'Folder the file tools may read'),
+      h('label', {class: 'label', for: 'tools-folder'}, 'Folder the file tools and Shell may read'),
       folder,
       t.folderError ? h('p', {class: 'field-err', id: 'tools-folder-err', role: 'alert'}, t.folderError) : null,
-      h('p', {class: 'help', id: 'tools-folder-help'}, 'Text files in this folder and its subfolders only. Hidden files and key files are never read. Not your home folder itself or a system folder.'))].filter(Boolean));
+      h('p', {class: 'help', id: 'tools-folder-help'}, 'The file tools read the text files in this folder and its subfolders. Shell reads its files and never changes them. Hidden files and key files are never read. Not your home folder itself or a system folder.'))].filter(Boolean));
   if (key) {
     const el = pop.querySelector('[data-key="' + CSS.escape(key) + '"]');
     if (el && !el.disabled) el.focus();

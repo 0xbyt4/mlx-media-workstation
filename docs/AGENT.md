@@ -1,7 +1,7 @@
 # Agent mode
 
 In an agent chat the local model can call tools. It can read the Workstation's state, queue media jobs, read files in
-one folder, search the web, read web pages and run Python in a sandbox. The code is in `app/agent/`. The chat loop
+one folder, search the web, read web pages, and run Python and shell commands in a sandbox. The code is in `app/agent/`. The chat loop
 that uses it is in `app/chat.py`. The endpoints and events are in `docs/API.md` under "Agent mode".
 
 ## Tools and risk levels
@@ -28,14 +28,16 @@ the tool's result, so it can answer the user.
 | `read_file` | R1 | Reads a text file inside the granted folder (at most 1 MB). |
 | `search_files` | R1 | Searches the text files of the granted folder (at most 5,000 files and 15 s). |
 | `web_search` | R2 | Searches the web. Sends the query off this Mac. |
-| `fetch_url` | R2 | Reads one public web page as text. Sends the URL off this Mac. |
+| `fetch_url` | R2 | Reads one public web page as text, in parts of 10,000 characters. Sends the URL off this Mac. |
 | `run_python` | R3 | Runs Python code in the sandbox. Present only when the sandbox works on this Mac. |
+| `run_shell` | R3 | Runs a shell command (zsh) in the sandbox. Present only when the sandbox works on this Mac. |
 
 The Workstation tools exist only in the full profile. The chat profile has no Workstation, so its registry has none
 of them.
 
-A new agent chat has every tool on except `run_python`. The model writes that code, and the code can carry text from
-earlier untrusted content. So the user turns it on in the Tools menu when the chat needs it.
+A new agent chat has every tool on except `run_python` and `run_shell`. The model writes that code and those
+commands, and they can carry text from earlier untrusted content. So the user turns them on in the Tools menu when
+the chat needs them. Both ask before every call.
 
 The file tools never list, search or read hidden names (any path part that starts with `.`) or secret files (keys,
 certificates, keychains, password databases, `credentials`, `secrets.*` and similar). They resolve every path and
@@ -60,7 +62,7 @@ inside them:
 Taint is a flag per chat. It is stored in `chat.json` with the grants.
 
 - These tools set it when they run: `search_library`, `list_files`, `read_file`, `search_files`, `web_search`,
-  `fetch_url` and `run_python`. Their results can hold text from outside the app.
+  `fetch_url`, `run_python` and `run_shell`. Their results can hold text from outside the app.
 - Once set, it stays set for the rest of the chat. A new answer does not clear it, because the text is still in the
   model's context.
 - While it is set, every R2 call asks, and "Allow in this chat" is not offered. A web page could tell the model to
@@ -119,6 +121,78 @@ and links other files (`GET /api/chats/{id}/ws/{path}`).
 - When that interpreter does not exist or fails that check, or `sandbox-exec` is missing, the registry has no
   `run_python`. Settings > Agent shows why.
 
+## The shell sandbox (`run_shell`)
+
+`app/agent/shell_sandbox.py` runs the command as `/bin/zsh -f -c <command>` with `sandbox-exec` and a Seatbelt
+profile that denies by default. It uses the limits and the watchdog of `run_python`. The approval card shows the
+command in a code block, the folder it runs in and the granted folder it may read.
+
+What the command can do:
+
+- **Run programs** from `/bin` and `/usr/bin`, and from Homebrew (`/opt/homebrew/bin` and the `Cellar` and `opt`
+  folders that its links point to), for example `ffmpeg`, `jq` and Homebrew's `python3`. Pipes, background jobs and
+  child processes work.
+- **Read** the system folders that the programs need (`/usr/lib`, `/usr/share`, `/usr/libexec`, `/System/Library`,
+  the OS cryptexes, the time zone data), Homebrew's `bin`, `Cellar`, `opt`, `lib`, `share` and `Frameworks`, and the
+  work folder.
+- **Read the granted folder**, when the chat has one, without changing it. The host checks it as the file tools do
+  (`O_NOFOLLOW` and `F_GETPATH`): a folder that was moved or replaced by a link is refused. Hidden files (any path
+  part that starts with `.`) and the secret files of the file tools are refused inside it.
+- **Write** in the chat's work folder only (`outputs/chats/<id>/ws`, the current folder and `HOME`). The files stay
+  for later calls in the same chat. The page shows images inline and links other files.
+
+What it cannot do:
+
+- **Other programs**: exec from any other folder is refused: the work folder, `/usr/sbin`, `/sbin`,
+  `/usr/libexec`, the app's own virtual environment. A script in the work folder runs with `sh script.sh`, not
+  `./script.sh`. The Xcode tools in `/usr/bin` (`git`, `python3`, `clang`, `make`) do not work, because they need
+  Xcode's folders. Their Homebrew versions work.
+- **More rights**: setuid and setgid programs (`sudo`, `su`, `ps`, `top`, `login`, `crontab`...) are refused, by mode
+  and by name.
+- **The home folder**: nothing of it can be read or written, except the granted folder (read-only). No `~/.ssh`,
+  keychains, browser data, the app's folder or other chats.
+- **Other processes**: `(deny process-info*)` and `(allow process-info* (target self))` hold for every child too. No
+  child reads another process's command line or environment (`KERN_PROCARGS2`), the process list or the paths of
+  other processes. `ps`, `/bin/ps` and `top` are setuid (refused), `pgrep` finds nothing, `sysctl` is in
+  `/usr/sbin` (refused). Signals reach only the run's own processes.
+- **Network**: no rule allows it. Every socket (TCP, UDP, Unix) and every DNS lookup is refused.
+- **System services**: the only `mach-lookup` rule allows one random name that no service has (see below). The
+  pasteboard, the keychain, Apple Events, Spotlight and launchd are out of reach.
+- **Input**: stdin is `/dev/null`. An interactive program gets no input.
+
+The environment has only `PATH` (Homebrew's `bin`, `/usr/bin`, `/bin`), `HOME` (the work folder), `TMPDIR` (a
+`.tmp` folder in it that the host removes after each call), `TMPPREFIX` (for here-documents), `LANG` and `SHELL`.
+
+Limits:
+
+| Limit | Value | How |
+|---|---|---|
+| Wall-clock time | `timeout_s`: 120 s by default, at most 600 s | The host kills every process of the run. |
+| CPU time | `timeout_s` times the number of cores, per process | `RLIMIT_CPU` |
+| Processes | 64 more than the user had at the start | `RLIMIT_NPROC` |
+| Memory | 2,048 MB for all processes of the run | The watchdog. |
+| One file | 50 MB | `RLIMIT_FSIZE` |
+| Work folder | 500 MB, 10,000 entries | The watchdog; files that a call added past the limit are removed when it ends. |
+| Output kept | 20,000 characters of stdout and of stderr each | The tool cuts the rest. |
+| Command | 20,000 characters | The tool's schema. |
+
+A child can leave the process group (`setsid`). So the host finds the run's processes by their sandbox: the profile
+allows `mach-lookup` of one random name, and the host asks the kernel (`sandbox_check`) which of the user's processes
+have a sandbox that allows that name and refuses a second random name. Only this run's profile has that name. A
+timeout, Stop or a limit kills the process group, and so does the end of the main process. Then the host hunts the
+rest: it kills each process of the run the moment it finds it, and it looks again without a pause until it found
+none for 0.3 s. So a background job, a child in its own session and a process that forks and exits in a loop (to
+slip between two looks) all end with the call. At its first use the app checks with one sandboxed `sleep` that it
+can find a run's processes. If it cannot, there is no `run_shell` tool.
+
+When the hunt does not end within 5 s, or a process still holds the output pipes after it, the result says so. A
+thread goes on hunting those processes, `run_shell` refuses new commands until it is done, and the host does not
+clean the work folder of that call. When the host removes files from the work folder, it opens each folder from the
+one above it with `O_NOFOLLOW`, so a folder that was replaced by a link is never followed.
+
+The result starts with `exit code: N (S s)`. Then `stdout (N characters):` and `stderr (N characters):`, each with
+the text. The page uses the lengths to show the two parts. A long part is folded.
+
 ## The web tools
 
 ### `fetch_url`
@@ -132,6 +206,12 @@ and links other files (`GET /api/chats/{id}/ws/{path}`).
 5. Stops at 2 MB of body (also after decompression) and 15 s for the whole fetch, redirects included.
 6. Sends no cookies, no credentials and no proxy. The User-Agent names the app and its repository.
 7. Turns HTML into text with the page's links. Other text types come as they are. Binary content is refused.
+8. Returns the text in parts of at most 10,000 characters. A part ends after a line break when there is one near its
+   end. When the page is longer, the result says the part's range, the page's length and the `start` of the next
+   part. A call with `start` greater than 0 reads from a copy of the page that this chat fetched in the last 10
+   minutes, without a new download. A call with `start` 0, or without a copy, downloads the page with every check
+   above. The copies are kept per chat and URL, at most 8,000,000 characters for all chats together (the oldest go
+   first), and only in memory.
 
 ### `web_search`
 
@@ -155,8 +235,16 @@ search fails only when every source fails.
   writable by the `admin` group.
 - A DNS lookup and the HTML parsing of `fetch_url` cannot be interrupted. Stop takes effect after they end.
 - The SearXNG URL is trusted. Its address is not checked, so it can be on this Mac or the local network.
-- The granted folder is not mounted in the sandbox. `run_python` cannot read the user's files. Only the file tools
-  can, and only as text for the model.
+- The granted folder is not mounted in the `run_python` sandbox: it cannot read the user's files. `run_shell` can
+  read the granted folder (not its hidden and secret files).
+- In the granted folder, `run_shell` can list the names of hidden and secret files (`ls -a`), but not read them. The
+  file tools do not show those names.
+- `run_shell` can start every program in Homebrew's folders. Those folders often belong to the `admin` group, so
+  another admin user could put a program there. The program still runs in the sandbox.
+- When the app is killed hard (not closed) while `run_shell` runs, nothing stops the command's background
+  processes. They stay in the sandbox: no network, writes to the work folder only.
+- The process limit counts all of the user's processes (`RLIMIT_NPROC`). When the user starts many programs during
+  a call, the call can start fewer processes.
 - A local program can send any `Origin` header. The same-origin check stops other web pages. Programs on this Mac
   need the session cookie, which only the token file of this user gives (docs/API.md). A program that runs as this
   user can read that file.

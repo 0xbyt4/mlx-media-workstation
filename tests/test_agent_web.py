@@ -349,6 +349,109 @@ def test_html_text_keeps_the_whole_page_without_a_main() -> None:
 def test_fetch_explains_the_url(reg: Registry) -> None:
     line = reg.get("fetch_url").describe({"url": "https://example.org/x"})
     assert "https://example.org/x" in line
+    line = reg.get("fetch_url").describe(
+        {"url": "https://example.org/x", "start": 20000}
+    )
+    assert "from character 20,000" in line and "without a new download" in line
+
+
+# fetch_url parts
+
+LONG = "".join(
+    f"line {i:05d} " + "x" * 40 + "\n" for i in range(600)
+)  # 31,200 characters
+
+
+def test_a_long_page_comes_in_parts_from_one_download(
+    reg: Registry, ctx: Context, web: FakeWeb
+) -> None:
+    web.pages["https://example.org/long"] = HttpResponse(
+        200, {"content-type": "text/plain"}, LONG.encode()
+    )
+    url = "https://example.org/long"
+    r = reg.call("fetch_url", {"url": url}, ctx)
+    assert r.status == "ok" and not r.truncated
+    first = r.content.split("\n\n", 1)[1]
+    assert LONG.startswith(first) and first.endswith("\n")  # whole lines
+    end = len(first)
+    assert 8000 <= end <= web_tools.PART
+    assert (
+        f"[Characters 0 to {end:,} of 31,200. The next part: fetch_url with the same url and start={end}.]"
+        in r.content
+    )
+    seen = first
+    while True:
+        r = reg.call("fetch_url", {"url": url, "start": len(seen)}, ctx)
+        assert r.status == "ok" and "[From the copy fetched" in r.content
+        seen += r.content.split("\n\n", 1)[1]
+        if "This is the last part." in r.content:
+            break
+    assert seen == LONG
+    assert len(web.requests) == 1  # the parts came from the copy
+    r = reg.call("fetch_url", {"url": url, "start": 31200}, ctx)
+    assert (
+        r.status == "error"
+        and "past the end: the page has 31,200 characters" in r.content
+    )
+    # start=0 downloads again; so does another chat
+    reg.call("fetch_url", {"url": url}, ctx)
+    other = Context("c2", None, threading.Event(), ctx.work_dir)
+    r = reg.call("fetch_url", {"url": url, "start": end}, other)
+    assert r.status == "ok" and "[From the copy" not in r.content
+    assert len(web.requests) == 3
+
+
+def test_a_short_page_has_no_part_line(
+    reg: Registry, ctx: Context, web: FakeWeb
+) -> None:
+    web.pages["https://example.org/s"] = HttpResponse(
+        200, {"content-type": "text/plain"}, b"short"
+    )
+    r = reg.call("fetch_url", {"url": "https://example.org/s"}, ctx)
+    assert r.content == "URL: https://example.org/s\n\nshort"
+
+
+def test_a_later_part_keeps_the_address_checks(
+    reg: Registry, ctx: Context, web: FakeWeb
+) -> None:
+    """start > 0 without a copy downloads the page, with every check of a first download."""
+    for url in ("http://127.0.0.1:7870/api/jobs", "https://user:pw@example.org/"):
+        r = reg.call("fetch_url", {"url": url, "start": 100}, ctx)
+        assert r.status == "error"
+    assert web.requests == []
+    r = reg.call("fetch_url", {"url": "https://example.org/x", "start": -1}, ctx)
+    assert r.status == "error" and "start: must be at least 0" in r.content
+
+
+def test_the_page_cache_expires_and_stays_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [1000.0]
+    monkeypatch.setattr(web_tools.time, "monotonic", lambda: now[0])
+    cache = web_tools.PageCache(seconds=600, chars=25)
+    page = web_tools.Page("https://example.org/a", 200, "text/plain", "a" * 10, False)
+    cache.put("c1", "u1", page)
+    now[0] += 30
+    hit = cache.get("c1", "u1")
+    assert hit is not None and hit[0] is page and hit[1] == 30
+    assert cache.get("c2", "u1") is None  # per chat
+    cache.put("c1", "u2", page)
+    cache.put("c1", "u3", page)  # 30 characters: the oldest goes
+    assert cache.get("c1", "u1") is None and cache.get("c1", "u3") is not None
+    cache.put("c1", "big", web_tools.Page("u", 200, "text/plain", "b" * 26, False))
+    assert cache.get("c1", "big") is None  # larger than the whole cache: not kept
+    now[0] += 601
+    assert cache.get("c1", "u3") is None and not cache.pages
+
+
+def test_part_ends_after_a_line_break() -> None:
+    text = "a" * 95 + "\n" + "b" * 50
+    assert web_tools.part(text, 0, 100) == ("a" * 95 + "\n", 96)
+    assert web_tools.part("c" * 150, 0, 100) == (
+        "c" * 100,
+        100,
+    )  # no line break in the last fifth
+    assert web_tools.part(text, 96, 100) == ("b" * 50, 146)
 
 
 # web_search

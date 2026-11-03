@@ -752,6 +752,14 @@
   background: none;
   font-size: inherit;
 }
+.v-chat .tool-fold > summary {
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.v-chat .tool-fold[open] > summary {
+  margin-bottom: 4px;
+}
 .v-chat .tool-note {
   display: flex;
   align-items: center;
