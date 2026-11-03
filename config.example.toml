@@ -28,3 +28,15 @@ keep_awake = true
 notify = true
 # minutes without use before the local LLM is unloaded to free its memory; 0 = never
 llm_idle_minutes = 10
+
+[agent]
+# Chat agent mode (docs/AGENT.md). Read at start.
+# the Python that run_python uses in the sandbox; "" = the app's own Python with the standard library only. For
+# numpy, pandas or matplotlib, make a separate environment for the sandbox and give its python here
+python = ""
+# a SearXNG instance you run yourself (JSON format on), used first by web_search; "" = none
+searxng_url = ""
+# the Wikipedia that web_search asks: a language code such as en, de or tr
+wikipedia_language = "en"
+# also ask Marginalia Search with its shared key "public" (often rate limited): true or false
+marginalia = true
