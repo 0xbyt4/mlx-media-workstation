@@ -367,7 +367,8 @@ function build(m, byId, busy) {
       m.licence_url ? extLink(m.licence_url, 'Read the licence') : null);
   }
 
-  const path = h('div', {class: 'model-path'}, h('span', {class: 'faint'}, m.installed ? 'At ' : 'Installs to '), m.path);
+  const path = h('div', {class: 'model-path'},
+    h('span', {class: 'faint'}, m.installed ? 'At ' : m.kind === 'manual' ? 'Looks for it at ' : 'Installs to '), m.path);
 
   const actions = [];
   let reason = null;
@@ -418,8 +419,8 @@ function build(m, byId, busy) {
     if (m.installed) extra.push(disclosure(m.id + ':install', 'Install commands', cmds));
     else {
       extra.push(h('div', {class: 'model-wide manual'},
-        h('p', {class: 'help'}, 'Workstation does not install this one. Run these commands in Terminal, then press Check again.',
-          m.path_key ? [' If it is in another folder, set ', h('code', null, m.path_key), ' in Settings.'] : null),
+        h('p', {class: 'help'}, 'Workstation does not install this one. Run these commands in Terminal, then press Check again. ',
+          pathHelp(m, true)),
         cmds,
         h('div', null, h('button', {type: 'button', class: 'btn btn-sm', 'data-k': 'recheck', onclick: () => recheck(m)},
           icon('refresh', 'ic-sm'), 'Check again'))));
@@ -886,6 +887,18 @@ function pickItem(m, d, byId) {
       typeof m.peak_gb === 'number' ? h('span', {class: 'num faint'}, 'peak ' + fmtGb(m.peak_gb, 0)) : null));
 }
 
+// Where the commands put a manual entry. When that is not the folder Workstation checks, the user sets the path key.
+// The card shows the path above, so it gets the short text.
+function pathHelp(m, short) {
+  if (!m.path_key) return null;
+  if (m.install_path && m.install_path !== m.path) {
+    return ['The commands install it to ', h('code', {class: 'mono'}, m.install_path), '. Then set ', h('code', null, m.path_key),
+      ' to that path in Settings.'];
+  }
+  if (short) return ['If it is in another folder, set ', h('code', null, m.path_key), ' in Settings.'];
+  return ['It goes to ', h('code', {class: 'mono'}, m.path), '. For another folder, set ', h('code', null, m.path_key), ' in Settings.'];
+}
+
 // The environments and checkouts: Workstation cannot install them, and a model without its environment cannot run.
 function manualBlock(d) {
   const manual = d.models.filter((m) => m.kind === 'manual');
@@ -899,8 +912,7 @@ function manualBlock(d) {
       users.length ? h('span', {class: 'faint'}, 'Runs ' + users.join(', ')) : null);
     if (m.installed) return h('div', {class: 'setup-env'}, head);
     return h('div', {class: 'setup-env'}, head, commandBlock(m.install || '', 'Copy the install commands for ' + m.label),
-      m.path_key ? h('p', {class: 'help'}, 'It goes to ', h('code', {class: 'mono'}, m.path), '. For another folder, set ',
-        h('code', null, m.path_key), ' in Settings.') : null);
+      m.path_key ? h('p', {class: 'help'}, pathHelp(m)) : null);
   });
   return h('section', {class: 'setup-envs', 'aria-labelledby': 'setup-envs-h'},
     h('h3', {id: 'setup-envs-h'}, 'Environments you install by hand'),

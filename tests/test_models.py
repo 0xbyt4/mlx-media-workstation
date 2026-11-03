@@ -262,6 +262,15 @@ def test_view_reports_status_and_machine(paths, monkeypatch):
     assert v[LTX.id]["disk_free_gb"] > 0
     assert v["mflux"]["kind"] == "manual" and v["mflux"]["fits"] is None
     assert v["mflux"]["install"].startswith("git clone")
+    assert v["mflux"]["install_path"].endswith("mlx-media/mflux/.venv/bin")
+    assert v[QWEN.id]["install_path"] is None
+
+
+def test_install_commands_use_the_default_paths():
+    for m in models.MODELS:
+        if m.manual:
+            folder = "/".join(Path(config.DEFAULTS[m.path_key]).parts[:3])
+            assert folder in m.install, m.id
 
 
 # fits rule

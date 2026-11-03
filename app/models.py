@@ -38,7 +38,7 @@ from huggingface_hub.hf_api import RepoFile
 from huggingface_hub.utils import filter_repo_objects
 
 from app import tools
-from app.config import PATHS, ROOT
+from app.config import DEFAULTS, PATHS, ROOT
 
 HF_HUB = tools.HF_HUB
 # macOS and the app itself keep about 8 GB in use. A model fits when its peak plus that reserve is within the total
@@ -343,6 +343,13 @@ def target(m: Model) -> Path:
     if m.path_key is None:
         return repo_cache(m) / "snapshots" / m.revision
     return getattr(PATHS, m.path_key) / m.subdir
+
+
+def install_target(m: Model) -> Path | None:
+    """Where the install commands of a manual entry put it. The commands are fixed, so this is the default path."""
+    if not m.manual or m.path_key is None:
+        return None
+    return ROOT / Path(DEFAULTS[m.path_key]).expanduser() / m.subdir
 
 
 def installed(m: Model) -> bool:
@@ -830,6 +837,7 @@ def view(m: Model, mem_gb: float) -> dict[str, Any]:
         "disk_free_gb": None if m.manual else round(disk_free(m) / 1e9, 1),
         "needs": m.needs,
         "install": m.install,
+        "install_path": str(p) if (p := install_target(m)) else None,
         "download": progress(m),
     }
 
