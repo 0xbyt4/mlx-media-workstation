@@ -611,10 +611,12 @@ def test_shared_and_other_folders_are_refused(client, tmp_path, monkeypatch):
         r = grant(other)
         assert r.status_code == 400, other
         assert "not in your home folder" in r.json()["detail"]
-    for own in (chat.ROOT, chat.ROOT / "app", chat.ROOT / "docs", chat.ROOT.parent):
+    for own in (chat.ROOT, chat.ROOT / "app", chat.ROOT / "docs"):
         r = grant(own)
         assert r.status_code == 400, own
         assert "app's own folder" in r.json()["detail"]
+    # the folder that holds the app is refused too; when it is the home folder, that rule answers first
+    assert grant(chat.ROOT.parent).status_code == 400
     # the checks hold in another letter case too (APFS ignores it)
     if Path("/LIBRARY").exists():
         assert "system folder" in grant("/LIBRARY/Preferences").json()["detail"]
