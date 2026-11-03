@@ -50,8 +50,7 @@ const MODE_INFO = {
     ],
   },
 };
-const OFFER_AGENT = true; // offers agent mode in the picker and the New chat menu
-const MODES = ['workstation', 'general'].concat(OFFER_AGENT ? ['agent'] : []);
+const MODES = ['workstation', 'general', 'agent']; // the picker and the New chat menu offer these
 const MODE_KEY = 'ws.chatMode'; // the mode of the last new chat, per browser
 // Agent tools: the risk levels of app/agent/policy.py in plain words, the states of a call, and the user's answers.
 const RISK = [
