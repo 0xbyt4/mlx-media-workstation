@@ -815,6 +815,7 @@ def view(m: Model, mem_gb: float) -> dict[str, Any]:
         "kind": "manual" if m.manual else "download",
         "used_by": [tools.BY_ID[t]["label"] for t in m.tools] + list(m.features),
         "tools": list(m.tools),
+        "features": list(m.features),
         "repo": m.repo,
         "revision": m.revision,
         "size_gb": m.size_gb,

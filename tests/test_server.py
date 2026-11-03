@@ -5,6 +5,7 @@ import re
 import subprocess
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,7 +13,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import server, tools
+from app import config, server, tools
 from tests.conftest import FakeMedia, MacEffects
 
 Job = Callable[..., dict[str, Any]]
@@ -467,6 +468,7 @@ def test_system(
         "swap_used_gb": 1.5,
         "running": "j1",
         "queued": 2,
+        "profile": "full",
     }
 
 
@@ -480,7 +482,17 @@ def test_system_without_answers(
         "swap_used_gb": 0.0,
         "running": None,
         "queued": 0,
+        "profile": "full",
     }
+
+
+def test_system_reports_the_profile(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_system(monkeypatch, "", "", "")
+    assert client.get("/api/system").json()["profile"] == "full"
+    monkeypatch.setattr(config, "APP", replace(config.APP, profile="chat"))
+    assert client.get("/api/system").json()["profile"] == "chat"
 
 
 def test_page_files_are_revalidated(client: TestClient) -> None:

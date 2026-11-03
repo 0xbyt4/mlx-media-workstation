@@ -7,6 +7,8 @@
 // The "Set up this Mac" card on top picks a set of models for this Mac (step 1), asks for the gated licences (step 2)
 // and shows the download queue (step 3). The queue comes from GET /api/models, so it survives leaving the view.
 // Route params: #/models?model=<id> scrolls to that card and highlights it; #/models?setup=1 opens the setup card.
+// The chat profile shows only the entries Chat needs (store.shownModel: the LLM environment and weights), in the card
+// list and in the setup card.
 
 import {h, icon, toolIcon, GROUP_ORDER, fmtGb, fmtLeft, fmtAbout, fit, toast, errorBox, inlineConfirm} from '../ui.js';
 
@@ -20,6 +22,7 @@ const LICENCE_NOTES = {
 };
 const CHAT_GROUP = 'Chat';
 const GROUP_TITLE = {Image: 'Image', Voice: 'Voice', Music: 'Music', Video: 'Video', Edit: 'Edit', [CHAT_GROUP]: 'Chat and prompt help'};
+const CHAT_TITLE = 'Chat'; // the chat group in the chat profile, which has no prompt help
 const OFFLINE_TEXT = 'The Workstation server does not answer. Try again when it is back.';
 
 // Kept across mounts for this session only (never stored): the gated models whose licence step is open, the ones
@@ -67,6 +70,15 @@ function mount(root, ctx, params) {
       for (const c of s.cards.values()) c.sig = null;
       render();
     }),
+    on('profile', () => {
+      // other entries and group titles: build the list again, and pick the defaults of the new profile
+      s.cards.clear();
+      s.groups.clear();
+      s.list.replaceChildren();
+      s.setupSig = null;
+      setup.picks = null;
+      render();
+    }),
   );
   if (ctx.store.get('models')) render();
   else load();
@@ -104,8 +116,28 @@ async function load() {
 
 // ---------- data helpers ----------
 
+// GET /api/models as this profile shows it: in the chat profile only the entries Chat needs, and only those in the
+// download queue's run.
+let shownCache = {raw: null, profile: null, value: null};
 function data() {
-  return s.ctx.store.get('models');
+  const {store} = s.ctx;
+  const raw = store.get('models');
+  if (!raw || store.profile() !== 'chat') return raw;
+  if (shownCache.raw !== raw || shownCache.profile !== store.profile()) {
+    const models = raw.models.filter(store.shownModel);
+    const ids = new Set(models.map((m) => m.id));
+    const queue = raw.queue ? {...raw.queue, batch: raw.queue.batch.filter((id) => ids.has(id))} : raw.queue;
+    shownCache = {raw, profile: store.profile(), value: {...raw, models, queue}};
+  }
+  return shownCache.value;
+}
+
+function chatOnly() {
+  return s.ctx.store.profile() === 'chat';
+}
+
+function groupTitle(g) {
+  return g === CHAT_GROUP && chatOnly() ? CHAT_TITLE : GROUP_TITLE[g] || g;
 }
 
 function groupOf(m) {
@@ -216,8 +248,9 @@ function renderSummary(d) {
     stat(installed.length + ' of ' + models.length, 'installed'),
     stat('about ' + Math.round(used) + ' GB', 'used by downloaded models'),
     h('p', {class: 'help mac-note'},
-      'Each tool runs alone, so only its peak has to fit the memory. "Fits" keeps ' + d.machine.mem_reserve_gb +
-      ' GB free for macOS. The peaks were measured on a 48 GB M5 Pro. The used space adds up the download sizes.'),
+      (chatOnly() ? '' : 'Each tool runs alone, so only its peak has to fit the memory. ') + '"Fits" keeps ' +
+      d.machine.mem_reserve_gb + ' GB free for macOS. The peaks were measured on a 48 GB M5 Pro. ' +
+      'The used space adds up the download sizes.'),
   );
 }
 
@@ -240,7 +273,7 @@ function renderCards(d) {
     if (!sec) {
       const id = 'mg-' + g.toLowerCase();
       const list = h('div', {class: 'model-list'});
-      sec = {list, el: h('section', {class: 'model-group', 'aria-labelledby': id}, h('h2', {id}, groupIcon(g), GROUP_TITLE[g] || g), list)};
+      sec = {list, el: h('section', {class: 'model-group', 'aria-labelledby': id}, h('h2', {id}, groupIcon(g), groupTitle(g)), list)};
       s.groups.set(g, sec);
     }
     syncChildren(sec.list, groups.get(g).map((m) => {
@@ -613,7 +646,8 @@ function defaultPicks(d) {
   const byId = new Map(d.models.map((m) => [m.id, m]));
   const picks = new Set();
   for (const m of d.models) {
-    if (m.kind !== 'download' || blockedWhy(m, byId) || !(m.tools || []).length) continue;
+    // the full profile leaves out what no tool uses (the LLM); in the chat profile the LLM is the point
+    if (m.kind !== 'download' || blockedWhy(m, byId) || (!(m.tools || []).length && !chatOnly())) continue;
     const f = fit(m.peak_gb, d.machine.mem_total_gb, d.machine.mem_reserve_gb);
     if (f && f.k !== 'no') picks.add(m.id);
   }
@@ -783,7 +817,7 @@ function pickStep(d) {
   }
   const live = s.setupLive;
   const sets = [...groups].map(([g, ms]) => h('fieldset', {class: 'setup-group'},
-    h('legend', null, groupIcon(g), GROUP_TITLE[g] || g),
+    h('legend', null, groupIcon(g), groupTitle(g)),
     h('div', {class: 'setup-items'}, ms.map((m) => pickItem(m, d, byId)))));
 
   const anyMissing = all.some((m) => !m.installed);
@@ -793,7 +827,8 @@ function pickStep(d) {
     onclick: () => pickNext(d)});
   const intro = anyMissing ?
     'Workstation runs open models on this Mac and uploads nothing. The models are not included: you download each one once. ' +
-      'The picks below fit ' + (mem ? Math.round(mem) + ' GB' : 'this Mac') + ' and are used by a tool. Change them if you like.' :
+      'The picks below fit ' + (mem ? Math.round(mem) + ' GB' : 'this Mac') +
+      (chatOnly() ? ' and are what Chat needs.' : ' and are used by a tool. Change them if you like.') :
     'Every model that Workstation can download is installed.';
   return setupShell('Set up this Mac', 'Pick the models for this Mac', 1,
     h('p', {class: 'setup-intro'}, intro),

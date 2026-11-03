@@ -1,5 +1,6 @@
 // Hash routes: #/create, #/jobs, #/chat, #/library, #/models, #/settings, with optional params
 // (#/create?tool=video.extend). Cmd-1 to Cmd-6 (Ctrl on other systems) switch sections.
+// The chat profile shows only Chat, Models and Settings (Cmd-1 to Cmd-3); a route to another section opens Chat.
 
 import {lsGet, lsSet} from './ui.js';
 
@@ -11,9 +12,26 @@ export const VIEWS = [
   {id: 'models', title: 'Models', icon: 'models'},
   {id: 'settings', title: 'Settings', icon: 'settings'},
 ];
+// the sections of each profile, and the one a profile opens on
+const SHOWN = {full: VIEWS.map((v) => v.id), chat: ['chat', 'models', 'settings']};
+const HOME = {full: 'create', chat: 'chat'};
 
 let listener = null;
 let route = {view: null, params: {}};
+let profile = 'full';
+
+// The sections of the current profile, in sidebar order.
+export function views() {
+  return VIEWS.filter((v) => SHOWN[profile].includes(v.id));
+}
+
+export function home() {
+  return HOME[profile];
+}
+
+function shown(view) {
+  return SHOWN[profile].includes(view);
+}
 
 export function parse(hash) {
   const m = /^#\/([a-z]+)(?:\?(.*))?$/.exec(hash || '');
@@ -28,8 +46,9 @@ export function href(view, params) {
 
 function handle() {
   const r = parse(location.hash);
-  if (!r) {
-    history.replaceState(null, '', href(route.view || 'create'));
+  if (!r || !shown(r.view)) {
+    // an unknown route stays on the open section; a section this profile does not show opens its home
+    history.replaceState(null, '', href(!r && route.view && shown(route.view) ? route.view : home()));
     return handle();
   }
   route = r;
@@ -55,22 +74,32 @@ export function current() {
   return route;
 }
 
+// Switches the profile. When the open section is not in the new profile, its home opens.
+export function setProfile(next) {
+  if (!SHOWN[next] || next === profile) return;
+  profile = next;
+  if (listener && route.view && !shown(route.view)) handle();
+}
+
 export function start(onRoute) {
   listener = onRoute;
   window.addEventListener('hashchange', handle);
   document.addEventListener('keydown', (e) => {
-    if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || !/^[1-6]$/.test(e.key)) return;
+    if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || !/^[1-9]$/.test(e.key)) return;
+    const list = views();
+    const n = Number(e.key);
+    if (n > list.length) return;
     if (document.querySelector('dialog[open], .lightbox')) return;
     e.preventDefault();
-    go(VIEWS[Number(e.key) - 1].id);
+    go(list[n - 1].id);
   });
   if (!parse(location.hash)) {
     const last = lsGet('ws.view');
-    history.replaceState(null, '', href(VIEWS.some((v) => v.id === last) ? last : 'create'));
+    history.replaceState(null, '', href(shown(last) ? last : home()));
   }
   handle();
 }
 
-export const router = {VIEWS, parse, href, go, replace, current, start};
+export const router = {VIEWS, views, home, parse, href, go, replace, current, setProfile, start};
 
 export default router;

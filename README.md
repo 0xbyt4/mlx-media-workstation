@@ -14,7 +14,8 @@ other tools keep working.
 
 ## The app
 
-The sidebar has six sections. Cmd-1 to Cmd-6 open them.
+The sidebar has six sections. Cmd-1 to Cmd-6 open them. The chat profile shows only Chat, Models and Settings
+(Cmd-1 to Cmd-3); see [Chat only](#chat-only).
 
 - **Create**: pick a tool, fill in its form and press Generate. The "On this Mac" card shows the tool's peak memory,
   whether it fits this Mac, the expected time and the wait in the queue. "Improve" under a prompt field asks the local
@@ -30,9 +31,10 @@ The sidebar has six sections. Cmd-1 to Cmd-6 open them.
 - **Models**: what each tool needs, what is installed, the download size, the peak memory and whether it fits this
   Mac. It downloads weights one at a time from a queue. When models are missing, a setup card takes you through three
   steps: pick the models, accept the licences of the gated ones, and download.
-- **Settings**: the install paths in `config.toml`, the prompt help provider, the job options and facts about the
-  app. A path change takes effect after a restart. The job options apply at once: keep the Mac awake while jobs run,
-  show a macOS notification when a job is done or failed, and unload the local LLM after a chosen idle time.
+- **Settings**: the profile, the install paths in `config.toml`, the prompt help provider, the job options and facts
+  about the app. A path change takes effect after a restart. The profile and the job options apply at once: keep the
+  Mac awake while jobs run, show a macOS notification when a job is done or failed, and unload the local LLM after a
+  chosen idle time.
 
 | Jobs | Chat |
 |---|---|
@@ -108,18 +110,62 @@ The local LLM shares the memory with the jobs:
    ```sh
    .venv/bin/python start.py            # opens the app window
    .venv/bin/python start.py --browser  # server only: open http://127.0.0.1:7870 in a browser
+   .venv/bin/python start.py --chat     # the chat profile: Chat, Models and Settings only
    ```
 
 4. Install one or more models (next section).
 
-The app uses port 7870. If the port is in use (for example, the app is already open), `start.py` says so and stops.
-Closing the window, or Ctrl-C in `--browser` mode, cancels the queue and stops every model process.
+The app uses port 7870. If the port is in use, `start.py` asks the app on that port for its profile:
+
+- If the app there shows the other profile, `start.py` opens only a window on that app, in the profile you asked
+  for. It does not start a second server, so the local LLM loads only once. Closing this window does not stop the
+  app. With `--browser`, `start.py` prints the address of that window and stops.
+- In all other cases (the same profile, or a port that another program uses), `start.py` says so and stops.
+
+Closing the app's own window, or Ctrl-C in `--browser` mode, cancels the queue and stops every model process. A
+window that `start.py` opened on a running app then shows "Server offline".
 
 To start the app from Finder or the Dock, build `Workstation.app` in the repository folder and keep it there:
 
 ```sh
 osacompile -o Workstation.app docs/launcher.applescript
 ```
+
+## Chat only
+
+You can use Workstation only to chat with the local LLM, without the image, voice, music and video tools. The chat
+profile shows Chat, Models and Settings, and opens on Chat. It needs:
+
+- A Mac with about 26 GB of memory or more: the LLM's peak of about 18 GB plus the 8 GB reserve.
+- About 16 GB of disk for the Qwen3.8 27B weights, plus the two Python environments.
+- Homebrew `python@3.12` and `uv`. The chat does not use `ffmpeg`.
+
+Do these steps:
+
+1. Make the app's environment and `config.toml` (steps 1 and 2 of [Start the app](#start-the-app)).
+2. Make the LLM environment `venv-qwen` (step 1 of [Local LLM](#local-llm-qwen38-27b-mlx-vlm)).
+3. Start the app in the chat profile:
+
+   ```sh
+   .venv/bin/python start.py --chat
+   ```
+
+4. On the Models screen, download the Qwen3.8 27B weights. In the chat profile, the setup card shows only the LLM
+   environment and its weights. You can also download the weights in a terminal (step 2 of
+   [Local LLM](#local-llm-qwen38-27b-mlx-vlm)).
+
+To start in the chat profile without `--chat`, set `profile = "chat"` in the `[app]` section of `config.toml`, or
+choose "Chat only" in Settings > Profile. The Settings choice applies at once and saves `profile` in `config.toml`.
+`--chat` always starts the chat profile, whatever `config.toml` says.
+
+To start the chat from Finder or the Dock, build `Workstation Chat.app` in the repository folder and keep it there:
+
+```sh
+osacompile -o "Workstation Chat.app" docs/launcher-chat.applescript
+```
+
+If `Workstation.app` is already open, `Workstation Chat.app` opens a chat window on it instead of a second app
+(see [Start the app](#start-the-app)).
 
 ## Install the models
 
@@ -297,8 +343,8 @@ The code that runs the models is MIT-licensed: mflux, mlx-audio, ACE-Step 1.5, l
   the result files. The app reads these folders at start.
 - Each chat goes to `outputs/chats/<chat id>/`: `chat.json` and the images sent in it.
 - The local LLM writes its log to `outputs/llm.log`.
-- Started from `Workstation.app`, the app writes its log to `outputs/app.log`. Started from a terminal, it writes the
-  log to the terminal.
+- Started from `Workstation.app` or `Workstation Chat.app`, the app writes its log to `outputs/app.log`. Started
+  from a terminal, it writes the log to the terminal.
 
 ## How it works
 
