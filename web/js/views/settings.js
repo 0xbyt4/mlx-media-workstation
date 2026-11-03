@@ -798,7 +798,7 @@ function about() {
         faint((chatOnly() ? '' : 'Each job writes to outputs/<job id>/. ') + 'Chats are in outputs/chats/.')),
       row('Logs', mono('outputs/llm.log'), faint(' (local LLM)'), h('br'), mono('outputs/app.log'),
         faint(' (when started from Workstation.app or Workstation Chat.app)')),
-      row('Server', mono(location.host), faint(' on this Mac only. The app sends no data anywhere.')),
+      row('Server', mono(location.host), faint(' on this Mac only. The app sends no data off this Mac, except the agent\'s web tools after you approve a call.')),
     )),
     h('div', {class: 'set-row stack'},
       h('span', {class: 'label'}, 'README'),

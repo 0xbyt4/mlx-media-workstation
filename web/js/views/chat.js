@@ -321,10 +321,16 @@ function chipState(f) {
   return ['idle', 'Off', 'loads with the next message'];
 }
 
+// The toolbar line follows the mode: the agent's web tools send a query off this Mac after the user approves it.
+function subtitleFor(mode) {
+  return mode === 'agent' ? 'Runs on this Mac. Web tools send data only after you approve.' : 'Runs on this Mac. Nothing is uploaded.';
+}
+
 function renderHead() {
   const els = s.els;
   els.title.textContent = s.chat ? s.chat.title : memo.activeId ? 'Chat' : 'New chat';
   const mode = chatMode();
+  s.ctx.shell.setSubtitle(subtitleFor(mode));
   els.modeChip.hidden = !mode;
   if (mode) {
     const info = MODE_INFO[mode] || MODE_INFO.workstation;
@@ -1871,7 +1877,7 @@ function codeBlock(lang, text, done) {
 export default {
   id: 'chat',
   title: 'Chat',
-  subtitle: 'Runs on this Mac. Nothing is uploaded.',
+  subtitle: 'Runs on this Mac.', // renderHead adds what the mode sends
   mount,
   update,
   unmount,
