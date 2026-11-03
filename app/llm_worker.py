@@ -123,6 +123,15 @@ def neutralize(
             text = text.replace(token, token[0] + "\u2060" + token[1:])
         return text
 
+    def deep(
+        value: Any,
+    ) -> Any:  # tool-call arguments: the template writes their strings raw
+        if isinstance(value, dict):
+            return {k: deep(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [deep(v) for v in value]
+        return clean(value)
+
     out = []
     for msg in messages:
         if msg.get("role") != "system":
@@ -133,6 +142,8 @@ def neutralize(
             }
             if msg["reasoning_content"] is None:
                 del msg["reasoning_content"]
+            if msg.get("tool_calls"):
+                msg["tool_calls"] = [deep(call) for call in msg["tool_calls"]]
             if isinstance(msg["content"], list):
                 msg["content"] = [
                     {**part, "text": clean(part["text"])} if "text" in part else part

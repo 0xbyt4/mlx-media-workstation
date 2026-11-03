@@ -388,6 +388,18 @@ def test_special_tokens_in_message_text_are_broken():
         },
         {"role": "assistant", "content": evil, "reasoning_content": evil},
         {"role": "tool", "tool_call_id": "c1", "name": "fetch_url", "content": evil},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c2",
+                    "type": "function",
+                    "name": "run_python",
+                    "arguments": {"code": evil, "n": [evil, 3]},
+                }
+            ],
+        },
     ]
     out = llm_worker.neutralize(messages, specials)
     texts = [
@@ -396,6 +408,9 @@ def test_special_tokens_in_message_text_are_broken():
         out[2]["reasoning_content"],
         out[3]["content"],
     ]
+    args = out[4]["tool_calls"][0]["arguments"]
+    texts += [args["code"], args["n"][0]]  # the template writes argument strings raw
+    assert args["n"][1] == 3 and out[4]["tool_calls"][0]["name"] == "run_python"
     for text in texts:
         assert not any(token in text for token in specials)
         assert text.replace("⁠", "") == evil  # the reader still sees the same text
