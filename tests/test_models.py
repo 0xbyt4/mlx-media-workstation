@@ -4,6 +4,8 @@ Every Hub call and the download child process are replaced; nothing here touches
 """
 
 import errno
+import json
+import queue
 import re
 import signal
 import threading
@@ -61,23 +63,36 @@ def paths(tmp_path, monkeypatch):
 
 
 class FakeProc:
-    """Stands in for the download child: it runs until the test ends it or it is killed."""
+    """Stands in for the download child: it prints lines on stdout and runs until the test ends it or it is killed."""
 
     def __init__(self, on_exit):
         self.pid = 4242
         self.returncode = None
         self.on_exit = on_exit
-        self.ended = threading.Event()
-        self.out = ""
+        self.lines: queue.Queue[str | None] = queue.Queue()
+        self.stdout = self.read()
+
+    def read(self):
+        while (line := self.lines.get(timeout=5)) is not None:
+            yield line
+
+    def say(self, line: str) -> None:
+        self.lines.put(line + "\n")
+
+    def report(self, written: int, received: int) -> None:
+        self.say(
+            models.REPORT_TAG + json.dumps({"bytes": written, "transfer": received})
+        )
 
     def end(self, code: int, out: str = "") -> None:
-        self.returncode, self.out = code, out
-        self.ended.set()
+        self.returncode = code
+        for line in out.splitlines(keepends=True):
+            self.lines.put(line)
+        self.lines.put(None)
 
-    def communicate(self):
-        self.ended.wait(5)
+    def wait(self):
         self.on_exit(self)
-        return self.out, None
+        return self.returncode
 
 
 @pytest.fixture
@@ -339,10 +354,137 @@ def test_speed_and_time_left_follow_the_bytes_on_disk(paths, child, monkeypatch)
     # (2.2 - 1.2) GB over the 10 s since the anchor at t=24
     assert p["speed_mbs"] == 100.0
     assert p["eta_s"] == 28
-    # a stall gives speed 0 and no time left
+    # no new byte in the whole window gives speed 0 and no time left, but no stall yet
     at(46, 22 * 10**8)
     p = at(58, 22 * 10**8)
     assert (p["speed_mbs"], p["eta_s"]) == (0.0, None)
+    assert (p["idle_s"], p["stalled"]) == (24, False)
+
+
+def wait_report(done: int) -> None:
+    wait_for(lambda: models.reported(QWEN) == done)
+
+
+def test_reported_bytes_drive_the_progress_while_the_disk_stands_still(
+    paths, child, monkeypatch
+):
+    now = [100.0]
+    monkeypatch.setattr(models, "clock", lambda: now[0])
+    models.sizes_cache[QWEN.id] = {f: 10**9 for f in QWEN.files}  # 5 GB
+    write(models.target(QWEN) / QWEN.files[0], 10**3)  # on disk before the start
+    models.start(QWEN)
+    proc = running_proc(child, 1)
+    assert models.state["base"] == 10**3
+    p = models.progress(QWEN)
+    assert (p["done_gb"], p["speed_mbs"], p["idle_s"]) == (0.0, None, 0)
+    # xet: the network bytes grow, the written bytes (and the disk) stay in one block
+    proc.report(10**8, 3 * 10**8)
+    wait_report(10**3 + 3 * 10**8)
+    now[0] = 104.0
+    p = models.progress(QWEN)
+    assert (p["done_gb"], p["percent"]) == (0.3, 6.0)
+    assert (p["speed_mbs"], p["eta_s"]) == (75.0, 63)  # 4.7 GB left at 75 MB/s
+    # a written block that passes the received bytes counts too
+    proc.report(5 * 10**8, 4 * 10**8)
+    wait_report(10**3 + 5 * 10**8)
+    now[0] = 108.0
+    assert models.progress(QWEN)["done_gb"] == 0.5
+    assert models.summary()["left_gb"] == 4.5
+    proc.end(0)
+
+
+def test_disk_bytes_are_the_fallback_and_win_when_they_are_ahead(paths, child):
+    models.sizes_cache[QWEN.id] = {f: 10**9 for f in QWEN.files}
+    models.start(QWEN)
+    proc = running_proc(child, 1)
+    partial = models.partial_dir(QWEN) / "a.incomplete"
+    write(partial, 2 * 10**7)  # no report yet: the disk counts
+    assert models.progress(QWEN)["done_gb"] == 0.02
+    proc.report(10**7, 10**7)  # behind the disk
+    wait_report(10**7)
+    assert models.progress(QWEN)["done_gb"] == 0.02
+    proc.end(0)
+
+
+def test_a_long_stall_is_reported(paths, child, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(models, "clock", lambda: now[0])
+    models.sizes_cache[QWEN.id] = {f: 10**9 for f in QWEN.files}
+    models.start(QWEN)
+    proc = running_proc(child, 1)
+    models.progress(QWEN)
+    proc.report(0, 10**8)
+    wait_report(10**8)
+    # the UI polls every 2 s; nothing new arrives after t=102
+    for t in range(102, 162, 2):
+        now[0] = t
+        p = models.progress(QWEN)
+    assert (p["idle_s"], p["stalled"], p["speed_mbs"]) == (58, False, 0.0)
+    now[0] = 162.0
+    p = models.progress(QWEN)
+    assert (p["idle_s"], p["stalled"], p["eta_s"]) == (60, True, None)
+    proc.report(0, 2 * 10**8)  # data again: the stall ends at once
+    wait_report(2 * 10**8)
+    now[0] = 164.0
+    p = models.progress(QWEN)
+    assert (p["idle_s"], p["stalled"]) == (0, False)
+    assert p["speed_mbs"] > 0
+    proc.end(0)
+
+
+def test_report_lines_are_not_the_error(paths, child):
+    proc = start_qwen(child)
+    proc.report(10, 20)
+    proc.say(models.REPORT_TAG + "{not json")  # malformed: ignored, not shown
+    proc.end(1, "Could not reach Hugging Face.\n" + models.REPORT_TAG + "{}\n\n")
+    wait_for(lambda: models.state["status"] != "running")
+    assert models.state["error"] == "Could not reach Hugging Face."
+    p = models.progress(QWEN)  # a failed download counts only the files on disk
+    assert (p["status"], p["done_gb"], p["stalled"]) == ("failed", 0.0, False)
+
+
+def test_a_failed_child_without_text_shows_its_exit_code(paths, child):
+    proc = start_qwen(child)
+    proc.report(10, 20)
+    proc.end(-9)
+    wait_for(lambda: models.state["status"] != "running")
+    assert models.state["error"] == "Exit code -9."
+
+
+def test_parse_report():
+    tag = models.REPORT_TAG
+    assert models.parse_report(tag + '{"bytes": 5, "transfer": 7}\n') == {
+        "bytes": 5,
+        "transfer": 7,
+    }
+    for bad in ("{", "[]", '{"bytes": 5}', '{"bytes": "x", "transfer": 1}'):
+        assert models.parse_report(tag + bad) is None, bad
+
+
+def test_report_bars_print_throttled_byte_counts(monkeypatch, capsys):
+    now = [10.0]
+    monkeypatch.setattr(models, "clock", lambda: now[0])
+    monkeypatch.setattr(models.Report, "counts", {"bytes": 0, "transfer": 0})
+    monkeypatch.setattr(models.Report, "sent", float("-inf"))
+    # the bars snapshot_download makes, with its keyword arguments
+    received = models.Report(desc="Downloading bytes", total=0, initial=0, unit="B")
+    written = models.Report(desc="Reconstructing (incomplete total...)", unit="B")
+    files = models.Report(desc="Fetching 3 files", total=3)
+    with files:
+        files.update(1)  # file counts are not reported
+    assert capsys.readouterr().out == ""
+    received.update(100)
+    now[0] = 10.2
+    written.update(50)  # within REPORT_EVERY_S: counted, not printed yet
+    now[0] = 10.6
+    received.update(100)
+    written.set_postfix_str("x", refresh=False)
+    assert written.format_dict["rate"] is None
+    lines = capsys.readouterr().out.splitlines()
+    assert [models.parse_report(x) for x in lines] == [
+        {"bytes": 0, "transfer": 100},
+        {"bytes": 50, "transfer": 200},
+    ]
 
 
 def test_a_finished_download_has_no_speed(paths, child):
@@ -492,6 +634,7 @@ def test_fetch_into_the_configured_folder(paths, monkeypatch):
                 "revision": LTX.revision,
                 "allow_patterns": None,
                 "ignore_patterns": ["transformer-dev.safetensors"],
+                "tqdm_class": models.Report,
                 "local_dir": paths / "ltx_model",
             },
         )

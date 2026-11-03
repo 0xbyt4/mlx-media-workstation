@@ -159,7 +159,8 @@ other name. The job stays in the job list, also when it has no outputs left.
       "needs": null,
       "install": null,
       "download": {"status": "queued | running | done | failed | cancelled", "position": null, "error": null,
-                   "done_gb": 12.4, "total_gb": 54.1, "percent": 22.9, "speed_mbs": 85.2, "eta_s": 489}
+                   "done_gb": 12.4, "total_gb": 54.1, "percent": 22.9, "speed_mbs": 85.2, "eta_s": 489,
+                   "idle_s": 0, "stalled": false}
     }
   ],
   "queue": {
@@ -183,9 +184,15 @@ other name. The job stays in the job list, also when it has no outputs left.
   downloaded since the app started. A queued entry has `status: "queued"` and `position` (1 = it starts next); its
   other numbers are 0 or `null`. `position` is `null` in every other status. A failed or cancelled download keeps its
   `error` until the model is queued again.
+- `download.done_gb` counts the bytes the download has received or written (as the download reports them), or the
+  bytes on disk when that is more. Xet writes files in large blocks, so the bytes on disk alone can stand still while
+  data arrives.
 - `download.speed_mbs` is the speed in MB/s (10^6 bytes), averaged over at least the last 10 s of polls, and
   `download.eta_s` the seconds left at that speed. Both are `null` until the download has run for about 2 s, and when
-  it is not running; `eta_s` is also `null` while the speed is 0.
+  it is not running; `eta_s` is also `null` while the speed is 0. The speed is 0 only when no byte arrived in that
+  window.
+- `download.idle_s` is the seconds since the bytes last grew (`null` when the download is not running), and
+  `download.stalled` is true when `idle_s` is 60 or more.
 - Sizes are in GB of 10^9 bytes (as Hugging Face shows them); memory is in GB of 2^30 bytes (as `/api/system`).
 
 `queue` describes the download queue:

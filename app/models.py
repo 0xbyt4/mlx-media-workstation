@@ -4,13 +4,16 @@ Weights download with huggingface_hub at a pinned commit, into the path config.t
 Face cache for the models that mflux and mlx-audio load by name. Runtimes (model environments and checkouts) stay
 manual: their entry carries the README commands. One download runs at a time, in a child process
 (`python -m app.models <id>`), so a cancel stops it at once. Finished files stay and the next download skips them;
-partial files are deleted. Progress is the bytes on disk against the file sizes the Hub lists for that commit.
+partial files are deleted. Progress is counted against the file sizes the Hub lists for that commit. The child reports
+the bytes it has received and written (report lines on stdout); the bytes on disk are the fallback without a report.
+Xet writes a file in large blocks, so the disk alone can stand still for a minute while data arrives.
 
 More downloads wait in a queue. When a download ends (done, failed or cancelled), the download thread starts the next
 one. The lock guards `state`, `queue`, `history` and `batch`; request threads and download threads both change them.
 """
 
 import errno
+import json
 import os
 import shutil
 import signal
@@ -20,7 +23,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, Self
 
 import httpx2
 from huggingface_hub import HfApi, snapshot_download
@@ -46,6 +49,13 @@ RESERVE_GB = 8.0
 # so one slow or fast poll does not swing it. Below MIN_SPAN_S of samples there is no speed yet.
 SPEED_WINDOW_S = 10.0
 MIN_SPAN_S = 1.5
+# A download whose bytes have not grown for this long is "stalled"; the UI says so instead of showing a speed.
+STALL_S = 60.0
+# The child reports its byte counts on stdout as lines that start with REPORT_TAG, then JSON {"bytes": written,
+# "transfer": received from the network}, at most every REPORT_EVERY_S. Every other line is plain text, and the last
+# one is the error the user sees when the child fails.
+REPORT_TAG = "@progress "
+REPORT_EVERY_S = 0.5
 # The queue keeps this much disk free: macOS needs room for swap and updates.
 DISK_MARGIN_GB = 10.0
 clock = time.monotonic  # replaced in tests
@@ -296,7 +306,8 @@ uv pip install --python ~/mlx-media/venv-ltx/bin/python \\
 BY_ID = {m.id: m for m in MODELS}
 
 lock = threading.Lock()
-# the current or last download: id, status (running, done, failed, cancelled), error, sizes and the child process
+# the current or last download: id, status (running, done, failed, cancelled), error, sizes, the child process, the
+# bytes on disk when the child started (base) and the child's last report
 state: dict[str, Any] = {}
 # the model ids that wait to download, in order
 queue: list[str] = []
@@ -475,13 +486,31 @@ def order(ids: list[str], busy: set[str]) -> list[str]:
     return out
 
 
-def left_bytes(m: Model) -> int:
-    """The bytes m still has to download: the Hub sizes minus what is on disk, or the catalog size before the Hub was
-    asked."""
+def left_bytes(m: Model, got: int = 0) -> int:
+    """The bytes m still has to download: the Hub sizes minus what is on disk (or got, the reported bytes, when that is
+    more), or the catalog size before the Hub was asked."""
     sizes = sizes_cache.get(m.id)
     if sizes:
-        return max(0, sum(sizes.values()) - on_disk(m, sizes))
+        return max(0, sum(sizes.values()) - max(on_disk(m, sizes), got))
     return int((m.size_gb or 0) * 1e9)
+
+
+def reported(m: Model) -> int:
+    """The bytes of m's running download by the child's last report: the bytes on disk when it started plus the larger
+    of the bytes written and received. 0 without a report (call under the lock)."""
+    report = state.get("report")
+    if state.get("id") != m.id or state.get("status") != "running" or not report:
+        return 0
+    return state["base"] + max(report.values())
+
+
+def parse_report(line: str) -> dict[str, int] | None:
+    """The counts of a report line, or None when the line is malformed."""
+    try:
+        counts = json.loads(line[len(REPORT_TAG) :])
+        return {k: int(counts[k]) for k in ("bytes", "transfer")}
+    except (ValueError, TypeError, KeyError):
+        return None
 
 
 def disk_of(m: Model) -> int:
@@ -496,7 +525,7 @@ def check_disk(ids: list[str]) -> None:
     for i in ids:
         m = BY_ID[i]
         d = disk_of(m)
-        need[d] = need.get(d, 0) + left_bytes(m)
+        need[d] = need.get(d, 0) + left_bytes(m, reported(m))
         first.setdefault(d, m)
     for d, n in need.items():
         m = first[d]
@@ -565,7 +594,14 @@ def advance() -> Model | None:
         history.pop(m.id, None)
         state.clear()
         state.update(
-            id=m.id, status="running", error=None, sizes=None, proc=None, samples=[]
+            id=m.id,
+            status="running",
+            error=None,
+            sizes=None,
+            proc=None,
+            samples=[],
+            base=0,
+            report=None,
         )
         return m
     return None
@@ -605,7 +641,8 @@ def download(m: Model) -> None:
         fail(explain(e, m))
         return
     clean_partial(m)  # left by an app that closed or crashed mid-download
-    need, free = sum(sizes.values()) - on_disk(m, sizes), disk_free(m)
+    base = on_disk(m, sizes)
+    need, free = sum(sizes.values()) - base, disk_free(m)
     if need > free:
         fail(
             f"Not enough disk space: {m.label} needs {need / 1e9:.1f} GB more, "
@@ -615,7 +652,7 @@ def download(m: Model) -> None:
     with lock:  # check and start under the lock, so a cancel cannot slip in between
         if state["status"] != "running":
             return
-        state["sizes"] = sizes
+        state["sizes"], state["base"] = sizes, base
         proc = subprocess.Popen(
             [sys.executable, "-m", "app.models", m.id],
             cwd=ROOT,
@@ -626,7 +663,16 @@ def download(m: Model) -> None:
             start_new_session=True,
         )
         state["proc"] = proc
-    out, _ = proc.communicate()
+    lines = []
+    for line in proc.stdout:  # ends when the child exits or is killed
+        if not line.startswith(REPORT_TAG):
+            lines.append(line.strip())
+            continue
+        counts = parse_report(line)
+        with lock:
+            if counts and state.get("id") == m.id:
+                state["report"] = counts
+    proc.wait()
     clean_partial(m)
     missing = [f for f in m.files if not (target(m) / f).exists()]
     with lock:
@@ -634,9 +680,9 @@ def download(m: Model) -> None:
         if state["status"] != "running":  # cancelled
             return
         if proc.returncode != 0:
-            lines = out.strip().splitlines()
+            text = [line for line in lines if line]
             state["status"] = "failed"
-            state["error"] = lines[-1] if lines else f"Exit code {proc.returncode}."
+            state["error"] = text[-1] if text else f"Exit code {proc.returncode}."
         elif missing:
             state["status"] = "failed"
             state["error"] = f"The download finished without {', '.join(missing)}."
@@ -701,14 +747,17 @@ def progress(m: Model) -> dict[str, Any] | None:
                 "percent": 0.0,
                 "speed_mbs": None,
                 "eta_s": None,
+                "idle_s": None,
+                "stalled": False,
             }
         rec = state if state.get("id") == m.id else history.get(m.id)
         if rec is None:
             return None
         status, error, sizes = rec["status"], rec["error"], rec["sizes"]
+        got = reported(m)
     total = sum(sizes.values()) if sizes else 0
-    done = min(on_disk(m, sizes), total) if sizes else 0
-    speed = rate(m, done) if status == "running" and total else None
+    done = min(max(on_disk(m, sizes), got), total) if sizes else 0
+    speed, idle = rate(m, done) if status == "running" and total else (None, None)
     return {
         "status": status,
         "position": None,
@@ -716,29 +765,37 @@ def progress(m: Model) -> dict[str, Any] | None:
         "done_gb": round(done / 1e9, 2),
         "total_gb": round(total / 1e9, 2) if total else None,
         "percent": percent(done, total) if total else 0.0,
-        "speed_mbs": None if speed is None else round(speed / 1e6, 1),
+        "speed_mbs": None if speed is None else round(speed / 1e6, 2),
         "eta_s": round((total - done) / speed) if speed else None,
+        "idle_s": None if idle is None else int(idle),
+        "stalled": idle is not None and idle >= STALL_S,
     }
 
 
-def rate(m: Model, done: int) -> float | None:
-    """Bytes per second of m's running download, from the bytes on disk at each progress call.
+def rate(m: Model, done: int) -> tuple[float | None, float | None]:
+    """The bytes per second of m's running download and the seconds since its bytes last grew, from the bytes done at
+    each progress call.
 
     The speed spans the samples of the last SPEED_WINDOW_S seconds plus one older sample, so it is an average over at
-    least that window once the download has run that long. None until the samples span MIN_SPAN_S.
+    least that window once the download has run that long. It is None until the samples span MIN_SPAN_S, and 0 only
+    when no byte arrived in the whole window.
     """
     with lock:
         if state.get("id") != m.id:
-            return None
+            return None, None
         now = clock()
         samples = state.setdefault("samples", [])
         samples.append((now, done))
         while len(samples) > 2 and samples[1][0] <= now - SPEED_WINDOW_S:
             samples.pop(0)
         t0, b0 = samples[0]
+        grew = state.get("grew")  # (when the bytes last grew, the bytes then)
+        if grew is None or done > grew[1]:
+            state["grew"] = grew = (now, done)
+    idle = now - grew[0]
     if now - t0 < MIN_SPAN_S:
-        return None
-    return max(0, done - b0) / (now - t0)
+        return None, idle
+    return max(0, done - b0) / (now - t0), idle
 
 
 def view(m: Model, mem_gb: float) -> dict[str, Any]:
@@ -771,12 +828,14 @@ def summary() -> dict[str, Any]:
     with lock:
         running = state["id"] if state.get("status") == "running" else None
         queued, run_ids, run_no = list(queue), list(batch), batch_id
+        got = reported(BY_ID[running]) if running else 0
     waiting = ([running] if running else []) + queued
+    left = sum(left_bytes(BY_ID[i], got if i == running else 0) for i in waiting)
     return {
         "running": running,
         "queued": queued,
         "count": len(waiting),
-        "left_gb": round(sum(left_bytes(BY_ID[i]) for i in waiting) / 1e9, 1),
+        "left_gb": round(left / 1e9, 1),
         "batch": run_ids,
         "batch_id": run_no,
         "disk_margin_gb": DISK_MARGIN_GB,
@@ -792,6 +851,62 @@ def catalog() -> dict[str, Any]:
     }
 
 
+class Report:
+    """The progress bar class (tqdm_class) of the child's snapshot_download: it draws nothing and prints report lines.
+
+    snapshot_download makes three bars of this class: "Downloading bytes" (bytes received from the network), the
+    reconstruction bar (bytes written to the files) and a bar that counts finished files. The first two hold the bytes
+    of the files this run downloads, so files that were on disk already are not in them. Xet updates the received
+    bytes steadily but writes in large blocks; plain HTTP downloads update both together.
+    """
+
+    lock = threading.Lock()  # the bars are updated from the download threads
+    counts: ClassVar[dict[str, int]] = {"bytes": 0, "transfer": 0}
+    sent = float("-inf")
+
+    def __init__(self, *args, desc: str = "", total=None, initial=0, unit="it", **kw):
+        self.total, self.n = total, initial or 0
+        self.kind = None  # the file count is not reported
+        if unit == "B":
+            self.kind = "transfer" if desc.startswith("Downloading bytes") else "bytes"
+
+    def update(self, n: float | None = 1) -> None:
+        with Report.lock:
+            self.n += n or 0
+            if self.kind is None:
+                return
+            Report.counts[self.kind] = int(self.n)
+            now = clock()
+            if now - Report.sent < REPORT_EVERY_S:
+                return
+            Report.sent = now
+            print(REPORT_TAG + json.dumps(Report.counts), flush=True)
+
+    @property
+    def format_dict(self) -> dict[str, Any]:
+        return {"rate": None}
+
+    def set_description(self, desc: str | None = None, refresh: bool = True) -> None:
+        pass
+
+    set_description_str = set_description
+
+    def set_postfix_str(self, s: str = "", refresh: bool = True) -> None:
+        pass
+
+    def refresh(self, *args, **kwargs) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *args) -> None:
+        pass
+
+
 def fetch(m: Model) -> None:
     """Download m's weights at the pinned commit (runs in the child process)."""
     where = {"cache_dir": HF_HUB} if m.path_key is None else {"local_dir": target(m)}
@@ -800,6 +915,7 @@ def fetch(m: Model) -> None:
         revision=m.revision,
         allow_patterns=list(m.allow) or None,
         ignore_patterns=list(m.ignore) or None,
+        tqdm_class=Report,
         **where,
     )
     if m.path_key is None:
