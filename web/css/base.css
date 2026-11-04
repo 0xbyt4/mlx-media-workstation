@@ -228,8 +228,10 @@ code,
   font-size: var(--fs-xs);
   padding: 1px 5px;
   border-radius: var(--r-xs);
-  border: 1px solid currentColor;
-  opacity: 0.75;
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 1px 0 var(--border-strong);
+  background: var(--surface);
+  color: var(--text-2);
   font-weight: 500;
 }
 
@@ -357,7 +359,7 @@ code,
 .textarea {
   width: 100%;
   padding: 7px 10px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   border-radius: var(--r-sm);
   background: var(--input);
   color: var(--text);
@@ -409,7 +411,7 @@ code,
   width: 30px;
   height: 18px;
   border-radius: var(--r-pill);
-  background: var(--border-strong);
+  background: var(--border-control);
   position: relative;
   transition: background 0.15s;
   flex: none;
@@ -643,6 +645,42 @@ details.tech > summary {
   font-size: var(--fs-sm);
   color: var(--text-2);
   width: max-content;
+}
+/* Small disclosures (details.tech and the views' folds) show a chevron like the larger ones, not the platform
+   triangle. */
+details.tech > summary,
+.v-models .model-more > summary,
+.v-chat .tool-fold > summary,
+.v-chat .approval-args > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+details.tech > summary::-webkit-details-marker,
+.v-models .model-more > summary::-webkit-details-marker,
+.v-chat .tool-fold > summary::-webkit-details-marker,
+.v-chat .approval-args > summary::-webkit-details-marker {
+  display: none;
+}
+details.tech > summary::before,
+.v-models .model-more > summary::before,
+.v-chat .tool-fold > summary::before,
+.v-chat .approval-args > summary::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 1px 0 2px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg);
+}
+details.tech[open] > summary::before,
+.v-models .model-more[open] > summary::before,
+.v-chat .tool-fold[open] > summary::before,
+.v-chat .approval-args[open] > summary::before {
+  transform: rotate(45deg);
 }
 details.tech[open] > summary {
   margin-bottom: 6px;
@@ -916,7 +954,7 @@ details.tech[open] > summary {
   width: 100%;
   max-height: 420px;
   object-fit: contain;
-  background: #0b0c10;
+  background: var(--media-bg);
   border-radius: var(--r-sm);
 }
 .media-img img {

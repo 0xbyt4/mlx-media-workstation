@@ -99,7 +99,7 @@
   display: block;
 }
 .v-library .thumb video {
-  background: #0b0c10; /* media placeholder: the frame before the poster loads */
+  background: var(--media-bg); /* the frame before the poster loads */
 }
 .v-library .lib-ph {
   position: absolute;
@@ -114,12 +114,12 @@
   z-index: 1;
   padding: 0 6px;
   border-radius: var(--r-xs);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   line-height: 16px;
   font-weight: 600;
   /* media overlay: the same on light and dark media, like the lightbox */
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
+  background: var(--media-tag-bg);
+  color: var(--on-media);
 }
 .v-library .kind-tag {
   left: 6px;

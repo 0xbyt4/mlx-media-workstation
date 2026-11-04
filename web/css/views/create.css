@@ -105,6 +105,17 @@
 .v-create .tool-notice:empty {
   display: none;
 }
+/* With the setup banner on top, that banner holds the page's one primary action: the tool notice under it uses a
+   plain button for the same way to Models. */
+.v-create .create-setup:not(:empty) + .create .tool-notice .btn-primary {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.v-create .create-setup:not(:empty) + .create .tool-notice .btn-primary:hover {
+  background: var(--surface-2);
+  border-color: var(--text-3);
+}
 .v-create .fields {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));

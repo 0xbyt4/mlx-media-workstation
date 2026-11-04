@@ -442,6 +442,9 @@
   padding: 4px 8px;
   text-align: left;
   vertical-align: top;
+  /* not "anywhere" (the bubble's): that lets a narrow column break a word into single letters; a long word
+     widens the table, and .md-table scrolls */
+  overflow-wrap: break-word;
 }
 .v-chat .md th {
   background: var(--surface-2);
@@ -565,6 +568,9 @@
   background: var(--surface);
   text-align: left;
 }
+.v-chat .example:last-child:nth-child(odd) {
+  grid-column: 1 / -1; /* an odd last example fills the row, so the grid has no hole */
+}
 .v-chat .example:hover:not(:disabled) {
   border-color: var(--accent);
   box-shadow: var(--shadow-md);
@@ -599,7 +605,7 @@
   color: var(--err);
 }
 .v-chat .composer {
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   border-radius: var(--r-lg);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
@@ -1154,6 +1160,9 @@
   }
   .v-chat .thread-title {
     min-width: 0;
+  }
+  .v-chat .model-chip:has(.pill-idle, .pill-ok) .sub {
+    display: none; /* "Off" and "Ready" say enough here; the title keeps the room */
   }
   .v-chat .composer-hint {
     display: none;
