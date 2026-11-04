@@ -1,4 +1,4 @@
--- Source of Workstation.app (build it in the repository folder: osacompile -o Workstation.app docs/launcher.applescript).
+-- Source of Workstation.app (build it in the repository folder with scripts/build_apps.sh).
 -- Starts the workstation window in the background and returns at once; the log goes to outputs/app.log.
 -- The app runs the repository it sits in, so keep Workstation.app in that folder (drag it to the Dock from there).
 -- Only the python command is backgrounded and none of its streams stay on this applet's pipe, so the applet exits

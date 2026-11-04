@@ -1,5 +1,5 @@
--- Source of Workstation Chat.app (build it in the repository folder:
--- osacompile -o "Workstation Chat.app" docs/launcher-chat.applescript).
+-- Source of Workstation Chat.app (build it in the repository folder with
+-- scripts/build_apps.sh).
 -- The same as docs/launcher.applescript, with --chat: the window shows only Chat, Models and Settings. When
 -- Workstation.app is open already, it opens only a chat window on that app's server, so the model loads once.
 -- The app runs the repository it sits in, so keep Workstation Chat.app in that folder (drag it to the Dock from there).

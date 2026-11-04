@@ -45,6 +45,7 @@ os.environ["PATH"] = os.pathsep.join(
 sys.path.insert(0, str(ROOT))
 HOST, PORT = "127.0.0.1", 7870
 TOKEN_FILE = ROOT / "outputs" / ".server-token"  # written by app/server.py start()
+ICON = ROOT / "assets" / "icon.png"  # the window's Dock icon (scripts/make_icon.py)
 URL = f"http://{HOST}:{PORT}"
 TITLES = {"full": "Workstation", "chat": "Workstation Chat"}
 # width, height and smallest size of the window; a chat window needs less room than the media forms
@@ -145,6 +146,23 @@ def sign_in_url(token: str, page: str = URL) -> str:
     return f"{URL}/auth?" + urllib.parse.urlencode({"t": token, "next": path})
 
 
+def dock_identity(title: str) -> None:
+    """Show the window's process in the Dock and the menu bar as the app, not as Python: its title and ICON."""
+    try:
+        from AppKit import NSApplication, NSImage
+        from Foundation import NSBundle
+    except ImportError:  # not macOS: pywebview uses another backend
+        return
+    info = NSBundle.mainBundle().infoDictionary()
+    if info is not None:
+        info["CFBundleName"] = title
+    image = (
+        NSImage.alloc().initWithContentsOfFile_(str(ICON)) if ICON.exists() else None
+    )
+    if image is not None:
+        NSApplication.sharedApplication().setApplicationIconImage_(image)
+
+
 def open_window(profile: str, url: str) -> None:
     import webview
 
@@ -155,6 +173,7 @@ def open_window(profile: str, url: str) -> None:
     webview.create_window(
         TITLES[profile], url, width=width, height=height, min_size=min_size
     )
+    dock_identity(TITLES[profile])
     webview.start()
 
 

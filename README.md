@@ -134,11 +134,16 @@ The app uses port 7870. If the port is in use, `start.py` asks the app on that p
 Closing the app's own window, or Ctrl-C in `--browser` mode, cancels the queue and stops every model process. A
 window that `start.py` opened on a running app then shows "Server offline".
 
-To start the app from Finder or the Dock, build `Workstation.app` in the repository folder and keep it there:
+To start the app from Finder or the Dock, build `Workstation.app` and `Workstation Chat.app` in the repository folder
+and keep them there:
 
 ```sh
-osacompile -o Workstation.app docs/launcher.applescript
+scripts/build_apps.sh
 ```
+
+The script compiles `docs/launcher.applescript` and `docs/launcher-chat.applescript` with `osacompile`, gives both
+apps the icon `assets/AppIcon.icns` and signs them again (ad hoc). The open window shows the same icon in the Dock
+(`assets/icon.png`). `scripts/make_icon.py` draws both icon files from the colours of `web/css/tokens.css`.
 
 ## Chat only
 
@@ -168,11 +173,8 @@ choose "Chat only" in Settings > Profile. The Settings choice applies at once an
 `--chat` always starts the chat profile, whatever `config.toml` says. Settings > Profile names the saved profile,
 so you can see which profile the next start without `--chat` uses.
 
-To start the chat from Finder or the Dock, build `Workstation Chat.app` in the repository folder and keep it there:
-
-```sh
-osacompile -o "Workstation Chat.app" docs/launcher-chat.applescript
-```
+To start the chat from Finder or the Dock, use `Workstation Chat.app`. `scripts/build_apps.sh` builds it together
+with `Workstation.app` (see [Start the app](#start-the-app)).
 
 If `Workstation.app` is already open, `Workstation Chat.app` opens a chat window on it instead of a second app
 (see [Start the app](#start-the-app)).
