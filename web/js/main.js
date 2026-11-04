@@ -135,7 +135,9 @@ function renderDock() {
   const p = run.progress || {};
   const known = typeof p.fraction === 'number';
   const pct = known ? Math.round(p.fraction * 100) : null;
-  const fill = h('div', {class: 'progress-fill', style: {width: known ? (p.fraction * 100).toFixed(1) + '%' : null}});
+  const width = known ? (p.fraction * 100).toFixed(1) + '%' : null;
+  const was = known ? dock.querySelector('.progress-fill') : null; // the new bar moves on from the old one's width
+  const fill = h('div', {class: 'progress-fill', style: {width: was && was.style.width ? was.style.width : width}});
   dock.replaceChildren(h('button', {
     type: 'button', class: 'dock', onclick: () => router.go('jobs'),
     'aria-label': 'Running: ' + label + (known ? ', ' + pct + ' percent' : '') + '. Open Jobs',
@@ -145,6 +147,10 @@ function renderDock() {
   h('div', {class: 'progress sm' + (known ? '' : ' indeterminate')}, fill),
   h('span', {class: 'dock-sub'}, h('span', null, p.stage || 'Starting'), h('span', null, fmtLeft(p.eta_s))),
   queued ? h('span', {class: 'dock-sub'}, h('span', null, queued + ' queued')) : null));
+  if (width && fill.style.width !== width) {
+    void fill.offsetWidth; // lay out the old width first, so the width transition runs
+    fill.style.width = width;
+  }
   pillEl.hidden = false;
   pillEl.replaceChildren(h('span', {class: 'spinner sm'}), h('span', {class: 'num'}, label + (known ? ' ' + pct + '%' : '')));
   pillEl.setAttribute('aria-label', 'Running: ' + label + '. Open Jobs');
@@ -251,7 +257,26 @@ function guardNavigation() {
   });
 }
 
+// A view builds its spinners, running pills and progress bars again on many updates (each streamed token in Chat,
+// each poll in the sidebar). A new one would start its animation from the beginning and look stuck, so each one
+// starts at the phase of one shared clock instead (--motion-phase in motion.css). 11.2 s is a multiple of every
+// period: spinner 0.8 s, pulse 1.4 s, progress sheen and slide 1.6 s.
+const ACTIVITY = '.spinner, .pill-run, .progress-fill';
+function syncActivity() {
+  const phase = (el) => el.style.setProperty('--motion-phase', -Math.round(performance.now() % 11200) + 'ms');
+  new MutationObserver((records) => {
+    for (const r of records) {
+      for (const n of r.addedNodes) {
+        if (n.nodeType !== 1) continue;
+        if (n.matches(ACTIVITY)) phase(n);
+        for (const el of n.querySelectorAll(ACTIVITY)) phase(el);
+      }
+    }
+  }).observe(document.body, {childList: true, subtree: true});
+}
+
 function boot() {
+  syncActivity();
   renderTheme(ui.getTheme());
   ui.onTheme(renderTheme);
   $('theme-btn').addEventListener('click', () => ui.setTheme(NEXT_THEME[ui.getTheme()]));

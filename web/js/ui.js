@@ -195,7 +195,11 @@ export function toast(msg, opts = {}) {
   const el = h('div', {class: 'toast' + (opts.kind ? ' ' + opts.kind : '')}, h('span', null, msg));
   const close = () => {
     clearTimeout(timer);
-    el.remove();
+    if (!el.isConnected || el.classList.contains('is-leaving')) return;
+    // fades out (motion.css), then goes; the timer removes it also when no animation runs
+    el.classList.add('is-leaving');
+    el.addEventListener('animationend', () => el.remove(), {once: true});
+    setTimeout(() => el.remove(), 400);
   };
   if (opts.action) {
     el.appendChild(h('button', {type: 'button', onclick: () => {

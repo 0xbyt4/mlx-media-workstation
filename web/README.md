@@ -14,6 +14,7 @@ The design is in `docs/DESIGN.md` and `docs/design/mock.html`. The endpoints are
 | `css/base.css` | Shared components. The class names are listed at the top of the file. |
 | `css/shell.css` | Sidebar, job dock, memory meter, toolbar, narrow layouts. |
 | `css/views/<view>.css` | The styles of one view. |
+| `css/motion.css` | Motion tokens (durations, easings) and the enter and leave animations of all parts. |
 | `js/main.js` | Boot: theme, store, router, sidebar, toolbar, view mounting. |
 | `js/api.js` | Fetch wrappers for every endpoint, `ApiError`, the SSE reader, `poll()`. |
 | `js/store.js` | Shared state, events and the one polling loop. |
