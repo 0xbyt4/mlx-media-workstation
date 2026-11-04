@@ -53,13 +53,39 @@ as a video, starts after the answer ends.
 Create opens that tool with the text in its field. Read it, then press Generate. Lyrics for ACE-Step 1.5 also turn
 its Instrumental switch off, so the song is sung.
 
-## Ask about an image
+## Ask about images, documents and audio
 
-1. Press the image button under the message box, or drop or paste the images on the chat.
+1. Press "Attach" under the message box, or drop or paste the files on the chat.
 2. Type your question.
 3. Press Return.
 
-You can attach up to 4 images to a message: PNG, JPEG or WebP, 20 MB each.
+The model reads images itself. Of a document it reads the text, and of an audio file a transcript.
+
+| You attach | Types | Max size |
+|---|---|---|
+| Images | PNG, JPEG, WebP | 20 MB |
+| Text and code | TXT, Markdown, CSV, TSV, JSON, XML, YAML, logs, subtitles and source code | 50 MB |
+| Documents | PDF, Word (DOC, DOCX), RTF, OpenDocument text (ODT), HTML | 50 MB |
+| Spreadsheets | Excel (XLSX), OpenDocument (ODS) | 50 MB |
+| Audio | WAV, MP3, M4A, AAC, FLAC, OGG, AIFF | 200 MB |
+
+- A message takes up to 6 files. Up to 4 of them can be images.
+- Each file shows as a chip with its state: "Reading...", "Transcribing...", "Read in full", "Transcribed", "Cut to
+  fit" or "Failed" with the reason.
+- The model sees a part of a long file only. The chip then says what the model got, for example "the first 29,850 of
+  95,123 characters (pages 1 to 12 of 40)". To send another part, copy it into the message.
+- Under a sent file, the file button downloads the text that the model read. The download button downloads the file.
+- A scanned PDF has no text, and the app does not read text in pictures. Attach the pages as images instead.
+- Pages, Numbers and Keynote files cannot be read. Export them as PDF, Word or Excel first.
+
+An audio file is transcribed before the answer starts. The Transcribe tool (Qwen3-ASR) does this as a media job, so
+it shows in Jobs too. The chat shows "Transcribing" with the progress. Stop cancels the job. When a transcription
+fails, the model still answers and knows that the file has no text. Regenerate tries the transcription again.
+
+The chat profile has no Transcribe tool, so it does not take audio. Speech recognition must be installed in Models.
+
+In an agent chat, a document or audio file counts as untrusted content: after it, every call that sends data off
+this Mac or queues a job asks you first. See [Agent mode](agent-mode.md).
 
 ## Pick a thinking level
 
@@ -108,7 +134,7 @@ The LLM and a media job share the memory.
 ## Manage chats
 
 - To find a chat, type in "Search chats".
-- To delete a chat, press its delete button, then press Delete. This deletes the chat and its images.
+- To delete a chat, press its delete button, then press Delete. This deletes the chat and its images and files.
 - To free the LLM's memory now, press the unload button in the chat header. The model loads again with the next
   message.
 

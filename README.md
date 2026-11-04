@@ -10,8 +10,8 @@ service.
 - **11 tools in 5 groups**: images (MOSS-Image, FLUX.3 Klein, Klein Edit), voice (Fish Drama 3, Transcribe), music
   (ACE-Step 1.5), video with sound (LTX-2.5: text, image, voice and extend) and a video + music mix.
 - **Prompt help**: "Improve" under a prompt field asks the local LLM to rewrite your draft for that tool.
-- **Chat**: talk with a local Qwen3.8 27B. Attach images, pick a thinking level, and let it write prompts for the
-  tools or queue the jobs itself.
+- **Chat**: talk with a local Qwen3.8 27B. Attach images, documents (PDF, Word, Excel, text and code) or audio,
+  pick a thinking level, and let it write prompts for the tools or queue the jobs itself.
 - **Agent mode**: the chat model can search the web, read files in a folder you grant, run code in a sandbox and
   queue jobs. Each risky call asks you first.
 - **Jobs and Library**: a queue with live progress and time left, and a searchable library of every output.
@@ -196,9 +196,12 @@ The sidebar has six sections. Cmd-1 to Cmd-6 open them.
 
 ### Chat and agent mode
 
-You can attach up to 4 images to a message. A thinking level sets how long the model thinks before it answers: Off,
-Low, Medium, High, XHigh or Max. Settings > Local LLM sets the level of a new chat. A chat keeps the last level that
-you used in it.
+You can attach up to 6 files to a message: up to 4 images (PNG, JPEG, WebP), text and code files, PDF, Word, RTF,
+OpenDocument, Excel and HTML documents, and audio (WAV, MP3, M4A, AAC, FLAC, OGG, AIFF). The model reads the text of
+a document and a transcript of an audio file. See [Chat](docs/guide/chat.md#ask-about-images-documents-and-audio).
+
+A thinking level sets how long the model thinks before it answers: Off, Low, Medium, High, XHigh or Max. Settings >
+Local LLM sets the level of a new chat. A chat keeps the last level that you used in it.
 
 A new chat has one of three modes. The mode is fixed after the first message.
 
@@ -536,7 +539,8 @@ ends.
 
 - Each job goes to `outputs/<job id>/`: `job.json` (the settings and the state), `job.log` (the model's output) and
   the result files. The app reads these folders at start.
-- Each chat goes to `outputs/chats/<chat id>/`: `chat.json` and the images sent in it.
+- Each chat goes to `outputs/chats/<chat id>/`: `chat.json`, the images and files sent in it, and the text that the
+  model read of each file.
 - The local LLM writes its log to `outputs/llm.log`.
 - When you start the app from `Workstation.app` or `Workstation Chat.app`, it writes its log to `outputs/app.log`.
   When you start it from a terminal, it writes the log to the terminal.

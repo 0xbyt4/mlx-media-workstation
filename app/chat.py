@@ -1,6 +1,7 @@
 """Chat with the local LLM: conversations stored on disk, answers streamed to the page.
 
-Each chat is a folder outputs/chats/<id>/ with chat.json (the messages) and the images sent in it. An answer runs in
+Each chat is a folder outputs/chats/<id>/ with chat.json (the messages) and the images and files sent in it (a file's
+text for the model is stored next to it: app/attachments.py). An answer runs in
 its own thread and is saved when it ends, whether or not the page still listens: the page reads it as server-sent
 events from POST .../messages and can reconnect with GET .../stream. Stop cancels it between tokens. The model sees as
 many recent turns as fit in CONTEXT_TOKENS.
@@ -36,7 +37,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from app import config, effort, llm, tools
+from app import attachments, config, effort, llm, tools
 from app.agent import (
     Action,
     Context,
@@ -57,7 +58,7 @@ from app.agent import (
     work_dir,
     ws_tools,
 )
-from app.agent.registry import MAX_RESULT, cap
+from app.agent.registry import MAX_RESULT, Cancelled, cap
 from app.agent.sandbox import remove_tree
 from app.config import ROOT
 
@@ -69,6 +70,18 @@ IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 MAX_IMAGES = 4  # per message
 MAX_IMAGE = 20 * 1024 * 1024
 MAX_TEXT = 20000  # characters per message
+# an audio file's transcription before the answer: its own limit (the answer's TURN_SECONDS starts after it)
+TRANSCRIBE_SECONDS = 1800.0
+POLL_SECONDS = 1.0  # how often the chat looks at a transcription job
+# the end of an answer that Stop ended before its first model step (during a transcription)
+STOPPED_EARLY = {
+    "event": "done",
+    "finish": "cancelled",
+    "content": "",
+    "reasoning": "",
+    "stats": {},
+}
+FILE_TOKENS = 100  # an attached file's block around its text (name, type, size, notes)
 # the 16 full-attention layers take 64 KiB of KV cache per token: 32K tokens is 2 GiB on top of the weights
 CONTEXT_TOKENS = 32768
 IMAGE_TOKENS = 1100  # an image at the worker's 1024x1024 pixel cap
@@ -545,10 +558,12 @@ def summary(chat: dict[str, Any]) -> dict[str, Any]:
 
 
 def tokens(msg: dict[str, Any]) -> int:
-    """A rough count (about 3 characters a token across languages), plus the images and tool calls."""
+    """A rough count (about 3 characters a token across languages), plus the images, attached files and tool calls."""
     text = msg.get("content", "") + msg.get("reasoning", "") + msg.get("nudge", "")
     calls = msg.get("tool_calls")
     extra = len(json.dumps(calls, ensure_ascii=False)) // 3 if calls else 0
+    files = msg.get("files") or []
+    extra += sum(int(f.get("chars") or 0) // 3 + FILE_TOKENS for f in files)
     return len(text) // 3 + 8 + IMAGE_TOKENS * len(msg.get("images", [])) + extra
 
 
@@ -668,7 +683,11 @@ def model_input(
     for msg in (m for turn in turns for m in turn):
         if msg["role"] == "user":
             parts: list[dict[str, Any]] = [{"type": "image"} for _ in msg["images"]]
-            parts.append({"type": "text", "text": msg["content"]})
+            text = msg["content"]
+            # each attached file's stored text in its block, before the user's text
+            if msg.get("files"):
+                text = attachments.prompt(CHATS / chat["id"], msg["files"], text)
+            parts.append({"type": "text", "text": text})
             images += [str(CHATS / chat["id"] / name) for name in msg["images"]]
             messages.append({"role": "user", "content": parts})
         elif msg["role"] == "tool":
@@ -735,6 +754,167 @@ def room(
     return CONTEXT_TOKENS - used
 
 
+# ---------- attached files ----------
+
+
+def level_of(chat: dict[str, Any], level: str | None) -> str:
+    """The thinking level of a message: the one it asks for, else the chat's last one, else the Settings default."""
+    if level is None:
+        level = chat.get("effort")
+        level = level if level in effort.LEVELS else config.APP.chat_effort
+    return level
+
+
+def file_room(
+    chat: dict[str, Any], level: str, text: str, images: int, files: int
+) -> int:
+    """The characters of file text that one message may send to the model, its files together (attachments.share
+    splits them). It is TRIM_TO of the input budget as model_input counts it at this thinking level, less the
+    message's own text, images and file blocks: with the older turns trimmed away the new turn fits, also when a later
+    answer thinks longer."""
+    budget = CONTEXT_TOKENS - effort.reserve(level) - len(system_prompt(chat)) // 3
+    if mode_of(chat) == "agent":
+        try:
+            reg = registry()
+            schemas = reg.schemas(offered(agent_of(chat), reg))
+            budget -= len(json.dumps(schemas, ensure_ascii=False)) // 3
+        except RuntimeError:  # no tools: the answer reports that
+            pass
+    left = int(budget * TRIM_TO) - len(text) // 3 - IMAGE_TOKENS * images
+    left -= FILE_TOKENS * files
+    return max(attachments.MIN_ROOM, min(attachments.MAX_ROOM, left * 3))
+
+
+def transcriber() -> Tool | None:
+    """The transcribe_audio tool (app/agent/ws_tools.py) on the server's port: an attached audio file takes the same
+    path as the agent's transcriptions (a voice.transcribe job). None without media tools (the chat profile)."""
+    if port is None or config.APP.profile == "chat":
+        return None
+    return next(t for t in ws_tools.build(port) if t.name == "transcribe_audio")
+
+
+def audio_refusal() -> str | None:
+    """Why the chat cannot transcribe an attached audio file now, or None."""
+    if transcriber() is None or port is None:
+        return (
+            "audio needs the Transcribe media tool, which the chat profile does not have. Start the full app to "
+            "attach audio."
+        )
+    tool = next((t for t in port.list_tools() if t["id"] == ws_tools.TRANSCRIBE), None)
+    if tool is None or not tool.get("installed", True):
+        return (
+            "speech recognition is not installed on this Mac. Install Qwen3-ASR 0.6B and the Fish Drama 3 "
+            "environment in Models."
+        )
+    return None
+
+
+def file_event(run: Live, i: int, entry: dict[str, Any], detail: str = "") -> None:
+    ev: dict[str, Any] = {"event": "file", "index": i, "file": entry}
+    run.events.append({**ev, "detail": detail} if detail else ev)
+
+
+def job_detail(job: dict[str, Any]) -> str:
+    """A transcription job's state in a few words, for the file's chip."""
+    if job.get("status") == "queued":
+        where = f" (place {job['position']})" if job.get("position") else ""
+        return f"Waiting in the job queue{where}"
+    fraction = (job.get("progress") or {}).get("fraction")
+    return (
+        f"Transcribing, {round(100 * float(fraction))}%"
+        if fraction is not None
+        else "Transcribing"
+    )
+
+
+def prepare_files(chat_id: str, run: Live) -> bool:
+    """Before the answer's first model step: send the state of the answered message's files to the page, and
+    transcribe its audio files that have no transcript yet (a new message, or Regenerate after a failure). A
+    transcription runs before the answer takes the model's memory lease, so its job claims memory like any job.
+    Returns False when Stop ended it."""
+    with lock:
+        chat = load(chat_id)
+    users = [i for i, m in enumerate(chat["messages"]) if m["role"] == "user"]
+    n = users[-1] if users else None
+    files = list(chat["messages"][n].get("files") or []) if n is not None else []
+    for i, entry in enumerate(files):
+        file_event(run, i, entry)
+    for i, entry in enumerate(files):
+        if entry.get("kind") != "audio" or entry.get("state") == "ready":
+            continue
+        if run.stop:
+            return False
+        entry = transcribe_file(chat_id, run, i, entry)
+        with lock:
+            chat = load(chat_id)
+            chat["messages"][n]["files"][i] = entry
+            save(chat)
+        file_event(run, i, entry)
+    return not run.stop
+
+
+def cancel_quietly(job: str | None) -> None:
+    if job and port is not None:
+        try:
+            port.cancel_job(job)
+        except ValueError:  # gone already
+            pass
+
+
+def transcribe_file(
+    chat_id: str, run: Live, i: int, entry: dict[str, Any]
+) -> dict[str, Any]:
+    """Transcribe one attached audio file with the transcribe_audio tool and store the part of the transcript that
+    fits the file's share ("room"). Returns the entry in its new state: "ready", or "failed" with the reason. Stop
+    cancels the job."""
+    entry = {k: v for k, v in entry.items() if k not in ("error", "cut", "job")}
+    entry["state"] = "transcribing"
+    file_event(run, i, entry, "Starting")
+    tool = transcriber()
+    job: str | None = None
+    try:
+        if tool is None or port is None:
+            raise ToolError(audio_refusal() or "audio cannot be transcribed.")
+        # the call's work folder is the chat's own folder, where the file is stored: "work:" finds it there with the
+        # file tools' checks. Its own abort flag: Stop is checked below, where the job id is known, so it can cancel it.
+        ctx = Context(chat_id, None, threading.Event(), CHATS / chat_id)
+        args = {"audio": f"work:{entry['file']}", "language": "auto", "seconds": 1}
+        out = tool.run(args, ctx)
+        job = out.job
+        entry["job"] = job
+        end = time.monotonic() + TRANSCRIBE_SECONDS
+        shown = ""
+        while True:
+            state = port.job_status(job or "") or {}
+            if state.get("status") not in ("queued", "running"):
+                break
+            detail = job_detail(state)
+            if detail != shown:
+                file_event(run, i, entry, detail)
+                shown = detail
+            if time.monotonic() > end:
+                cancel_quietly(job)
+                raise ToolError(
+                    f"the transcription took longer than {TRANSCRIBE_SECONDS / 60:g} minutes."
+                )
+            if run.abort.wait(POLL_SECONDS):
+                raise Cancelled
+        out = tool.run({"job_id": job, "seconds": 1}, ctx)
+    except Cancelled:
+        cancel_quietly(job)
+        error = "Stopped before the transcript was ready."
+        return {**entry, "state": "failed", "error": error}
+    except ToolError as e:
+        return {**entry, "state": "failed", "error": str(e)}
+    except Exception as e:  # noqa: BLE001 - a bug: the answer goes on and says why the file has no text
+        return {**entry, "state": "failed", "error": f"{type(e).__name__}: {e}"}
+    transcript = out.text.partition("\n")[2]  # without the tool's own first line
+    room = int(entry.get("room") or attachments.MIN_ROOM)
+    text, note = attachments.cut(attachments.Extract([("", transcript)]), room)
+    attachments.save_text(CHATS / chat_id, entry["text"], text)
+    return {**entry, "state": "ready", "chars": len(text), "cut": note}
+
+
 def answer(chat_id: str, level: str, run: Live) -> None:
     """The answer thread: run the model at a thinking level (app/effort.py), collect the events, save the reply. The
     answer has TURN_SECONDS, as an agent answer: at the limit it is cancelled and ends with finish "timeout" and a
@@ -744,6 +924,13 @@ def answer(chat_id: str, level: str, run: Live) -> None:
     waiting_since: float | None = None
     timed_out = False
     try:
+        if not prepare_files(chat_id, run):
+            reply["finish"] = "cancelled"
+            run.events.append(STOPPED_EARLY)
+            return
+        deadline = (
+            time.monotonic() + TURN_SECONDS
+        )  # a transcription before does not count
         with lock:
             chat = load(chat_id)
         window = chat.get("window")
@@ -1290,6 +1477,10 @@ def agent_answer(chat_id: str, level: str, run: Live) -> None:
     started = time.monotonic()
     reply: dict[str, Any] = {"role": "assistant", "content": "", "reasoning": ""}
     try:
+        if not prepare_files(chat_id, run):
+            reply["finish"] = "cancelled"
+            run.events.append(STOPPED_EARLY)
+            return
         turn = Turn(chat_id, level, run)
         # one lease for every step: a queued media job does not unload the model between them
         with llm.session(lambda: run.stop, TURN_SECONDS):
@@ -1451,10 +1642,116 @@ def delete_chat(chat_id: str) -> dict[str, str]:
 
 @router.get("/chats/{chat_id}/files/{name}")
 def chat_file(chat_id: str, name: str) -> FileResponse:
+    """An image of the chat, or an attached file: the file as it came (a download under its own name) or the text the
+    model got of it (text_<n>.txt, plain text). Neither runs on the app's origin (CSP sandbox)."""
     path = folder(chat_id) / name
-    if not IMAGE.fullmatch(name) or not path.is_file() or path.is_symlink():
+    image = IMAGE.fullmatch(name)
+    if not (image or attachments.STORED.fullmatch(name)):
         raise HTTPException(404, "No such file")
-    return FileResponse(path)
+    if not path.is_file() or path.is_symlink():
+        raise HTTPException(404, "No such file")
+    if image:
+        return FileResponse(path)
+    headers = {
+        "Content-Security-Policy": "sandbox; default-src 'none'",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if name.startswith("text_"):
+        return FileResponse(
+            path, media_type="text/plain; charset=utf-8", headers=headers
+        )
+    with lock:
+        chat = load(chat_id)
+    given = next(
+        (
+            f["name"]
+            for m in chat["messages"]
+            for f in m.get("files") or []
+            if f.get("file") == name
+        ),
+        name,
+    )
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename=given,
+        content_disposition_type="attachment",
+        headers=headers,
+    )
+
+
+class Staged:
+    """An attached file in the chat's folder before its message is saved: its hidden path and what was read."""
+
+    def __init__(self, path: Path, name: str, kind: str, size: int) -> None:
+        self.path, self.name, self.kind, self.size = path, name, kind, size
+        self.extract: attachments.Extract | None = None
+
+
+def drop_staged(staged: list[Staged]) -> None:
+    for st in staged:
+        st.path.unlink(missing_ok=True)
+
+
+def too_large(kind: str) -> str:
+    return f"too large (max {attachments.max_size(kind) // (1024 * 1024)} MB)."
+
+
+def stage_files(chat_id: str, attached: list[tuple[Any, str, str]]) -> list[Staged]:
+    """Copy the attached files (upload, name, kind) into the chat's folder under hidden names and read the text of
+    each one that is not audio. HTTP 400 names the first file that cannot be read; nothing stays behind then."""
+    staged: list[Staged] = []
+    try:
+        for up, name, kind in attached:
+            suffix = Path(name).suffix.lower()
+            tmp = CHATS / chat_id / f".upload-{secrets.token_hex(6)}{suffix}"
+            staged.append(Staged(tmp, name, kind, 0))
+            size = attachments.copy_upload(up.file, tmp, attachments.max_size(kind))
+            staged[-1].size = size
+            if size > attachments.max_size(kind):
+                raise attachments.AttachmentError(too_large(kind))
+            if kind != "audio":
+                staged[-1].extract = attachments.extract(tmp, kind)
+    except attachments.AttachmentError as e:
+        drop_staged(staged)
+        raise HTTPException(400, f"{staged[-1].name}: {e}") from None
+    except BaseException:
+        drop_staged(staged)
+        raise
+    return staged
+
+
+def store_files(
+    chat: dict[str, Any], staged: list[Staged], room: int
+) -> list[dict[str, Any]]:
+    """Give the staged files their names (file_<n>, text_<n>.txt), store the text the model gets of each, cut to its
+    share of `room`, and return their entries for the message (call with the lock held). An audio file's text comes
+    with the answer (prepare_files): its entry keeps its share as "room"."""
+    n = sum(len(m.get("files") or []) for m in chat["messages"])
+    lengths = [st.extract.length() if st.extract else None for st in staged]
+    shares = attachments.share(lengths, room)
+    entries = []
+    for i, (st, share) in enumerate(zip(staged, shares, strict=True)):
+        stored = f"file_{n + i}{st.path.suffix}"
+        st.path.replace(CHATS / chat["id"] / stored)
+        entry: dict[str, Any] = {
+            "name": st.name,
+            "file": stored,
+            "text": f"text_{n + i}.txt",
+            "kind": st.kind,
+            "type": attachments.type_label(st.name),
+            "size": st.size,
+        }
+        if st.extract is None:
+            entry.update(state="pending", room=share)
+        else:
+            text, note = attachments.cut(st.extract, share)
+            attachments.save_text(CHATS / chat["id"], entry["text"], text)
+            if st.extract.pages:
+                entry["pages"] = st.extract.pages
+            entry.update(state="ready", chars=len(text), cut=note)
+        entries.append(entry)
+    return entries
 
 
 @router.post("/chats/{chat_id}/messages")
@@ -1471,12 +1768,33 @@ async def send_message(chat_id: str, request: Request) -> StreamingResponse:
         raise HTTPException(400, str(e)) from None
     regenerate = str(form.get("regenerate", "false")).lower() == "true"
     uploads = [u for u in form.getlist("images") if getattr(u, "filename", None)]
+    others = [u for u in form.getlist("files") if getattr(u, "filename", None)]
+    # an image is an image in either field
+    uploads += [u for u in others if u.content_type in IMAGE_TYPES]
+    others = [u for u in others if u.content_type not in IMAGE_TYPES]
     if len(text) > MAX_TEXT:
         raise HTTPException(
             400, f"The message is too long (max {MAX_TEXT} characters)."
         )
     if len(uploads) > MAX_IMAGES:
         raise HTTPException(400, f"At most {MAX_IMAGES} images per message.")
+    if len(uploads) + len(others) > attachments.MAX_ATTACHMENTS:
+        raise HTTPException(
+            400,
+            f"At most {attachments.MAX_ATTACHMENTS} files per message, {MAX_IMAGES} of them images.",
+        )
+    attached = []
+    for up in others:
+        name = attachments.clean_name(up.filename)
+        kind = attachments.kind_of(name)
+        if kind is None:
+            raise HTTPException(400, f"{name}: {attachments.refusal(name)}")
+        if (up.size or 0) > attachments.max_size(kind):
+            raise HTTPException(400, f"{name}: {too_large(kind)}")
+        why = audio_refusal() if kind == "audio" else None
+        if why:
+            raise HTTPException(400, f"{name}: {why}")
+        attached.append((up, name, kind))
     files = []
     for up in uploads:
         ext = IMAGE_TYPES.get(up.content_type or "")
@@ -1485,8 +1803,37 @@ async def send_message(chat_id: str, request: Request) -> StreamingResponse:
         if (up.size or 0) > MAX_IMAGE:
             raise HTTPException(400, f"{up.filename}: image too large (max 20 MB).")
         files.append((ext, await up.read()))
-    if not regenerate and not text and not files:
+    if not regenerate and not text and not files and not attached:
         raise HTTPException(400, "Write a message first.")
+    staged: list[Staged] = []
+    room = 0
+    if attached and not regenerate:
+        with lock:
+            chat = load(chat_id)
+            if chat_id in live:
+                raise HTTPException(409, "This chat is still answering.")
+        room = file_room(chat, level_of(chat, level), text, len(files), len(attached))
+        # the copies and the readers take seconds (textutil, PDFKit): off the event loop
+        staged = await asyncio.to_thread(stage_files, chat_id, attached)
+    try:
+        return start_answer(
+            chat_id, request, text, level, regenerate, files, staged, room
+        )
+    finally:
+        drop_staged(staged)  # the ones that were not stored: the message was refused
+
+
+def start_answer(
+    chat_id: str,
+    request: Request,
+    text: str,
+    level: str | None,
+    regenerate: bool,
+    files: list[tuple[str, bytes]],
+    staged: list[Staged],
+    room: int,
+) -> StreamingResponse:
+    """Save the new user message (or drop the answer to regenerate) and start the answer thread."""
     with lock:
         chat = load(chat_id)
         if chat_id in live:
@@ -1511,14 +1858,16 @@ async def send_message(chat_id: str, request: Request) -> StreamingResponse:
                 name = f"img_{n + i}{ext}"
                 (CHATS / chat_id / name).write_bytes(data)
                 names.append(name)
-            chat["messages"].append(
-                {"role": "user", "content": text, "images": names, "time": now()}
-            )
-            if chat["title"] == "New chat" and text:
-                chat["title"] = text.splitlines()[0][:60]
-        if level is None:
-            level = chat.get("effort")
-            level = level if level in effort.LEVELS else config.APP.chat_effort
+            message = {"role": "user", "content": text, "images": names, "time": now()}
+            if staged:
+                message["files"] = store_files(chat, staged, room)
+                # a file's text is untrusted content in the model's context, as a web page is (docs/AGENT.md)
+                if mode_of(chat) == "agent":
+                    chat["agent"] = {**agent_of(chat), "tainted": True}
+            chat["messages"].append(message)
+            if chat["title"] == "New chat" and (text or staged):
+                chat["title"] = (text.splitlines()[0] if text else staged[0].name)[:60]
+        level = level_of(chat, level)
         chat["effort"] = level
         chat["updated"] = now()
         save(chat)

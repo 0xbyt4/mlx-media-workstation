@@ -80,6 +80,7 @@ To take back "Allow in this chat", open the Tools menu and press Revoke next to 
 
 Web pages, files, Library text and program output can hold text that tries to steer the model. After such content
 comes into a chat, the Tools menu shows a note. It starts with "Web pages, files or program output are in this chat".
+A document or audio file that you attach to a message counts as such content too. An attached image does not.
 
 From then on, every "Uses this Mac", "Leaves this Mac" and "Writes files" call asks, also after "Allow in this chat".
 Web search, Read a web page and Transcribe ask every time after their first result. Read each card before you allow

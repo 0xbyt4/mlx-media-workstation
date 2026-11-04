@@ -126,7 +126,7 @@ All paths are in the app folder, unless the table says otherwise.
 | What | Where |
 |---|---|
 | A job: its settings and state, the model's log, the results | `outputs/<job id>/` (`job.json`, `job.log` and the result files) |
-| A chat and the images sent in it | `outputs/chats/<chat id>/` |
+| A chat and the images and files sent in it | `outputs/chats/<chat id>/` |
 | The work folder of an agent chat | `outputs/chats/<chat id>/ws/` |
 | The log of the local LLM | `outputs/llm.log` |
 | The app log, when you start it from `Workstation.app` or `Workstation Chat.app` | `outputs/app.log` |
