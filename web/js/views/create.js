@@ -45,7 +45,7 @@ function mount(root, ctx, params) {
     submit();
   });
   els.form.addEventListener('input', onFormInput);
-  els.form.addEventListener('change', scheduleSave);
+  els.form.addEventListener('change', onFormChange);
   // Plain Enter in a single-line input must not start a job.
   els.form.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && e.target.tagName === 'INPUT') e.preventDefault();
@@ -582,6 +582,15 @@ function onFormInput(e) {
   }
 }
 
+// A value the user left: say at once what is wrong with it. An empty required field waits for Generate.
+function onFormChange(e) {
+  scheduleSave();
+  const ctl = s.controls.get(e.target.name);
+  if (!ctl || ctl.isFile || e.target !== ctl.input || (ctl.get() === '' && !e.target.validity.badInput)) return;
+  const msg = ctl.validate();
+  if (msg) showFieldError(ctl, msg);
+}
+
 function updateCounter(ctl) {
   const words = (ctl.get().trim().match(/\S+/g) || []).length;
   const tokens = Math.round(words * 1.35);
@@ -655,6 +664,8 @@ function clearMessages() {
 
 function resetForm() {
   if (!s.tool) return;
+  const tool = s.tool;
+  const before = collectValues();
   for (const ctl of s.controls.values()) ctl.reset();
   for (const name of s.controls.keys()) improve.delete(s.tool.id + ':' + name);
   lsRemove(KEY.form(s.tool.id));
@@ -662,7 +673,17 @@ function resetForm() {
   renderAllImprove();
   updateCounters();
   growAll();
-  toast('Reset ' + s.tool.label + ' to the defaults.');
+  // the chosen files stay in memory; the typed values come back with Undo
+  toast('Reset ' + tool.label + ' to the defaults.', {action: {label: 'Undo', run: () => {
+    if (!s || s.tool !== tool) {
+      lsSet(KEY.form(tool.id), before);
+      return;
+    }
+    applyValues(before);
+    saveFormNow();
+    updateCounters();
+    growAll();
+  }}});
 }
 
 function buildFormData(tool) {
@@ -714,7 +735,7 @@ async function submit() {
   try {
     await s.ctx.api.createJob(fd);
     toast(ahead ? tool.label + ' is in the queue (' + ahead + ' ahead).' : tool.label + ' starts now.',
-      {action: {label: 'View in Jobs', run: () => s && s.ctx.router.go('jobs')}});
+      {action: {label: 'Open in Jobs', run: () => s && s.ctx.router.go('jobs')}});
     store.refresh('jobs');
   } catch (e) {
     if (s) showSubmitError(e.offline ? 'Server offline. Try again when it is back.' : e.message);
@@ -976,7 +997,7 @@ function renderLast() {
     h('button', {type: 'button', class: 'last-row', onclick: () => s.ctx.router.go('jobs')}, thumb,
       h('span', {class: 'file-info'}, h('span', {class: 'file-name'}, o.name + (job.outputs.length > 1 ? ' + ' + (job.outputs.length - 1) : '')),
         h('span', {class: 'file-meta'}, fmtTime(job.finished || job.created) + (typeof job.elapsed === 'number' ? ' · took ' + fmtClock(job.elapsed) : '')))),
-    h('button', {type: 'button', class: 'btn btn-sm', onclick: () => useSettings(job)}, icon('undo', 'ic-sm'), 'Use its settings')));
+    h('button', {type: 'button', class: 'btn btn-sm', onclick: () => useSettings(job)}, icon('undo', 'ic-sm'), 'Use these settings')));
 }
 
 // Re-renders everything that depends on polled facts, without rebuilding the form.

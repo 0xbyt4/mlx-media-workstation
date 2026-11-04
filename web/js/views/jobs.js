@@ -45,6 +45,7 @@ function mount(root, ctx) {
       render();
     }),
     on('tick', tick),
+    on('signedout', render),
   );
   render();
 }
@@ -86,19 +87,25 @@ function render() {
     b.textContent = FILTERS.find((f) => f[0] === k)[1] + (k === 'all' ? '' : ' ' + counts[k]);
     b.setAttribute('aria-pressed', String(k === s.filter));
   }
-  s.sum.textContent = [running.length ? '1 running' : 'Nothing running', queued.length + ' queued', counts.done + counts.failed + ' finished'].join(' · ');
+  const sum = [running.length ? '1 running' : 'Nothing running', queued.length + ' queued', counts.done + counts.failed + ' finished'].join(' · ');
+  if (s.sum.textContent !== sum) s.sum.textContent = sum;  // a live region: only a change is read out
 
   const showActive = s.filter === 'all' || s.filter === 'active';
   const showFinished = s.filter !== 'active';
   const shownFinished = finished.filter((j) => s.filter === 'all' || (s.filter === 'done' ? j.status === 'done' : j.status !== 'done'));
 
   s.empty.replaceChildren();
-  if (!jobs.length) {
+  if (!jobs.length && !store.get('jobsAt')) {
+    // the first GET /api/jobs has not answered yet, or it answers HTTP 401 (the shell banner says what to do)
+    s.empty.append(store.get('signedOut') ? h('p', {class: 'muted', role: 'status'}, 'The jobs cannot load: this window is signed out.')
+      : h('p', {class: 'muted', role: 'status'}, h('span', {class: 'spinner sm', 'aria-hidden': 'true'}), ' Loading the jobs...'));
+  } else if (!jobs.length) {
     s.empty.append(emptyState({icon: 'jobs', title: 'No jobs yet',
       text: 'Jobs you start in Create run here one at a time, so each model gets the memory it needs.',
       actions: [h('button', {type: 'button', class: 'btn btn-primary btn-sm', onclick: () => s.ctx.router.go('create')}, 'Go to Create')]}));
   }
   const any = jobs.length > 0;
+  s.seg.hidden = !any;
   s.runSec.el.hidden = !any || !showActive;
   s.queueSec.el.hidden = !any || !showActive || !queued.length;
   s.finSec.el.hidden = !any || !showFinished;
@@ -276,7 +283,8 @@ function buildRunning(job) {
   const el = h('article', {class: 'card job job-running', 'aria-label': (job.tool_label || t.label) + ', running'},
     jobTop(job, h('div', {class: 'job-side'}, pill('running'), h('span', null, 'Started ' + fmtTime(job.started)))),
     r.bar,
-    h('div', {class: 'stage-line', 'aria-live': 'polite'}, r.stage, r.left),
+    // only the stage is read out when it changes; the bar has the percentage
+    h('div', {class: 'stage-line'}, h('span', {'aria-live': 'polite'}, r.stage), r.left),
     h('div', {class: 'job-meta'}, r.elapsed, peak ? h('span', null, 'Expected peak about ' + Math.round(peak) + ' GB') : null),
     confirmSlot, errSlot,
     h('div', {class: 'job-actions'}, logBtn, h('span', {class: 'spacer'}), cancelBtn),
@@ -409,15 +417,36 @@ function updateWhen(run, queued) {
   }
 }
 
-// Removal cancels the job on the server at once: the worker may pick it up within seconds, so there is no Undo.
+// The card or row next to el (else the one before it), for the focus when el goes away.
+function neighbour(el) {
+  const ok = (n) => n && !n.classList.contains('empty');
+  const next = ok(el.nextElementSibling) ? el.nextElementSibling : ok(el.previousElementSibling) ? el.previousElementSibling : null;
+  if (!next) return null;
+  return next.classList.contains('q-item') ? next : next.querySelector('.job-actions button');
+}
+
+// After a card went away: the focus goes to its neighbour, else to the chosen filter.
+function focusAfter(target) {
+  if (!s) return;
+  if (target && target.isConnected) target.focus();
+  else if (!s.seg.hidden) s.seg.querySelector('[aria-pressed="true"]')?.focus();
+  else s.empty.querySelector('button')?.focus();
+}
+
+// Removal cancels the job on the server at once: the worker may pick it up within seconds, so there is no Undo. The
+// toast offers its settings again instead.
 async function removeQueued(job) {
   const label = job.tool_label || job.tool;
   const ctx = s.ctx;
+  const card = s.cards.get(job.id);
+  const hadFocus = !!card && card.el.contains(document.activeElement);
+  const target = card ? neighbour(card.el) : null;
   removing.add(job.id);
   render();
+  if (hadFocus) focusAfter(target);
   try {
     await ctx.api.cancelJob(job.id);
-    toast(label + ' was removed from the queue.');
+    toast(label + ' was removed from the queue.', {action: {label: 'Use these settings', run: () => ctx.handoff.useSettings(job)}});
   } catch (e) {
     toast('Could not remove ' + label + ': ' + e.message, {kind: 'err'});
   }
@@ -459,7 +488,10 @@ function diagnose(job) {
       'Use a clip from the video tools: their sizes are multiples of 64.',
       'Or crop the clip so both sides are a multiple of 64. Then press Use these settings and generate again.']};
   }
-  return {title: 'The job failed', fixes: []};
+  return {title: 'The job failed', fixes: job.log_tail ? [
+    'Open Technical details below. The last lines of the log name the cause.',
+    'Press Use these settings, change what the log names, and generate again.'] : [
+    'Press Use these settings and generate again.']};
 }
 
 function sendButton(job, o) {
@@ -495,7 +527,8 @@ function buildFinished(job) {
     body = outputs.length ? h('div', {class: 'outputs' + (job.outputs.every((o) => o.kind === 'audio') ? ' wide' : '')}, outputs) : null;
   } else if (job.status === 'failed') {
     const d = diagnose(job);
-    body = errorBox({title: d.title, text: job.error, fixes: d.fixes});
+    // the Python exception name says nothing to the user
+    body = errorBox({title: d.title, text: (job.error || '').replace(/^[A-Z]\w*(Error|Exception): /, ''), fixes: d.fixes});
     if (job.log_tail) body.append(trackedDetails(job, 'log', 'Technical details', h('pre', {class: 'log'}, job.log_tail), false));
   } else if (job.error) {
     body = h('p', {class: 'muted small'}, job.error);
@@ -535,11 +568,14 @@ function buildFinished(job) {
 }
 
 async function deleteJob(job, errSlot) {
+  const card = s.cards.get(job.id);
+  const target = card ? neighbour(card.el) : null;
   try {
     await s.ctx.api.deleteJob(job.id);
     for (const k of [...openDetails]) if (k.startsWith(job.id + ':')) openDetails.delete(k);
     toast('Deleted the job and its files.');
-    store.refresh('jobs');
+    await store.refresh('jobs');
+    focusAfter(target);
     return true;
   } catch (e) {
     errSlot.hidden = false;

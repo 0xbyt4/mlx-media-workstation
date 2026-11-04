@@ -8,7 +8,7 @@
 // Tools menu turns tools on or off, grants a folder and revokes chat-wide approvals.
 
 import {store} from '../store.js';
-import {h, icon, toolIcon, grow, fmtBytes, fmtLeft, fmtTime, timeAgo, toast, inlineConfirm, lightbox, lsGet, lsSet, menu, closeMenu, media, downloadLink} from '../ui.js';
+import {h, icon, toolIcon, grow, fmtBytes, fmtLeft, fmtTime, timeAgo, toast, inlineConfirm, errorBox, lightbox, lsGet, lsSet, menu, closeMenu, media, downloadLink} from '../ui.js';
 
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 const MAX_IMAGES = 4; // per message (app/chat.py MAX_IMAGES)
@@ -595,6 +595,7 @@ async function openChat(id) {
   memo.activeId = id;
   s.ctx.router.replace('chat', id ? {id} : null);
   s.confirmFor = s.confirmEl = null;
+  s.openError = null;
   showNote('');
   if (!id) {
     s.chat = null;
@@ -620,8 +621,8 @@ async function openChat(id) {
       loadList().catch(() => {});
       return;
     }
+    s.openError = errText(e);
     renderThread(true);
-    showNote(errText(e));
     return;
   }
   if (s !== me || seq !== me.openSeq) return;
@@ -865,7 +866,8 @@ function newLive(chatId) {
   live.thinkBody = h('div', {class: 'think-body'});
   live.think = h('details', {class: 'think', hidden: true},
     h('summary', {onclick: () => (live.thinkTouched = true)}, icon('chev', 'chev ic-sm'), live.thinkLabel), live.thinkBody);
-  live.bubble = h('div', {class: 'bubble md', 'aria-live': 'polite', 'aria-busy': 'true', hidden: true});
+  // not a live region: it changes on every frame. The status line says when the answer starts and ends.
+  live.bubble = h('div', {class: 'bubble md', 'aria-busy': 'true', hidden: true});
   live.state = h('div', {class: 'msg-wait'});
   live.node = h('article', {class: 'msg msg-ai is-live', 'aria-label': 'Answer from ' + modelName()},
     h('span', {class: 'who'}, modelName()), live.think, live.bubble, live.state);
@@ -1537,6 +1539,13 @@ function renderThread(toEnd) {
   box.classList.toggle('is-empty', !s.loading && !msgs.length && !s.live);
   if (s.loading) {
     box.append(h('p', {class: 'muted chat-loading'}, h('span', {class: 'spinner sm', 'aria-hidden': 'true'}), 'Opening the chat...'));
+    return;
+  }
+  if (!s.chat && s.openError && memo.activeId) {
+    const id = memo.activeId;
+    box.append(errorBox({title: 'This chat did not open', text: s.openError, actions: [
+      h('button', {type: 'button', class: 'btn btn-sm', onclick: () => openChat(id)}, icon('refresh', 'ic-sm'), 'Try again'),
+      h('button', {type: 'button', class: 'btn btn-sm', onclick: () => newChat()}, icon('plus', 'ic-sm'), 'New chat')]}));
     return;
   }
   if (!msgs.length && !s.live) {

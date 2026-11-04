@@ -46,7 +46,7 @@ let s = null; // the mounted view
 function mount(root, ctx, params) {
   root.classList.add('v-models');
   s = {
-    root, ctx, offs: [], cards: new Map(), groups: new Map(), pending: new Set(), actionErr: new Map(),
+    root, ctx, offs: [], cards: new Map(), groups: new Map(), pending: new Set(), cancelling: new Set(), actionErr: new Map(),
     lastStatus: null, loadErr: null, focusId: params && params.model ? params.model : null,
     setupSig: null, setupLive: null, setupFocus: false,
   };
@@ -1187,6 +1187,8 @@ function focusSetup(k) {
 
 async function queueCancel(m) {
   const view = s;
+  if (view.cancelling.has(m.id)) return;  // a second click while the first one is sent
+  view.cancelling.add(m.id);
   setup.error = null;
   const wasQueued = isQueued(m);
   try {
@@ -1196,6 +1198,7 @@ async function queueCancel(m) {
     setup.error = e.offline ? OFFLINE_TEXT : e.message;
   }
   await view.ctx.store.refresh('models');
+  view.cancelling.delete(m.id);
   if (s !== view) return;
   render();
   focusSetup('q-again-' + m.id);
@@ -1275,6 +1278,8 @@ async function start(m) {
 
 async function cancel(m) {
   const view = s;
+  if (view.cancelling.has(m.id)) return;  // a second click while the first one is sent
+  view.cancelling.add(m.id);
   view.actionErr.delete(m.id);
   try {
     const queued = isQueued(m);
@@ -1284,6 +1289,7 @@ async function cancel(m) {
     view.actionErr.set(m.id, e.offline ? OFFLINE_TEXT : e.message);
   }
   await view.ctx.store.refresh('models');
+  view.cancelling.delete(m.id);
   if (s !== view) return;
   render();
   focusIn(m.id, '[data-k="download"]');
