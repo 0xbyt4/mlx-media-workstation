@@ -11,9 +11,10 @@
   --input: #ffffff;
   --border: #d9dde5;
   --border-strong: #c0c6d1;
+  --border-control: #858d9b; /* the edge of a text field, select or switch: 3:1 on surface, input and bg */
   --text: #191d25;
   --text-2: #475061;
-  --text-3: #626b7c;
+  --text-3: #5e6778;
   /* action accent */
   --accent: #2f58cf;
   --accent-hover: #2549b0;
@@ -41,11 +42,16 @@
   --shadow-md: 0 1px 2px rgba(22, 27, 38, 0.06), 0 8px 24px rgba(22, 27, 38, 0.08);
   --shadow-lg: 0 12px 40px rgba(22, 27, 38, 0.18);
   --scrim: rgba(18, 22, 30, 0.38);
+  /* media surfaces: the same in both themes, like the media they hold */
+  --media-bg: #0b0c10;
+  --media-tag-bg: rgba(0, 0, 0, 0.55);
+  --on-media: #ffffff;
 
   /* type */
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
   --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --fs-2xs: 10px; /* uppercase tags on media only */
   --fs-xs: 11px;
   --fs-sm: 12px;
   --fs-base: 13px;
@@ -81,9 +87,10 @@
     --input: #15181d;
     --border: #2c313b;
     --border-strong: #3d4450;
+    --border-control: #666e7d;
     --text: #e8eaef;
     --text-2: #b0b7c4;
-    --text-3: #8d95a4;
+    --text-3: #969eae;
     --accent: #86a5ff;
     --accent-hover: #a2baff;
     --accent-soft: rgba(134, 165, 255, 0.15);
@@ -121,9 +128,10 @@
   --input: #15181d;
   --border: #2c313b;
   --border-strong: #3d4450;
+  --border-control: #666e7d;
   --text: #e8eaef;
   --text-2: #b0b7c4;
-  --text-3: #8d95a4;
+  --text-3: #969eae;
   --accent: #86a5ff;
   --accent-hover: #a2baff;
   --accent-soft: rgba(134, 165, 255, 0.15);

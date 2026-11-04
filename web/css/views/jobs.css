@@ -25,6 +25,9 @@
   grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
+.v-jobs .jobs-sec .empty {
+  padding-block: 20px; /* a section's empty state stays smaller than the page's */
+}
 .v-jobs .jobs-sec > h2 {
   font-size: var(--fs-sm);
   font-weight: 600;

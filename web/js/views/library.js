@@ -265,7 +265,8 @@ function metaLine(item) {
   if (item.duration) bits.push(fmtClock(item.duration));
   else if (item.width && item.height) bits.push(item.width + '×' + item.height);
   bits.push(fmtBytes(item.size));
-  return bits.join(' · ');
+  // a narrow card wraps the line between the facts, not inside one ("513 KB")
+  return bits.map((b) => b.replace(/ /g, ' ')).join(' · ');
 }
 
 function buildCard(item) {
