@@ -77,6 +77,6 @@ class WorkstationPort(Protocol):
         ...
 
     def system_status(self) -> dict[str, Any]:
-        """The Mac's memory, the running job, the queue, the chat model and whether each media tool fits now, as
+        """The Mac's memory, the running jobs, the queue, the chat model and whether each media tool fits now, as
         GET /api/status shows them."""
         ...

@@ -1,6 +1,8 @@
-// Jobs: the running job with live progress, the queue (move up or down, remove), and finished jobs with their outputs,
+// Jobs: the running jobs with live progress, the queue (move up or down, remove), and finished jobs with their outputs,
 // "Use these settings", "Send to" and delete. Cards are rebuilt only when a job changes, so media keeps playing while
 // the list polls. A queue row keeps its card when only its position changes, so the focus stays on it.
+// The queue has two lanes (store.laneOf): the model jobs, and below them the light jobs (a mix), which run beside the
+// model job. Each lane has its own list, positions and moves.
 
 import {store} from '../store.js';
 import {
@@ -31,8 +33,10 @@ function mount(root, ctx) {
   s.empty = h('div', {class: 'jobs-empty'});
   s.runSec = section('Running', 'h-run');
   s.queueSec = section('Up next', 'h-queue');
-  s.queueList = h('div', {class: 'card q-list'});
-  s.queueSec.body.append(s.queueList);
+  s.queueList = h('div', {class: 'card q-list', 'aria-label': 'Model jobs'});
+  s.lightNote = h('p', {class: 'muted small'}, 'Loads no model: runs beside the model job, one at a time.');
+  s.lightList = h('div', {class: 'card q-list', 'aria-label': 'Jobs that load no model'});
+  s.queueSec.body.append(s.queueList, s.lightNote, s.lightList);
   s.finSec = section('Finished', 'h-fin');
   root.append(h('div', {class: 'jobs'},
     h('div', {class: 'jobs-head'}, s.seg, s.sum, s.live), s.empty, s.runSec.el, s.queueSec.el, s.finSec.el));
@@ -73,8 +77,12 @@ function setFilter(k) {
 function render() {
   if (!s) return;
   const jobs = store.get('jobs').filter((j) => !removing.has(j.id));
-  const running = jobs.filter((j) => j.status === 'running');
-  const queued = jobs.filter((j) => j.status === 'queued').sort((a, b) => a.position - b.position);
+  const light = (j) => store.laneOf(j) === 'light';
+  const running = jobs.filter((j) => j.status === 'running').sort((a, b) => light(a) - light(b)); // the model job first
+  const queuedIn = (lane) => jobs.filter((j) => j.status === 'queued' && store.laneOf(j) === lane).sort((a, b) => a.position - b.position);
+  const modelQueue = queuedIn('model');
+  const lightQueue = queuedIn('light');
+  const queued = [...modelQueue, ...lightQueue];
   const finished = jobs.filter((j) => store.FINISHED.has(j.status));
   const counts = {
     all: jobs.length,
@@ -87,7 +95,7 @@ function render() {
     b.textContent = FILTERS.find((f) => f[0] === k)[1] + (k === 'all' ? '' : ' ' + counts[k]);
     b.setAttribute('aria-pressed', String(k === s.filter));
   }
-  const sum = [running.length ? '1 running' : 'Nothing running', queued.length + ' queued', counts.done + counts.failed + ' finished'].join(' · ');
+  const sum = [running.length ? running.length + ' running' : 'Nothing running', queued.length + ' queued', counts.done + counts.failed + ' finished'].join(' · ');
   if (s.sum.textContent !== sum) s.sum.textContent = sum;  // a live region: only a change is read out
 
   const showActive = s.filter === 'all' || s.filter === 'active';
@@ -101,13 +109,15 @@ function render() {
       : h('p', {class: 'muted', role: 'status'}, h('span', {class: 'spinner sm', 'aria-hidden': 'true'}), ' Loading the jobs...'));
   } else if (!jobs.length) {
     s.empty.append(emptyState({icon: 'jobs', title: 'No jobs yet',
-      text: 'Jobs you start in Create run here one at a time, so each model gets the memory it needs.',
+      text: 'Jobs you start in Create run here. Model jobs run one at a time, so each model gets the memory it needs.',
       actions: [h('button', {type: 'button', class: 'btn btn-primary btn-sm', onclick: () => s.ctx.router.go('create')}, 'Go to Create')]}));
   }
   const any = jobs.length > 0;
   s.seg.hidden = !any;
   s.runSec.el.hidden = !any || !showActive;
   s.queueSec.el.hidden = !any || !showActive || !queued.length;
+  s.queueList.hidden = !modelQueue.length;
+  s.lightNote.hidden = s.lightList.hidden = !lightQueue.length;
   s.finSec.el.hidden = !any || !showFinished;
 
   const seen = new Set();
@@ -117,7 +127,8 @@ function render() {
       text: queued.length ? 'The next job starts in a moment.' : 'Start a job in Create. It runs here with its progress.'}));
   }
   if (running.length) s.runSec.body.querySelector(':scope > .empty')?.remove();
-  place(s.queueList, queued, seen);
+  place(s.queueList, modelQueue, seen);
+  place(s.lightList, lightQueue, seen);
   place(s.finSec.body, shownFinished, seen);
   const finEmpty = s.finSec.body.querySelector(':scope > .empty');
   if (!shownFinished.length && !finEmpty) {
@@ -132,7 +143,8 @@ function render() {
       s.cards.delete(id);
     }
   }
-  updateWhen(running[0], queued);
+  updateWhen(running.find((j) => !light(j)), modelQueue);
+  updateWhen(running.find(light), lightQueue);
   restoreFocus(queued);
 }
 
@@ -370,7 +382,8 @@ function buildQueued(job) {
 // move button ('up' or 'down'), or the row when that button is now disabled or the move came from the row.
 async function moveQueued(job, to, focus) {
   if (!s || s.moving) return;
-  const queued = store.get('jobs').filter((j) => j.status === 'queued' && !removing.has(j.id));
+  // a job moves in its lane, and its position counts in that lane
+  const queued = store.get('jobs').filter((j) => j.status === 'queued' && store.laneOf(j) === store.laneOf(job) && !removing.has(j.id));
   if ((to === 'up' && job.position <= 1) || (to === 'down' && job.position >= queued.length)) return;
   const label = job.tool_label || job.tool;
   const ctx = s.ctx;
@@ -406,8 +419,8 @@ function restoreFocus(queued) {
   (btn && !btn.disabled ? btn : card.el).focus({preventScroll: false});
 }
 
-// Start estimates: the running job's time left plus the median time of each job before it. Also the move buttons:
-// disabled at the ends of the queue.
+// Start estimates for one lane: its running job's time left plus the median time of each job before it. Also the move
+// buttons: disabled at the ends of the lane.
 function updateWhen(run, queued) {
   let acc = run && run.progress && typeof run.progress.eta_s === 'number' ? run.progress.eta_s : run ? null : 0;
   for (const [i, j] of queued.entries()) {
@@ -605,7 +618,7 @@ function tick() {
 export default {
   id: 'jobs',
   title: 'Jobs',
-  subtitle: 'One job runs at a time, so each model gets the memory.',
+  subtitle: 'One model job runs at a time, so each model gets the memory. A mix runs beside it.',
   mount,
   unmount,
 };

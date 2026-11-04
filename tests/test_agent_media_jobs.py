@@ -178,6 +178,18 @@ def test_wait_job_does_not_wait_for_a_job_that_needs_the_model_s_memory(
     assert "needs_memory" not in job and job["status"] == "queued"
 
 
+def test_wait_job_waits_for_a_light_job_behind_a_big_job(
+    port: server.Workstation, make_job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A light job (edit.mix) does not wait for the model jobs, so the wait goes on."""
+    monkeypatch.setattr(models, "mem_total_gb", lambda: 48.0)
+    make_job("20261103-090000-vvvv", "queued", tool="video.t2v", order=1)
+    mix = make_job("20261103-100000-mmmm", "queued", tool="edit.mix", order=2)
+    threading.Timer(0.2, lambda: mix.update(status="done")).start()
+    job = port.wait_job(mix["id"], 30, threading.Event())
+    assert "needs_memory" not in job and job["status"] == "done"
+
+
 def test_cancel_job_through_the_port(port: server.Workstation, make_job) -> None:
     make_job("20261103-100000-aaaa", "queued")
     assert port.cancel_job("20261103-100000-aaaa") == "cancelled"

@@ -1413,7 +1413,7 @@ function paintJob(el) {
   const st = job ? JOB_STATUS[job.status] || ['idle', job.status] : null;
   const p = job && job.status === 'running' && job.progress ? job.progress : null;
   const facts = [
-    job && job.status === 'queued' && job.position ? 'place ' + job.position + ' in the queue' : '',
+    job && job.status === 'queued' && job.position ? 'place ' + job.position + (store.laneOf(job) === 'light' ? ' in the light lane' : ' in the queue') : '',
     p && typeof p.fraction === 'number' ? Math.round(p.fraction * 100) + '%' : '',
     p && p.eta_s !== null && p.eta_s !== undefined ? fmtLeft(p.eta_s) : '',
   ].filter(Boolean).join(' · ');

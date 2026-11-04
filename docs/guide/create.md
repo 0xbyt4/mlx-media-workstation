@@ -1,7 +1,7 @@
 # Create
 
-On the Create screen you pick a tool, fill in its form and start a job. Jobs run one at a time, so each model gets
-the memory it needs.
+On the Create screen you pick a tool, fill in its form and start a job. Jobs that load a model run one at a time, so
+each model gets the memory it needs. A Mix job loads no model, so it starts next to a running model job.
 
 ![The Create screen with the Text to Video form](../images/create.png)
 

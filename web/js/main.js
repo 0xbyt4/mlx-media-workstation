@@ -128,7 +128,8 @@ function renderDock() {
     pillEl.hidden = true;
     return;
   }
-  const run = store.runningJob();
+  // the model job, else the light job (a mix); a light job beside a model job gets its own line
+  const [run, beside] = store.runningJobs();
   const queued = store.queuedJobs().length;
   if (!run) {
     dock.replaceChildren(h('div', {class: 'dock-empty'}, queued ? queued + ' queued. The next job starts in a moment.' : 'No job running. The queue is empty.'));
@@ -137,6 +138,7 @@ function renderDock() {
   }
   const tool = store.get('toolsById').get(run.tool);
   const label = run.tool_label || (tool ? tool.label : run.tool);
+  const besideLabel = beside ? beside.tool_label || beside.tool : '';
   const p = run.progress || {};
   const known = typeof p.fraction === 'number';
   const pct = known ? Math.round(p.fraction * 100) : null;
@@ -145,12 +147,13 @@ function renderDock() {
   const fill = h('div', {class: 'progress-fill', style: {width: was && was.style.width ? was.style.width : width}});
   dock.replaceChildren(h('button', {
     type: 'button', class: 'dock', onclick: () => router.go('jobs'),
-    'aria-label': 'Running: ' + label + (known ? ', ' + pct + ' percent' : '') + '. Open Jobs',
+    'aria-label': 'Running: ' + label + (known ? ', ' + pct + ' percent' : '') + (beside ? ', and ' + besideLabel : '') + '. Open Jobs',
   },
   h('span', {class: 'dock-top'}, toolIcon(tool ? tool.group : 'Edit', true), h('span', {class: 'dock-label'}, label),
     known ? h('span', {class: 'num faint'}, pct + '%') : h('span', {class: 'spinner sm faint'})),
   h('div', {class: 'progress sm' + (known ? '' : ' indeterminate')}, fill),
   h('span', {class: 'dock-sub'}, h('span', null, p.stage || 'Starting'), h('span', null, fmtLeft(p.eta_s))),
+  beside ? h('span', {class: 'dock-sub'}, h('span', null, 'Also running: ' + besideLabel)) : null,
   queued ? h('span', {class: 'dock-sub'}, h('span', null, queued + ' queued')) : null));
   dock.dataset.job = run.id;
   if (width && fill.style.width !== width) {
@@ -159,7 +162,7 @@ function renderDock() {
   }
   pillEl.hidden = false;
   pillEl.replaceChildren(h('span', {class: 'spinner sm'}), h('span', {class: 'num'}, label + (known ? ' ' + pct + '%' : '')));
-  pillEl.setAttribute('aria-label', 'Running: ' + label + '. Open Jobs');
+  pillEl.setAttribute('aria-label', 'Running: ' + label + (beside ? ', and ' + besideLabel : '') + '. Open Jobs');
 }
 
 // ---------- sidebar: memory meter ----------

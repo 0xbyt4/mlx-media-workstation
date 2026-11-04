@@ -44,7 +44,7 @@ The Tools menu lists each tool with a pill that names its risk. The pill sets wh
 | Wait for a job | App only | Waits until a job ends, for at most 300 s. |
 | Cancel a job | Uses this Mac | Cancels a job that this chat queued. It cannot cancel your other jobs. |
 | Transcribe | Uses this Mac | Speech to text for an audio or video file, as a Transcribe job. |
-| System status | App only | Shows the Mac's memory, the running job, the queue, the chat model and which media tools fit now. |
+| System status | App only | Shows the Mac's memory, the running jobs, the queue, the chat model and which media tools fit now. |
 | List files | Your folder | Lists a folder inside the granted folder. |
 | Read a file | Your folder | Reads a text file in the granted folder. |
 | Search files | Your folder | Searches the text files of the granted folder. |

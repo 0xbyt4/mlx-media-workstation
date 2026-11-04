@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from app import config, llm, server, tools
+from app import config, llm, models, server, tools
 from tests.conftest import MacEffects
 
 Job = Callable[..., dict[str, Any]]
@@ -638,4 +638,189 @@ def test_the_chat_model_reload_waits_for_an_empty_queue(
     server.run_next(server.jobs["a"])
     assert reloads == []  # "b" still waits
     server.run_next(server.jobs["b"])
+    assert reloads == ["reload"]
+
+
+# The light lane: a job that loads no model runs beside the model job
+
+
+def test_only_the_tools_without_a_model_take_the_light_lane() -> None:
+    """edit.mix is plain ffmpeg. Every other tool loads a model, voice.transcribe too (Qwen3-ASR, about 3 GB)."""
+    light = {
+        t["id"] for t in tools.TOOLS if server.lane_of({"tool": t["id"]}) == "light"
+    }
+    assert light == {"edit.mix"}
+    assert not light & set(tools.REQUIRES)  # no model files to find
+
+
+def lanes() -> list[threading.Thread]:
+    """The two workers, as start() starts them."""
+    workers = [
+        threading.Thread(target=server.worker, args=(lane,), daemon=True)
+        for lane in ("model", "light")
+    ]
+    for w in workers:
+        w.start()
+    server.wake.set()
+    server.wake_light.set()
+    return workers
+
+
+def until(check: Callable[[], bool], timeout: float = 5.0) -> bool:
+    end = time.time() + timeout
+    while not check() and time.time() < end:
+        time.sleep(0.02)
+    return check()
+
+
+def test_a_light_job_runs_beside_a_model_job_and_claims_no_memory(
+    state: Path, make_job: Job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(models, "mem_total_gb", lambda: 48.0)
+    monkeypatch.setattr(llm, "reload_after_jobs", lambda: False)
+    claims: list[float] = []
+    real_claim = llm.claim
+
+    def claim(peak: float, abort: Callable[[], bool] = lambda: False) -> bool:
+        claims.append(peak)
+        return real_claim(peak, abort)
+
+    monkeypatch.setattr(llm, "claim", claim)
+    video_ends = threading.Event()
+    seen: dict[str, Any] = {}
+
+    def fake_run(job: dict[str, Any]) -> None:
+        if job["tool"] == "edit.mix":
+            seen.update(video=server.jobs["video"]["status"], job_peak=llm.job_peak)
+        else:
+            video_ends.wait(10)  # a video job of several minutes
+        job["status"] = "done"
+
+    monkeypatch.setattr(server, "run_job", fake_run)
+    make_job("video", "queued", tool="video.t2v", order=1)
+    workers = lanes()
+    assert until(lambda: server.jobs["video"]["status"] == "running")
+    mix = make_job("mix", "queued", tool="edit.mix", order=2)
+    server.wake_light.set()
+    assert until(lambda: mix["status"] == "done")
+    # the mix ran while the video job held the memory, and left its claim as it was
+    assert seen == {"video": "running", "job_peak": 35.0}
+    assert claims == [35.0]
+    video_ends.set()
+    assert until(lambda: server.jobs["video"]["status"] == "done")
+    assert until(lambda: llm.job_peak == 0.0)
+    server.shutdown()
+    for w in workers:
+        w.join(5)
+        assert not w.is_alive()
+
+
+def test_model_jobs_stay_one_at_a_time_and_in_their_order(
+    state: Path, make_job: Job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(llm, "claim", lambda peak, abort=lambda: False: True)
+    monkeypatch.setattr(llm, "reload_after_jobs", lambda: False)
+    guard = threading.Lock()
+    now: list[dict[str, Any]] = []
+    ran: list[str] = []
+    most = {"model": 0, "light": 0, "all": 0}
+
+    def fake_run(job: dict[str, Any]) -> None:
+        with guard:
+            now.append(job)
+            ran.append(job["id"])
+            for lane in ("model", "light"):
+                n = sum(server.lane_of(j) == lane for j in now)
+                most[lane] = max(most[lane], n)
+            most["all"] = max(most["all"], len(now))
+        time.sleep(0.3 if server.lane_of(job) == "model" else 0.05)
+        with guard:
+            now.remove(job)
+        job["status"] = "done"
+
+    monkeypatch.setattr(server, "run_job", fake_run)
+    for i, (job_id, tool) in enumerate(
+        (
+            ("a", "image.klein"),
+            ("mix1", "edit.mix"),
+            ("b", "video.t2v"),
+            ("mix2", "edit.mix"),
+            ("c", "image.klein"),
+        ),
+        1,
+    ):
+        make_job(job_id, "queued", tool=tool, order=i)
+    workers = lanes()
+    assert until(lambda: all(j["status"] == "done" for j in server.jobs.values()), 10)
+    server.shutdown()
+    for w in workers:
+        w.join(5)
+    assert [j for j in ran if server.lane_of(server.jobs[j]) == "model"] == [
+        "a",
+        "b",
+        "c",
+    ]
+    assert [j for j in ran if j.startswith("mix")] == ["mix1", "mix2"]
+    assert most == {"model": 1, "light": 1, "all": 2}
+    assert ran.index("mix2") < ran.index("b")  # the mixes did not wait for "a"
+
+
+@macos_time
+def test_cancel_stops_a_running_light_job(
+    state: Path, make_job: Job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tools, "plan", lambda *a: tools.Plan([["/bin/sleep", "30"]], {})
+    )
+    monkeypatch.setattr(llm, "claim", lambda *a: pytest.fail("a light job claimed"))
+    mix = make_job("mix", "queued", tool="edit.mix")
+    worker = threading.Thread(target=server.worker, args=("light",), daemon=True)
+    worker.start()
+    server.wake_light.set()
+    assert until(lambda: "mix" in server.procs)
+    pgid = server.procs["mix"].pid
+    assert server.cancel_job("mix") == {"status": "cancelled"}
+    assert until(lambda: not server.procs, server.KILL_AFTER + 10)
+    assert not server.group_alive(pgid)
+    assert (mix["status"], mix["error"]) == ("cancelled", "Cancelled.")
+    assert worker.is_alive()  # the lane goes on
+    server.stopping.set()
+    server.wake_light.set()
+    worker.join(5)
+
+
+@macos_time
+def test_shutdown_stops_the_light_job_and_the_model_job(
+    state: Path, make_job: Job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tools, "plan", lambda *a: tools.Plan([["/bin/sleep", "30"]], {})
+    )
+    monkeypatch.setattr(llm, "claim", lambda peak, abort=lambda: False: True)
+    make_job("video", "queued", tool="video.t2v", order=1)
+    make_job("mix", "queued", tool="edit.mix", order=2)
+    workers = lanes()
+    assert until(lambda: set(server.procs) == {"video", "mix"})
+    pgids = [p.pid for p in server.procs.values()]
+    server.shutdown()
+    assert not any(server.group_alive(pgid) for pgid in pgids)
+    for w in workers:
+        w.join(5)
+        assert not w.is_alive()
+    for job_id in ("video", "mix"):
+        job = saved(state, job_id)
+        assert (job["status"], job["error"]) == ("cancelled", "The app was closed.")
+
+
+def test_a_queued_light_job_does_not_hold_the_chat_model_reload_back(
+    make_job: Job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reloads: list[str] = []
+    monkeypatch.setattr(llm, "claim", lambda peak, abort=None: True)
+    monkeypatch.setattr(llm, "reload_after_jobs", lambda: reloads.append("reload"))
+    monkeypatch.setattr(server, "run_job", lambda job: job.update(status="done"))
+    monkeypatch.setattr(server, "ended", lambda job: None)
+    make_job("a", "queued", order=1)
+    make_job("mix", "queued", tool="edit.mix", order=2)
+    server.run_next(server.jobs["a"])
     assert reloads == ["reload"]

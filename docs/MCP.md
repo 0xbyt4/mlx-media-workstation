@@ -74,7 +74,7 @@ app's port (7870 by default). The app always uses 7870, so you need it only for 
 
 | Tool | Arguments | Hints | What it does |
 |---|---|---|---|
-| `system_status` | none | read-only | The Mac's memory, the running job with its progress, the queue, the chat model, and for each media tool whether it fits now. |
+| `system_status` | none | read-only | The Mac's memory, the running jobs with their progress, the queue, the chat model, and for each media tool whether it fits now. |
 | `list_workstation_tools` | none | read-only | The media tools, their fields and whether their models are installed. |
 | `create_job` | `tool`, `fields` | not read-only, not destructive | Queues a media job and returns its id at once. |
 | `job_status` | `job_id` | read-only | One job: status, progress, error and output files. |
@@ -122,7 +122,12 @@ file in one of these forms:
 
 The app keeps all its rules for a job from MCP. The MCP server only sends the request.
 
-- One job runs at a time. A job from MCP goes to the end of the queue, as a job from the Create screen does.
+- One model job runs at a time. A job from MCP goes to the end of its lane, as a job from the Create screen does.
+- A tool that loads no model (`edit.mix`) runs in the light lane, next to the model job. It does not wait for the
+  model jobs, and it does not take memory from the chat model. One light job runs at a time.
+- `system_status` and `list_jobs` mark such a job with `light lane: loads no model, runs beside the model jobs`. A
+  queued light job shows `place N in the light lane`. When a light job runs next to a model job, `system_status`
+  shows `Running jobs:` with both.
 - A media tool fits when its peak memory plus 8 GB for macOS is at most the Mac's memory. `system_status` shows each
   tool as `fits now`, `fits after the chat model unloads` or `needs more than this Mac's memory`.
 - Before a job starts, the app checks it next to the chat model. When the job does not fit, the job waits until no

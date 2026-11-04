@@ -814,7 +814,9 @@ async function submit() {
 
   const fd = buildFormData(tool);
   saveFormNow();
-  const ahead = store.get('jobs').filter((j) => store.ACTIVE.has(j.status)).length;
+  // a job waits only for the jobs of its lane (a mix does not wait for a video job)
+  const lane = store.toolLane(tool.id);
+  const ahead = store.get('jobs').filter((j) => store.ACTIVE.has(j.status) && store.laneOf(j) === lane).length;
   s.submitting = true;
   updateGenerate();
   try {
@@ -999,7 +1001,8 @@ function updateGenerate() {
   const els = s.els;
   const tool = s.tool;
   const installed = tool ? store.toolInstalled(tool.id) : null;
-  const busy = store.get('jobs').some((j) => store.ACTIVE.has(j.status));
+  const lane = tool ? store.toolLane(tool.id) : 'model';
+  const busy = store.get('jobs').some((j) => store.ACTIVE.has(j.status) && store.laneOf(j) === lane);
   // The server checks the files again and says what is missing.
   els.generate.disabled = !tool || s.submitting || installed === false;
   els.reset.disabled = !tool;
@@ -1045,15 +1048,18 @@ function renderPre() {
       h('p', null, 'Median of ' + f.time.count + ' finished ' + (f.time.count === 1 ? 'job' : 'jobs') + ' on this Mac. Longer or larger settings take longer.'))
     : preRow('clock', h('strong', null, 'No time yet'), h('p', null, tool.description ? 'See the description above. The first job on this Mac sets the estimate.' : 'The first job on this Mac sets the estimate.')));
 
-  const run = store.runningJob();
-  const queued = store.queuedJobs();
+  // the wait counts only the jobs of the tool's lane
+  const lane = store.toolLane(tool.id);
+  const run = store.runningJob(lane);
+  const queued = store.queuedJobs(lane);
+  const rule = lane === 'light' ? 'It loads no model, so it runs beside the model jobs.' : 'One model job runs at a time.';
   if (!run && !queued.length) {
-    rows.push(preRow('jobs', h('strong', null, 'Starts now'), h('p', null, 'Nothing else is running.')));
+    rows.push(preRow('jobs', h('strong', null, 'Starts now'), h('p', null, lane === 'light' ? rule : 'Nothing else is running.')));
   } else {
-    const wait = store.queueSeconds();
+    const wait = store.queueSeconds(lane);
     const parts = [run ? 'After ' + (run.tool_label || run.tool) : 'After', queued.length ? (run ? ' and ' : ' ') + queued.length + ' queued job' + (queued.length > 1 ? 's' : '') : ''];
     rows.push(preRow('jobs', h('strong', null, wait !== null ? 'Starts in ' + fmtAbout(wait) : 'Waits in the queue'),
-      h('p', null, parts.join('') + '. One job runs at a time.')));
+      h('p', null, parts.join('') + '. ' + rule)));
   }
   const llm = store.get('llm');
   if (llm && llm.installed && store.llmUnloadsFor(f.peak)) {

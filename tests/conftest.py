@@ -176,6 +176,7 @@ def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(server, "procs", {})
     monkeypatch.setattr(server, "stopping", threading.Event())
     monkeypatch.setattr(server, "wake", threading.Event())
+    monkeypatch.setattr(server, "wake_light", threading.Event())
     monkeypatch.setattr(server, "claiming", set())
     monkeypatch.setattr(llm, "closed", False)  # shutdown() closes the LLM for good
     return out
