@@ -949,19 +949,20 @@ def is_heif(path: Path) -> bool:
     return head[4:8] == b"ftyp" and head[8:12] in HEIF_BRANDS
 
 
-def readable_image(src: Path, folder: Path) -> Path:
-    """The image as ffmpeg can read it: a HEIC or HEIF file becomes a PNG in folder (macOS's sips keeps its colour
-    profile); any other file is returned as it is. Raises ValueError (shown to the user)."""
+def readable_image(src: Path, folder: Path, fmt: str = "png") -> Path:
+    """The image as ffmpeg can read it: a HEIC or HEIF file becomes a PNG (or a JPEG for fmt "jpeg") in folder
+    (macOS's sips keeps its colour profile); any other file is returned as it is. Raises ValueError (shown to the
+    user)."""
     if not is_heif(src):
         return src
-    png = folder / f"{src.name}.png"
+    dst = folder / f"{src.name}.{'jpg' if fmt == 'jpeg' else fmt}"
     r = run_media(
-        [SIPS, "-s", "format", "png", str(src), "--out", str(png)], READ_SECONDS
+        [SIPS, "-s", "format", fmt, str(src), "--out", str(dst)], READ_SECONDS
     )
-    if r.returncode != 0 or not png.is_file():
+    if r.returncode != 0 or not dst.is_file():
         why = (r.stderr.strip().splitlines() or [f"exit code {r.returncode}"])[0]
         raise ValueError(f"Could not convert the HEIC image: {why}")
-    return png
+    return dst
 
 
 def image_format(path: Path) -> tuple[int, int, str]:
@@ -978,12 +979,31 @@ def image_format(path: Path) -> tuple[int, int, str]:
 
 def image_filter(src: Path, vf: str) -> list[str]:
     """ffmpeg's filter options that apply vf to the image. An image with alpha is laid on white first: LTX and the LLM
-    drop alpha, and the hidden colours of see-through pixels then show, mostly as dark edges."""
-    w, h, fmt = image_format(src)
+    drop alpha, and the hidden colours of see-through pixels then show, mostly as dark edges. The white comes from a
+    copy of the frame, not from the stored size: ffmpeg turns a frame upright by its EXIF orientation first, and a
+    turned frame has the other size."""
+    fmt = image_format(src)[2]
     if not ALPHA.match(fmt):
         return ["-vf", vf]
-    flat = f"[0:v]format=rgba[fg];color=c=white:s={w}x{h}[bg];[bg][fg]overlay=shortest=1:format=auto,format=rgb24"
+    flat = (
+        "[0:v]format=rgba,split[fg][c];[c]format=rgb24,drawbox=c=white:t=fill[bg];"
+        "[bg][fg]overlay=format=auto,format=rgb24"
+    )
     return ["-filter_complex", f"{flat},{vf}"]
+
+
+def on_white(src: Path, folder: Path) -> Path:
+    """The image for a model that reads it itself and drops alpha (mflux): an image with alpha is laid on white into
+    folder as <name>_white.png (an in_* name for an upload, so never an output); any other image is returned as it
+    is. One frame: the first of an animated GIF."""
+    flat = image_filter(src, "null")
+    if flat[0] == "-vf":
+        return src
+    dst = folder / f"{src.stem}_white.png"
+    prep(
+        ["ffmpeg", "-v", "error", "-y", *GUARD, "-i", str(src), *flat, "-frames:v", "1", "-update", "1", str(dst)]
+    )  # fmt: skip
+    return dst
 
 
 def fit_image(src: Path, dst: Path, w: int, h: int) -> None:
@@ -1130,7 +1150,8 @@ def plan(
         refs = files.get("references", [])
         if not refs:
             raise ValueError("Add at least one reference image.")
-        refs = [readable_image(r, out) for r in refs]
+        # mflux drops alpha itself: the hidden colours of see-through pixels would show
+        refs = [on_white(readable_image(r, out), out) for r in refs]
         w, h = size(params)
         return Plan(
             [
