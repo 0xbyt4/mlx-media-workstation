@@ -809,11 +809,12 @@ class Workstation:
             raise ValueError(str(e.detail)) from None
 
     def search_library(self, query: str, limit: int) -> list[dict[str, Any]]:
-        q = query.lower()
+        """Outputs whose prompt, tool or file name holds every word of the query, in any order."""
+        words = query.lower().split()
         found = []
         for e in library.entries():  # newest first
-            text = " ".join((e["text"], e["tool"], e["tool_label"], e["name"]))
-            if q in text.lower():
+            text = " ".join((e["text"], e["tool"], e["tool_label"], e["name"])).lower()
+            if all(w in text for w in words):
                 keys = ("job", "tool", "tool_label", "kind", "name", "created", "text")
                 found.append({k: e[k] for k in keys})
                 if len(found) >= limit:
@@ -945,7 +946,7 @@ def get_job(job_id: str) -> dict[str, Any]:
 def library_search(
     q: str = Query(min_length=1, max_length=200), limit: int = Query(10, ge=1, le=100)
 ) -> list[dict[str, Any]]:
-    """Finished outputs whose text, tool or file name contains q, newest first (the agent's search_library)."""
+    """Finished outputs whose text, tool or file name holds every word of q, newest first (the agent's search_library)."""
     return workstation.search_library(q, limit)
 
 

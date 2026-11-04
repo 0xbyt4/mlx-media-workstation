@@ -164,7 +164,7 @@ for another `to`.
   changes.
 
 `GET /api/library/search?q=<text>&limit=<1 to 100, default 10>` returns the outputs whose text, tool or file name
-contains `q` (1 to 200 characters, any case), newest first, as `{"job", "tool", "tool_label", "kind", "name",
+contains every word of `q` in any order (1 to 200 characters, any case), newest first, as `{"job", "tool", "tool_label", "kind", "name",
 "created", "text"}`. The agent's `search_library` shows this list.
 
 `POST /api/library/reveal` takes JSON `{"job": "<job id>", "name": "<file name>"}` and shows the file in Finder

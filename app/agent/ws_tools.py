@@ -587,7 +587,7 @@ def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
             name="search_library",
             description=(
                 "Search the user's finished outputs (images, audio, videos) by the words of their prompt, the "
-                "tool or the file name. Newest first."
+                "tool or the file name. An output matches when it holds every word of the query. Newest first."
             ),
             parameters={
                 "type": "object",
