@@ -45,6 +45,11 @@ the tools in the chat's tools array.
 | `fetch_url` | R2 | Reads one public web page as text, in parts of 10,000 characters. Sends the URL off this Mac. |
 | `run_python` | R3 | Runs Python code in the sandbox. Present only when the sandbox works on this Mac. |
 | `run_shell` | R3 | Runs a shell command (zsh) in the sandbox. Present only when the sandbox works on this Mac. |
+| `spotlight_search` | R1 | Finds files in the granted folder with Spotlight (`mdfind -onlyin`), by content or by name (at most 200 results). See [Host tools](#host-tools). |
+| `speak` | R0 | Saves text as speech (`say`) in the work folder: m4a, aiff or wav, at most 5,000 characters. Nothing plays. See [Host tools](#host-tools). |
+| `convert_document` | R1 | Converts a document (docx, doc, odt, rtf, html, txt) to txt, rtf, html, docx or odt (`textutil`). The new file goes into the work folder. See [Host tools](#host-tools). |
+| `list_shortcuts` | R0 | Lists the names of the user's Shortcuts. Its result is untrusted. See [Host tools](#host-tools). |
+| `run_shortcut` | R3 | Runs one of the user's Shortcuts by name, with an optional text input, and returns its text output. See [Host tools](#host-tools). |
 | `tool_search` | R0 | Finds the chat's tools by what they do (BM25) and returns the best matches with their full schema. In the tools array only when the chat has deferred tools. |
 | `tool_describe` | R0 | Returns the full schema of named tools. |
 | `tool_call` | R0 | Runs a deferred tool by name. The loop runs the named tool with its own level, so the rule of that tool applies. |
@@ -253,13 +258,63 @@ on its long side into the chat's folder (`view_<hex>.png`), where the sandbox ca
 the copy's name. The next model requests get it as an image part of that tool message. Only the newest 2 tool images
 go to the model, so the context stays small.
 
+## Host tools
+
+The shell sandbox has no access to system services (no `mach-lookup`). So Spotlight (`mdfind`), speech (`say`),
+`textutil` and `shortcuts` fail inside it. The host tools run these programs outside the sandbox instead. The code is
+in `app/agent/host_tools.py`. A provider (`HostTools`, loaded in `app/agent/providers.py`) gives the tools.
+
+- Each tool runs one program from `/usr/bin` with a fixed argument list. There is no shell.
+- The program gets its own session, no input (`/dev/null`) and a small environment (`PATH`, `HOME`, `LANG`).
+- Stop and the time limit kill its process group. The time limit is shorter when the answer ends sooner.
+- All host tools are deferred: they are not in the chat's tools array. The model finds them with `tool_search`.
+- A tool whose program is missing is not offered. The provider adds no text to the system prompt.
+
+| Tool | Program | Time limit | Rules |
+|---|---|---|---|
+| `spotlight_search` | `mdfind -0 -onlyin <folder>` | 20 s | Searches only the granted folder or a folder in it. The query must not start with `-`. The tool drops results outside the folder and hidden or secret files, and never says that one matched. Paths are relative. |
+| `speak` | `say -f <text file> -o <file>` | 120 s | The text goes in as a file, not as an argument. The tool picks the voice: the `voice` name, else the first voice of `language` that is not a novelty voice (such as Zarvox), else the Turkish voice for a text with Turkish-only letters (ğ, ş, ı, İ), else the system voice. A name must match a voice that `say -v ?` lists, because `say` uses the system voice for an unknown name without an error. |
+| `convert_document` | `textutil -convert <format> -noload -nostore` | 60 s | Reads a copy of the file, at most 50 MB. A docx or odt file gets the zip guard of attached files first. HTML loads no resources (`-noload`). HTML without a charset is read as UTF-8. A txt result also shows its first 8,000 characters. |
+| `list_shortcuts` | `shortcuts list --show-identifiers` | 15 s | Shows at most 300 names. |
+| `run_shortcut` | `shortcuts run <identifier> --output-path <file> [--input-path <file>]` | 120 s | Runs the shortcut by its identifier, not by its name. The input text goes in as a file, at most 20,000 characters. The tool returns text output only. |
+
+`speak` and `convert_document` write a new file into the chat's work folder. They never overwrite a file. The work
+folder's 500 MB limit applies. `convert_document` reads the granted folder (`location` `folder`) or the work folder
+(`location` `work`).
+
+### Risk levels of the host tools
+
+- `spotlight_search` is R1, as `search_files`. It reads names and indexed text of the files in the granted folder
+  only. The grant is the consent. It writes nothing and sends nothing off the Mac.
+- `speak` is R0. It reads only the text from the model and writes a new audio file into the work folder.
+- `convert_document` is R1 and needs no folder, as `media_info`. It reads a file and writes a new file into the
+  work folder only.
+- `list_shortcuts` is R0. It reads only the names of the shortcuts. The names are untrusted: a shortcut can come
+  from a link.
+- `run_shortcut` is R3. A shortcut can do anything: send messages, change files, use the network. So it asks every
+  time, and "Allow in this chat" is not offered.
+
+The approval card of `run_shortcut` shows the shortcut's name, its identifier and the whole input text:
+
+```
+Shortcut: Make GIF
+Identifier: 5ACAB88F-A7F9-4732-89FB-41A09F9EE79D
+Input text (10 characters):
+frames/a/
+```
+
+The tool reads the shortcut list again before it runs. When the card is different now (the shortcut was renamed, or
+another shortcut has the name), it does not run and tells the model to call it again. An unknown name fails before
+the card shows: the error gives the nearest names.
+
 ## Taint
 
 Taint is a flag per chat. It is stored in `chat.json` with the grants.
 
 - These tools set it when they run: `search_library`, `transcribe_audio`, `list_files`, `read_file`,
-  `search_files`, `copy_to_workspace`, `media_info`, `view_image`, `web_search`, `fetch_url`, `run_python` and
-  `run_shell`. Their results can hold text from outside the app (an image can hold written text too).
+  `search_files`, `copy_to_workspace`, `media_info`, `view_image`, `web_search`, `fetch_url`, `run_python`,
+  `run_shell`, `spotlight_search`, `convert_document`, `list_shortcuts` and `run_shortcut`. Their results can hold
+  text from outside the app (an image can hold written text too).
 - A message with an attached file that is not an image (a document, a text file, an audio file) sets it when the
   message is saved, before the model reads the file. This applies to agent chats and to workstation chats, also in the chat
   profile: the same chat can open later in the full profile, with tools. The file's text (or the audio's transcript) comes from outside
@@ -473,6 +528,12 @@ search fails only when every source fails.
   delete them.
 - `view_image` does not read HEIC. Convert the image first (for example with `run_python` or Preview).
 - An image attached to a message does not taint the chat, also when it shows written orders.
+- The host tools run outside the sandbox. `textutil` parses the documents of `convert_document` there, as it parses
+  attached files. `-noload` stops HTML from loading resources, but a file made to attack `textutil` could reach it.
+- When Stop or the time limit kills `shortcuts run`, the shortcut itself can go on in the Shortcuts service. A
+  shortcut that waits for an answer from the user (a dialog) runs into the 120 s limit.
+- Spotlight finds only indexed files. A new file can take a moment, and a folder that Spotlight skips gives no
+  results. `search_files` reads the text files directly.
 - The readers of attached files run outside the sandboxes: PDFKit in a child process of the app, `textutil`, and the
   standard library's zip and XML parsers. A file made to attack them could reach them. The limits (file size, zip
   size and part count, no XML `DOCTYPE`, 60 s per reader) make most such files fail.
