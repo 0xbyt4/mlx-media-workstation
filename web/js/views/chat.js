@@ -233,7 +233,7 @@ function build() {
   els.modeChip = h('span', {class: 'chip mode-chip'});
   els.chip = h('span', {class: 'model-chip', role: 'status'});
   els.unload = h('button', {type: 'button', class: 'btn btn-ghost btn-sm', hidden: true, onclick: unload}, 'Unload');
-  els.msgs = h('div', {class: 'msgs', role: 'region', 'aria-labelledby': 'chat-title', tabindex: '0'});
+  els.msgs = h('div', {class: 'msgs', role: 'region', 'aria-labelledby': 'chat-title', tabindex: '0', onscroll: onMsgsScroll});
   els.status = h('div', {class: 'sr-only', role: 'status', 'aria-live': 'polite'});
 
   els.notices = h('div', {class: 'chat-notices'});
@@ -999,6 +999,10 @@ function onAgentEvent(live, ev) {
     if (seg) Object.assign(seg, {result: ev, dirty: true});
   } else if (ev.event === 'plan') {
     const plan = planBlock(ev.items || []);
+    // motion only: the first plan fades in, and a step whose state changed marks it (motion.css)
+    const was = live.plan ? [...live.plan.querySelectorAll('.plan-item')].map((li) => li.className) : null;
+    if (!was) plan.classList.add('is-new');
+    else plan.querySelectorAll('.plan-item').forEach((li, k) => li.className !== was[k] && li.classList.add('is-changed'));
     if (live.plan) live.plan.replaceWith(plan);
     else live.flow.before(plan);
     live.plan = plan;
@@ -1656,14 +1660,27 @@ function statsLine(st) {
   return parts.length ? h('span', {class: 'msg-stats'}, parts.join(' · ')) : null;
 }
 
+// False after the user scrolled up, also by a little: a streaming answer then does not pull the view back down
+// until they scroll to the end again.
 function nearBottom() {
   const b = s.els.msgs;
-  return b.scrollHeight - b.scrollTop - b.clientHeight < 80;
+  return !s.scrolledUp && b.scrollHeight - b.scrollTop - b.clientHeight < 80;
 }
 
 function scrollToEnd() {
   const b = s.els.msgs;
+  s.scrolledUp = false;
   b.scrollTop = b.scrollHeight;
+  s.msgsTop = b.scrollTop;
+}
+
+// A scroll toward the start marks that the user reads back; reaching the end again clears it. Content that grows
+// does not scroll, and content that shrinks at the end lands at the end, so neither of them marks it.
+function onMsgsScroll() {
+  const b = s.els.msgs;
+  if (b.scrollHeight - b.scrollTop - b.clientHeight < 2) s.scrolledUp = false;
+  else if (b.scrollTop < s.msgsTop) s.scrolledUp = true;
+  s.msgsTop = b.scrollTop;
 }
 
 // ---------- composer ----------

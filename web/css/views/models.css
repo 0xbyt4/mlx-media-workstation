@@ -369,7 +369,7 @@
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 8px 14px;
   align-items: start;
-  transition: box-shadow 0.3s;
+  transition: box-shadow var(--dur-slow) var(--ease-standard);
 }
 .v-models .model:focus {
   outline: none;

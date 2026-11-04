@@ -197,7 +197,7 @@
   display: none;
 }
 .v-create details.adv > summary .ic {
-  transition: transform 0.15s;
+  transition: transform var(--dur-fast) var(--ease-standard);
   color: var(--text-3);
 }
 .v-create details.adv[open] > summary .ic {

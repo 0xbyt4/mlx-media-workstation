@@ -1,0 +1,176 @@
+/* Motion: durations, easings and the enter and leave animations of the shared parts and the views.
+   Rules: quick (about 120 to 250 ms) and quiet; only transform and opacity move; nothing waits for an animation, so
+   input is never blocked; only real activity (spinners, progress, the streaming caret) repeats. An enter animation
+   runs when its element is inserted or stops being display: none, so it is used only on elements that are made once
+   when they appear (not on parts a view builds again on every update).
+   Reduced motion (base.css) makes every animation and transition instant; the end of this file keeps the activity
+   indicators readable. */
+
+:root {
+  --dur-press: 80ms; /* button press */
+  --dur-fast: 120ms; /* hover, chevrons, menus */
+  --dur-base: 180ms; /* dialogs, popovers, toasts, disclosures, view switch */
+  --dur-slow: 240ms; /* drawers and slide-overs, highlight flash */
+  --dur-progress: 0.9s; /* a progress bar moving to its next value */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1); /* entering */
+  --ease-in: cubic-bezier(0.4, 0, 1, 1); /* leaving */
+}
+
+@keyframes motion-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes motion-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes motion-drop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@keyframes motion-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+@keyframes motion-slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@keyframes motion-slide-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+}
+@keyframes motion-fade-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes motion-mark-pop {
+  from {
+    transform: scale(0.6);
+  }
+}
+
+/* ---------- activity ---------- */
+/* main.js sets --motion-phase on each new indicator, so one that is built again goes on where the last one was */
+.spinner,
+.pill-run::before,
+.progress-fill,
+.progress-fill::after,
+.progress.indeterminate .progress-fill {
+  animation-delay: var(--motion-phase, 0s);
+}
+
+/* ---------- view switch ---------- */
+/* opacity only: a transform here would move the fixed drawer of a view while it runs */
+.views > .view {
+  animation: motion-fade-in var(--dur-base) var(--ease-out);
+}
+
+/* ---------- buttons ---------- */
+.btn {
+  transition: transform var(--dur-press) var(--ease-standard);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* ---------- overlays ---------- */
+.menu-pop {
+  animation: motion-pop-in var(--dur-fast) var(--ease-out);
+}
+.dialog[open] {
+  animation: motion-pop-in var(--dur-base) var(--ease-out);
+}
+.dialog[open]::backdrop {
+  animation: motion-fade-in var(--dur-base) var(--ease-out);
+}
+.lightbox {
+  animation: motion-fade-in var(--dur-base) var(--ease-out);
+}
+.lightbox figure {
+  animation: motion-pop-in var(--dur-base) var(--ease-out);
+}
+.toast {
+  animation: motion-rise-in var(--dur-base) var(--ease-out);
+}
+.toast.is-leaving {
+  animation: motion-fade-out var(--dur-fast) var(--ease-in) forwards;
+  pointer-events: none;
+}
+
+/* ---------- inline parts that appear on demand ---------- */
+details[open] > :not(summary) {
+  animation: motion-drop-in var(--dur-base) var(--ease-out);
+}
+.confirm,
+.offline {
+  animation: motion-fade-in var(--dur-base) var(--ease-out);
+}
+
+/* Loading notes show only when the wait is long enough to notice, so a fast load does not flash. */
+.lib-loading,
+.models-loading,
+.chat-loading {
+  animation: motion-fade-in var(--dur-base) var(--ease-out) 150ms both;
+}
+
+/* ---------- Library ---------- */
+.v-library .thumb {
+  transition: box-shadow var(--dur-fast) var(--ease-standard);
+}
+.v-library .lib-scrim {
+  animation: motion-fade-in var(--dur-slow) var(--ease-out);
+}
+.v-library .lib-drawer {
+  animation: motion-slide-in-right var(--dur-slow) var(--ease-out);
+}
+
+/* ---------- Chat ---------- */
+.v-chat .chat.show-convos .convos {
+  animation: motion-slide-in-left var(--dur-slow) var(--ease-out);
+}
+.v-chat .tools-pop {
+  animation: motion-rise-in var(--dur-base) var(--ease-out);
+}
+.v-chat .approval {
+  animation: motion-fade-in var(--dur-base) var(--ease-out);
+}
+/* the plan: the first plan fades in; a step whose state changed marks it (chat.js sets the classes) */
+.v-chat .agent-plan.is-new {
+  animation: motion-fade-in var(--dur-base) var(--ease-out);
+}
+.v-chat .plan-item.is-changed .plan-mark {
+  animation: motion-mark-pop var(--dur-base) var(--ease-out);
+}
+
+/* ---------- reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  /* Activity stays visible: the spinner turns (as macOS spinners do), and an unknown progress shows as a still,
+     soft full bar instead of an empty one. */
+  .spinner {
+    animation-duration: 0.8s !important;
+    animation-iteration-count: infinite !important;
+  }
+  .progress.indeterminate .progress-fill {
+    width: 100% !important;
+    opacity: 0.4;
+    animation: none !important;
+  }
+  .toast.is-leaving {
+    opacity: 0;
+  }
+}

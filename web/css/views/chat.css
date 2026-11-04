@@ -296,7 +296,7 @@
   margin-right: 6px;
 }
 .v-chat .think .chev {
-  transition: transform 0.15s;
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 .v-chat .think[open] > summary .chev {
   transform: rotate(90deg);
@@ -782,7 +782,7 @@
 }
 .v-chat .tool-card .chev {
   flex: none;
-  transition: transform 0.15s;
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 .v-chat .tool-card[open] > summary .chev {
   transform: rotate(90deg);
