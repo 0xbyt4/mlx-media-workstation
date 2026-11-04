@@ -1162,6 +1162,16 @@ def plan(
             )
             for i in (0, 1)
         ]
+        # each voice reference becomes a WAV here, through the input whitelist: the runner's audio loader would
+        # otherwise open the upload with its own unguarded ffmpeg
+        for k, (i, src, text) in enumerate(refs):
+            if src is not None:
+                wav = out / f"in_ref{i}_voice.wav"
+                prep(
+                    ["ffmpeg", "-v", "error", "-y", *GUARD, "-i", str(src), "-vn",
+                     "-c:a", "pcm_s24le", str(wav)]
+                )  # fmt: skip
+                refs[k] = (i, wav, text)
         spec.write_text(
             json.dumps(
                 {

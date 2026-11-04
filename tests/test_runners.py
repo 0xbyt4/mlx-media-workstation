@@ -179,7 +179,7 @@ def test_drama_level_raises_quiet_speech(drama_np: ModuleType) -> None:
     sr = 44100
     t = np.arange(6 * sr) / sr
     on = (t % 1.0) < 0.6  # word-like bursts with gaps
-    quiet = (0.02 * np.sin(2 * np.pi * 300 * t) * on).astype(np.float32)
+    quiet = (0.05 * np.sin(2 * np.pi * 300 * t) * on).astype(np.float32)
     out, measured = drama_np.level(quiet, sr)
     assert measured < -30
     assert drama_np.loudness(out, sr) == pytest.approx(-16.0, abs=0.1)
@@ -190,6 +190,10 @@ def test_drama_level_raises_quiet_speech(drama_np: ModuleType) -> None:
     out, _ = drama_np.level(spiky, sr)
     assert 20 * np.log10(np.max(np.abs(out))) == pytest.approx(-1.0, abs=0.01)
     assert drama_np.loudness(out, sr) < -16.5
+
+    faint = (quiet * 0.05).astype(np.float32)  # 26 dB under: the gain stops at +20 dB
+    out, measured = drama_np.level(faint, sr)
+    assert drama_np.loudness(out, sr) == pytest.approx(measured + 20.0, abs=0.1)
 
     silent = np.zeros(sr, np.float32)
     out, measured = drama_np.level(silent, sr)

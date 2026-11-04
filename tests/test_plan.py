@@ -185,8 +185,8 @@ def test_klein_edit_needs_a_reference(tmp_path: Path) -> None:
 # Voice and music: the runner gets a JSON job file
 
 
-def test_drama3_job_file(tmp_path: Path) -> None:
-    ref1 = tmp_path / "in_ref1_0.wav"
+def test_drama3_job_file(tmp_path: Path, media: FakeMedia) -> None:
+    ref1 = tmp_path / "in_ref1_0.ogg"
     p = params("voice.drama3", text="<|speaker:1|> Hello there.", takes="3", seed="7")
     p["ref1_text"] = "  Hello, I am the reference.  "
     plan = tools.plan("voice.drama3", p, {"ref1": [ref1]}, tmp_path)
@@ -208,13 +208,22 @@ def test_drama3_job_file(tmp_path: Path) -> None:
         "top_p": 0.9,
         "top_k": 30,
         "refs": [
-            {"audio": str(ref1), "text": "Hello, I am the reference.", "speaker": 1}
+            {
+                "audio": str(tmp_path / "in_ref1_voice.wav"),
+                "text": "Hello, I am the reference.",
+                "speaker": 1,
+            }
         ],
         "out": str(tmp_path),
     }
+    # the reference goes through the input whitelist into a WAV before the runner reads it
+    assert media.prepped == [
+        ["ffmpeg", "-v", "error", "-y", *GUARD, "-i", str(ref1), "-vn", "-c:a", "pcm_s24le",
+         str(tmp_path / "in_ref1_voice.wav")]
+    ]  # fmt: skip
 
 
-def test_drama3_two_references_and_no_seed(tmp_path: Path) -> None:
+def test_drama3_two_references_and_no_seed(tmp_path: Path, media: FakeMedia) -> None:
     refs = {"ref0": [tmp_path / "in_ref0_0.wav"], "ref1": [tmp_path / "in_ref1_0.flac"]}
     p = params(
         "voice.drama3",
@@ -235,8 +244,8 @@ def test_drama3_two_references_and_no_seed(tmp_path: Path) -> None:
         2,
     )
     assert spec["refs"] == [
-        {"audio": str(refs["ref0"][0]), "text": "zero", "speaker": 0},
-        {"audio": str(refs["ref1"][0]), "text": "one", "speaker": 1},
+        {"audio": str(tmp_path / "in_ref0_voice.wav"), "text": "zero", "speaker": 0},
+        {"audio": str(tmp_path / "in_ref1_voice.wav"), "text": "one", "speaker": 1},
     ]
 
 

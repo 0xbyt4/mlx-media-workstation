@@ -5,7 +5,8 @@ max_tokens about 2.5x the expected length of the longest chunk (21.5 frames a se
 or longer than the words need, holds 3 s or more of near-silence, or the speech recogniser misses over 15 % of the
 words. The cache is capped and cleared between takes, so memory does not creep up over a session. The model's raw speech is
 often about 10 dB quiet (-26 LUFS), so each take is raised toward -16 LUFS; the gain stops where the loudest sample
-reaches -1 dBFS, so nothing clips (peaky speech then ends under -16 LUFS).
+reaches -1 dBFS, so nothing clips (peaky speech then ends under -16 LUFS), and at +20 dB. The silence check reads
+the take before the gain.
 
   python drama3.py job.json
 """
@@ -25,7 +26,7 @@ from scipy.signal import lfilter
 
 ASR = "mlx-community/Qwen3-ASR-0.6B-8bit"
 WORDS_PER_SECOND = 2.5
-TARGET_LUFS, MAX_PEAK_DB = -16.0, -1.0
+TARGET_LUFS, MAX_PEAK_DB, MAX_GAIN_DB = -16.0, -1.0, 20.0
 
 
 def spoken(text: str) -> str:
@@ -101,7 +102,9 @@ def level(x: np.ndarray, sr: int) -> tuple[np.ndarray, float | None]:
     peak = float(np.max(np.abs(x))) if len(x) else 0.0
     if measured is None or peak == 0:
         return x, measured
-    gain_db = min(TARGET_LUFS - measured, MAX_PEAK_DB - 20 * np.log10(peak))
+    gain_db = min(
+        TARGET_LUFS - measured, MAX_PEAK_DB - 20 * np.log10(peak), MAX_GAIN_DB
+    )
     return (x * 10 ** (gain_db / 20)).astype(np.float32), measured
 
 
@@ -156,15 +159,14 @@ def main() -> None:
                 [np.asarray(r.audio, np.float32) for r in tts.generate(text=text, **kw)]
             )
             mx.clear_cache()
+            sil = longest_silence(
+                audio, sr
+            )  # on the raw take: the gain must not hide a long gap
             audio, _ = level(audio, sr)
             path = out / f"take{k + 1}.wav"
             wavfile.write(path, sr, audio)
             heard = asr.generate(str(path)).text
-            dur, miss, sil = (
-                len(audio) / sr,
-                missing_share(spoken(text), heard),
-                longest_silence(audio, sr),
-            )
+            dur, miss = len(audio) / sr, missing_share(spoken(text), heard)
             problems = [
                 p
                 for p, bad in (

@@ -160,7 +160,7 @@ Expressive speech and dialogue. Speech recognition (Qwen3-ASR) checks each take.
 | Top k (advanced) | 30 | 5 to 200. |
 
 The output is `take1.wav`, `take2.wav` and so on. Each take is raised toward -16 LUFS. The gain stops where the
-loudest sample reaches -1 dBFS, so a take never clips. The note of each take says "checked ok" or "CHECK FAILED" with
+loudest sample reaches -1 dBFS, so a take never clips, and it is at most +20 dB. The note of each take says "checked ok" or "CHECK FAILED" with
 the reason. The check finds a wrong length, a silence of 3 s or more, or more than 15% of the words not heard. A take that
 fails the check is made once more with another seed.
 
