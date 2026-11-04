@@ -7,7 +7,7 @@ carries only the protocol.
 
 Requests: {"op": "generate", "id", "messages", "images", "thinking", "schema", "max_tokens", "chat", "tools",
 "tool_choice", "reasoning_effort", "thinking_budget", "allow_emoji"}, {"op": "cancel", "id"}, {"op": "save", "id",
-"path"}, {"op": "restore", "id", "path", "chat"} and {"op": "shutdown"}.
+"path"}, {"op": "restore", "id", "path", "chat"}, {"op": "forget", "chat"} and {"op": "shutdown"}.
 Events: {"event": "ready"}, then per request "reasoning" and "content" deltas, and one "done" (with the full answer
 and its stats) or "error". A save ends with {"event": "saved", "chat", ...} or "error", a restore with
 {"event": "restored", "chat", "tokens", "seconds"} or "error".
@@ -874,7 +874,7 @@ def read_requests(jobs: queue.Queue, cancels: dict[str, threading.Event]) -> Non
         elif op == "generate":
             cancels[req["id"]] = threading.Event()
             jobs.put(req)
-        elif op in ("save", "restore"):  # in the queue: MLX runs on the main thread
+        elif op in ("save", "restore", "forget"):  # in the queue: MLX runs on the main thread, in order
             jobs.put(req)
         elif op == "shutdown":
             break
@@ -897,6 +897,10 @@ def main() -> None:
     threading.Thread(target=read_requests, args=(jobs, cancels), daemon=True).start()
     # every MLX call stays on this thread: mlx-vlm's generation stream is thread-local
     while (req := jobs.get()) is not None:
+        if req["op"] == "forget":  # a deleted chat: a later save must not write its tokens
+            if req.get("chat") == engine.chat:
+                engine.chat, engine.state = None, engine.cache_state()
+            continue
         if req["op"] in ("save", "restore"):
             try:
                 (engine.save if req["op"] == "save" else engine.restore)(req)

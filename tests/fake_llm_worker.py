@@ -308,7 +308,7 @@ def main():
             elif req["op"] == "generate":
                 cancels[req["id"]] = threading.Event()
                 jobs.put(req)
-            elif req["op"] in ("save", "restore"):
+            elif req["op"] in ("save", "restore", "forget"):
                 jobs.put(req)
             elif req["op"] == "shutdown":
                 break
@@ -321,6 +321,10 @@ def main():
             continue
         if req["op"] == "restore":
             restore(req)
+            continue
+        if req["op"] == "forget":
+            if req.get("chat") == kept["chat"]:
+                kept.update(chat=None, tokens=0)
             continue
         rid, cancel = req["id"], cancels[req["id"]]
         if req.get("tools"):

@@ -405,10 +405,17 @@ def restore(w: Worker, chat: str | None) -> None:
 
 
 def forget_chat(chat_id: str) -> None:
-    """A chat was deleted: delete its saved prompt cache (also one that a running save writes now)."""
+    """A chat was deleted: the running worker drops its cache of that chat, so no later save writes it, and its saved
+    prompt cache is deleted (also one that a running save writes now)."""
     with lock:
         if forgotten is not None:
             forgotten.add(chat_id)
+        w = worker
+    if w is not None and w.alive():
+        try:
+            w.send({"op": "forget", "chat": chat_id})
+        except LLMError:  # the worker is gone, and its cache with it
+            pass
     info = llm_worker.cache_info(CACHE)
     if info is not None and info.get("chat") == chat_id:
         CACHE.unlink(missing_ok=True)

@@ -1068,6 +1068,16 @@ def test_deleting_the_chat_deletes_its_cache(client, llm_cache):
     assert not llm_cache.exists()
 
 
+def test_a_chat_deleted_before_a_job_is_never_saved(client, llm_cache):
+    cid = new_chat(client)
+    client.post(f"/api/chats/{cid}/messages", data={"text": "Hello"})
+    assert not llm_cache.exists()  # still only in the worker's memory
+    assert client.delete(f"/api/chats/{cid}").status_code == 200
+    big_job()
+    assert not llm_cache.exists()
+    assert f"saved chat {cid}" not in (llm.LOG.read_text() if llm.LOG.exists() else "")
+
+
 def test_a_chat_deleted_while_its_cache_is_saved_loses_it(fake_llm, llm_cache):
     fake_llm("lagsave")
     cached(turns(1), "A")
