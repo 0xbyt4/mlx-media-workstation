@@ -2,9 +2,9 @@
 // returns the unsubscribe function (call it in unmount).
 //
 // Events: 'tools', 'jobs', 'system', 'llm', 'assist', 'models' (the new value), 'offline' (true/false),
+// 'signedout' (true/false: the server refuses this page's session, as after a restart of the app),
 // 'job:finished' (a job that went from queued/running to done, failed or cancelled while the page was open),
-// 'profile' ('full' or 'chat': what the UI shows; see profile() below), 'signedout' (true/false: the server answers
-// HTTP 401, because it restarted with a new session token).
+// 'profile' ('full' or 'chat': what the UI shows; see profile() below).
 
 import {api, poll} from './api.js';
 
@@ -30,7 +30,7 @@ const state = {
   assist: null,
   models: null,
   offline: false,
-  signedOut: false,
+  signedOut: false, // HTTP 401: a restarted server has a new token, and this page still has the old cookie
   profile: pinned, // null until /api/system answers
 };
 const listeners = new Map();

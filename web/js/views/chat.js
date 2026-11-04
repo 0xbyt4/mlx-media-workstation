@@ -410,10 +410,21 @@ async function unload() {
 async function loadList() {
   const me = s;
   if (!me) return null;
-  const chats = await me.api.chats();
+  let chats;
+  try {
+    chats = await me.api.chats();
+  } catch (e) {
+    // the poll tries again; meanwhile the list says why it is empty instead of "Loading chats..." for good
+    if (s === me) {
+      s.listError = errText(e);
+      renderList();
+    }
+    throw e;
+  }
   if (s !== me) return chats;
   s.chats = chats;
   s.chatsLoaded = true;
+  s.listError = '';
   renderList();
   return chats;
 }
@@ -430,12 +441,12 @@ function renderList() {
   const running = (c) => !!(c.running || (s.live && s.live.chatId === c.id));
   const sub = (c) => timeAgo(c.updated) + ' · ' + c.messages + (c.messages === 1 ? ' message' : ' messages');
   // Redraw only when something shown changed: a redraw between mousedown and mouseup loses the click.
-  const sig = JSON.stringify([q, memo.activeId, s.confirmFor, s.chatsLoaded, items.map((c) => [c.id, c.title, running(c), sub(c)])]);
+  const sig = JSON.stringify([q, memo.activeId, s.confirmFor, s.chatsLoaded, s.listError, items.map((c) => [c.id, c.title, running(c), sub(c)])]);
   if (sig === s.listSig) return;
   s.listSig = sig;
   list.replaceChildren();
   if (!s.chats.length) {
-    list.append(h('li', {class: 'convo-none'}, s.chatsLoaded ? 'No chats yet.' : 'Loading chats...'));
+    list.append(h('li', {class: 'convo-none'}, s.chatsLoaded ? 'No chats yet.' : s.listError ? 'The chats could not load: ' + s.listError : 'Loading chats...'));
     return;
   }
   if (!items.length) list.append(h('li', {class: 'convo-none'}, 'No chat title contains "' + s.query.trim() + '".'));
@@ -1519,6 +1530,10 @@ function renderTools(focusKey) {
   input.addEventListener('input', () => (t.folderDraft = input.value));
   const grant = () => {
     if (input.value.trim()) changeTools({folder: input.value.trim()}, 'folder');
+    else {
+      t.folderError = 'Enter the full path of a folder, such as /Users/you/Documents/notes.';
+      renderTools('folder');
+    }
   };
   const folder = st.folder
     ? h('div', {class: 'tools-folder-set'}, icon('folder', 'ic-sm'), h('code', {title: st.folder}, st.folder),

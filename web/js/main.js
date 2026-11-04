@@ -211,7 +211,7 @@ function renderOffline() {
   const out = !off && store.get('signedOut');
   el.hidden = !off && !out;
   el.replaceChildren(...(off ? [icon('alert'), 'Server offline. Retrying...']
-    : out ? [icon('alert'), 'This window is signed out: the app restarted. Open Workstation again, or open the new link that start.py printed.']
+    : out ? [icon('alert'), 'This page is signed out: the app started again. Open it with Workstation.app, or with the link that start.py prints.']
       : []));
 }
 

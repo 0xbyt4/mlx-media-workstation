@@ -574,7 +574,10 @@ function onFormInput(e) {
   scheduleSave();
   const ctl = s.controls.get(e.target.name);
   if (ctl && ctl.counter) updateCounter(ctl);
-  if (ctl && ctl.wrap.classList.contains('invalid') && ctl.validate() === null) showFieldError(ctl, null);
+  if (ctl && ctl.wrap.classList.contains('invalid') && ctl.validate() === null) {
+    showFieldError(ctl, null);
+    showSummary([...s.controls.values()].filter((c) => c.wrap.classList.contains('invalid')).length); // count again
+  }
   const key = ctl && s.tool.id + ':' + ctl.field.name;
   if (ctl && ctl.improveBtn && ['empty', 'error', 'cancelled'].includes((improve.get(key) || {}).status)) {
     improve.delete(key);
@@ -629,6 +632,7 @@ function saveFormNow() {
 }
 
 function scheduleSave() {
+  if (!s) return; // a field that loses the focus while the view closes sends its change after unmount()
   clearTimeout(s.saveTimer);
   s.saveTimer = setTimeout(saveFormNow, 300);
 }
@@ -660,6 +664,20 @@ function clearMessages() {
   for (const ctl of s.controls.values()) showFieldError(ctl, null);
   showSummary(0);
   showSubmitError(null);
+}
+
+// The Undo of a toast for a change that replaced the form's values (Reset, Use these settings, Use in): it puts
+// the values from before back, as long as the same tool is open.
+function undoAction(before) {
+  const toolId = s.tool.id;
+  return {label: 'Undo', run: () => {
+    if (!s || !s.tool || s.tool.id !== toolId) return;
+    applyValues(before);
+    saveFormNow();
+    clearMessages();
+    updateCounters();
+    growAll();
+  }};
 }
 
 function resetForm() {
@@ -1032,6 +1050,7 @@ function useSettings(job) {
     s.ctx.handoff.useSettings(job);
     return;
   }
+  const before = collectValues();
   applyValues(job.params || {});
   const advChanged = [...s.controls.values()].some((c) => c.field.advanced && !c.isFile && job.params
     && Object.hasOwn(job.params, c.field.name) && fmtValue(c.get()) !== fmtValue(c.field.default));
@@ -1041,7 +1060,8 @@ function useSettings(job) {
   updateCounters();
   growAll();
   const fileFields = [...s.controls.values()].filter((c) => c.isFile && c.field.required).map((c) => c.field.label);
-  toast('Loaded the settings of job ' + job.id + '.' + (fileFields.length ? ' Add the files again: ' + fileFields.join(', ') + '.' : ''));
+  toast('Loaded the settings of job ' + job.id + '.' + (fileFields.length ? ' Add the files again: ' + fileFields.join(', ') + '.' : ''),
+    {action: undoAction(before)});
   s.root.closest('.views').scrollTo({top: 0, behavior: 'smooth'});
 }
 
@@ -1056,10 +1076,11 @@ function takeHandoff(toolId) {
 function useText(item) {
   const ctl = s.controls.get(item.field);
   if (!ctl || ctl.isFile) return;
+  const before = collectValues();
   ctl.set(item.text);
   saveFormNow();
   if (ctl.field.advanced && s.els.adv) s.els.adv.open = true;
-  toast('Put the text into ' + s.tool.label + ' › ' + ctl.field.label + '.');
+  toast('Put the text into ' + s.tool.label + ' › ' + ctl.field.label + '.', {action: undoAction(before)});
   ctl.focus();
 }
 

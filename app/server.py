@@ -65,6 +65,12 @@ WEB = ROOT / "web"
 PORT = 7870
 TAIL_LINES = 25  # log lines in a job's view
 TAIL_BYTES = 64 * 1024  # the part of a running job's log that is read for its tail
+# the report /usr/bin/time -l adds after each command: the times line, then one "<number>  <name>" line per counter.
+# peak_gb reads it from the log; the tail leaves it out, so the model's own last lines fill the job's view.
+TIME_REPORT = re.compile(
+    r"^ *[\d.]+ real +[\d.]+ user +[\d.]+ sys\n(?: *-?\d+ +[a-z][a-z ]*(?:\n|$))*",
+    re.MULTILINE,
+)
 ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
 KINDS = {
     ".png": "image",
@@ -305,7 +311,7 @@ def peak_gb(log: str) -> float | None:
 
 
 def tail(log: str) -> str:
-    return "\n".join(log.splitlines()[-TAIL_LINES:])
+    return "\n".join(TIME_REPORT.sub("", log).splitlines()[-TAIL_LINES:])
 
 
 def live_tail(path: Path) -> str:
@@ -317,10 +323,14 @@ def live_tail(path: Path) -> str:
             text = f.read().decode(errors="replace")
     except OSError:  # not yet written while the job's inputs are prepared
         return ""
-    lines = text.splitlines()
+    lines = TIME_REPORT.sub("", text).splitlines()
     if size > TAIL_BYTES:  # the first line is cut
         lines = lines[1:]
     return "\n".join(lines[-TAIL_LINES:])
+
+
+class JobFailed(Exception):
+    """A job failure the app itself describes: its message is the whole error, with no exception name."""
 
 
 def run_job(job: dict[str, Any]) -> None:
@@ -359,18 +369,21 @@ def run_job(job: dict[str, Any]) -> None:
                 if job["status"] == "cancelled":
                     return
                 if code != 0:
-                    raise RuntimeError(
+                    raise JobFailed(
                         f"The model process exited with code {code}. See the log."
                     )
         notes_file = job_dir / "notes.json"
         notes = json.loads(notes_file.read_text()) if notes_file.exists() else {}
         job["outputs"] = outputs(job_dir, notes)
         if not job["outputs"]:
-            raise RuntimeError("The model finished but wrote no output.")
+            raise JobFailed("The model finished but wrote no output.")
         job["status"] = "done"
     except Exception as e:  # noqa: BLE001 - any failure belongs to this job; the worker must keep running
         if job["status"] != "cancelled":
-            job["status"], job["error"] = "failed", f"{type(e).__name__}: {e}"
+            job["status"], job["error"] = (
+                "failed",
+                str(e) if isinstance(e, JobFailed) else f"{type(e).__name__}: {e}",
+            )
     finally:
         log = log_path.read_text(errors="replace") if log_path.exists() else ""
         job["log_tail"] = tail(log)

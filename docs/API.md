@@ -89,6 +89,7 @@ checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Erro
   before it starts.
 - `elapsed` counts from `started` while the job runs; after it, it is the time the job took.
 - `log_tail` holds the last 25 lines of `job.log`. While the job runs, it is read from the file on each request.
+  It leaves out the report that `/usr/bin/time -l` writes after each command; `peak_gb` comes from that report.
 - Only one job runs at a time (each model needs most of the memory of a 32-48 GB Mac).
 - `kind: "text"` is a `.txt` output: the transcript of a `voice.transcribe` job.
 - A job that an agent chat queued has `"chat": "<chat id>"` in its `job.json`. `GET /api/jobs` lists the job like
