@@ -79,11 +79,11 @@ app's port (7870 by default). The app always uses 7870, so you need it only for 
 | `system_status` | none | read-only | The Mac's memory, the running jobs with their progress, the queue, the chat model, and for each media tool whether it fits now. |
 | `list_workstation_tools` | none | read-only | The media tools, their fields and whether their models are installed. |
 | `create_job` | `tool`, `fields` | not read-only, not destructive | Queues a media job and returns its id at once. |
-| `job_status` | `job_id` | read-only | One job: status, progress, error and output files. |
+| `job_status` | `job_id` | read-only | One job: prompt (at most 400 characters), status, progress, error and output files. |
 | `wait_for_job` | `job_id`, `seconds` (1 to 600, default 50) | read-only | Waits until the job ends or the time is over, then shows it as `job_status` does. |
 | `list_jobs` | `limit` (1 to 30, default 10) | read-only | The queued and running jobs and the newest finished ones, one line each. |
 | `cancel_job` | `job_id` | not read-only, destructive, idempotent | Cancels a queued or running job that an MCP client queued. |
-| `search_library` | `query`, `limit` (1 to 30, default 10) | read-only | Finished outputs by prompt text, tool or file name: the ones with the most query words first, then the newest. |
+| `search_library` | `query`, `limit` (1 to 30, default 10) | read-only | Finished outputs by prompt text, tool, file name or job id: the ones with the most query words first, then the newest. |
 | `transcribe_audio` | `audio` or `job_id`, `language` (default `auto`), `seconds` | not read-only, not destructive | Speech to text with Qwen3-ASR: queues a `voice.transcribe` job and waits for its text. |
 
 Every tool has `openWorldHint: false`: no tool reaches past this Mac. The hints come from the tool's risk level in
