@@ -225,12 +225,31 @@ export function toolTime(toolId) {
   return {seconds: xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2, count: xs.length};
 }
 
-export function runningJob() {
-  return state.jobs.find((j) => j.status === 'running') || null;
+// The queue has two lanes (app/server.py): 'model' jobs run one at a time with the memory; 'light' jobs (tools that
+// load no model, such as edit.mix) run one at a time beside them. A job's position is its place in its lane.
+export function laneOf(job) {
+  return job.lane === 'light' ? 'light' : 'model';
 }
 
-export function queuedJobs() {
-  return state.jobs.filter((j) => j.status === 'queued').sort((a, b) => (a.position || 0) - (b.position || 0));
+// The lane of a tool's jobs: 'light' when it loads no model (peak 0), else 'model' (also while the models load).
+export function toolLane(toolId) {
+  return toolPeak(toolId) === 0 ? 'light' : 'model';
+}
+
+// The running job of a lane; the 'model' lane's job is the one that holds the memory.
+export function runningJob(lane = 'model') {
+  return state.jobs.find((j) => j.status === 'running' && laneOf(j) === lane) || null;
+}
+
+// Every running job (at most one in each lane), the model job first.
+export function runningJobs() {
+  return ['model', 'light'].map(runningJob).filter(Boolean);
+}
+
+// The queued jobs of a lane in the order they run; with no lane, the model lane's and then the light lane's.
+export function queuedJobs(lane) {
+  if (!lane) return [...queuedJobs('model'), ...queuedJobs('light')];
+  return state.jobs.filter((j) => j.status === 'queued' && laneOf(j) === lane).sort((a, b) => (a.position || 0) - (b.position || 0));
 }
 
 // Elapsed seconds of a job, counted on from the last fetch while it runs.
@@ -241,16 +260,16 @@ export function liveElapsed(job) {
   return isNaN(started) ? null : (Date.now() - started) / 1000;
 }
 
-// Seconds until the queue is empty, or null when a part of it has no estimate.
-export function queueSeconds() {
+// Seconds until a lane of the queue is empty, or null when a part of it has no estimate.
+export function queueSeconds(lane = 'model') {
   let total = 0;
-  const run = runningJob();
+  const run = runningJob(lane);
   if (run) {
     const left = run.progress && typeof run.progress.eta_s === 'number' ? run.progress.eta_s : null;
     if (left === null) return null;
     total += left;
   }
-  for (const j of queuedJobs()) {
+  for (const j of queuedJobs(lane)) {
     const t = toolTime(j.tool);
     if (!t) return null;
     total += t.seconds;
@@ -282,7 +301,10 @@ export const store = {
   toolPeak,
   toolInstalled,
   toolTime,
+  laneOf,
+  toolLane,
   runningJob,
+  runningJobs,
   queuedJobs,
   liveElapsed,
   queueSeconds,

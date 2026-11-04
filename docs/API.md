@@ -92,6 +92,7 @@ checks of an agent's job (see docs/AGENT.md, "Input files": a file must have a m
     "finished": null,
     "elapsed": 42.5,
     "progress": {"stage": "Stage 2: 1/3", "fraction": 0.52, "eta_s": 95},
+    "lane": "model | light",
     "position": 0,
     "params": {"prompt": "...", "size": "768x1344"},
     "outputs": [
@@ -105,7 +106,9 @@ checks of an agent's job (see docs/AGENT.md, "Input files": a file must have a m
 ]
 ```
 
-- `position` is the place in the queue for queued jobs (1 = next), 0 otherwise.
+- `lane` is the job's lane in the queue (see "The two lanes" below): `"light"` for a tool that loads no model
+  (`edit.mix`), else `"model"`.
+- `position` is the place of a queued job in its lane (1 = next in that lane), 0 otherwise.
 - `progress` is set only while a job runs, otherwise `null`. It comes from the model's own output (app/progress.py).
   `stage` is a short label, `fraction` is the share of the whole job done (0-1), and `eta_s` is the seconds left.
   `eta_s` blends the live rate with the median time of finished jobs with the same settings. Each field is `null`
@@ -118,7 +121,8 @@ checks of an agent's job (see docs/AGENT.md, "Input files": a file must have a m
 - `error` is set when a job fails or is cancelled. It is a plain message without an exception name. When an ffmpeg
   step fails, it is `ffmpeg failed (exit code N): ` with the line of ffmpeg's output that names the cause (the
   `[name @ 0x...]` prefixes removed). When a model fails, it is `The model process exited with code N. See the log.`
-- Only one job runs at a time (each model needs most of the memory of a 32-48 GB Mac).
+- Only one model job runs at a time (each model needs most of the memory of a 32-48 GB Mac). One light job can run
+  at the same time.
 - `kind: "text"` is a `.txt` output: the transcript of a `voice.transcribe` job.
 - A job that an agent chat queued has `"chat": "<chat id>"` in its `job.json`; a job from the MCP server has
   `"chat": "mcp"`. `GET /api/jobs` lists the job like any other job, without this key.
@@ -132,14 +136,32 @@ status when it has already ended. `DELETE /api/jobs/{id}` removes a finished job
 (HTTP 400 while the job is queued or running). Both return HTTP 404 for an unknown id.
 
 `POST /api/jobs/{id}/move` takes JSON `{"to": "up" | "down" | "top" | "bottom"}` and moves a queued job one place up
-or down, or to the first or last place of the queue. It returns `{"position": 2}`, the job's new `position`. A move
-past an end changes nothing. Errors: HTTP 404 for an unknown job, HTTP 409 for a job that is not queued, HTTP 422
-for another `to`.
+or down, or to the first or last place of its lane. It returns `{"position": 2}`, the job's new `position`. A move
+past an end changes nothing. A move never takes a job past a job of the other lane. Errors: HTTP 404 for an unknown
+job, HTTP 409 for a job that is not queued, HTTP 422 for another `to`.
 
 - The queue order is the `order` number in each `job.json`. A new job goes last. A job without `order` (made by an
   older version) sorts before the others, by `created`.
 - The server changes the order under the same lock the worker uses to pick the next job. When a move puts another job
   first while the first job waits for prompt help or chat answers, the worker starts the new first job instead.
+
+### The two lanes
+
+The queue has two lanes. Each lane has its own worker and runs its jobs one at a time, in their order.
+
+- The model lane runs every tool that loads a model. Before each job, the worker claims the memory (`llm.claim`):
+  the chat model unloads when the job does not fit next to it. After the job, the worker releases the memory.
+- The light lane runs the tools that load no model: the tools whose peak (`models.tool_peak`) is 0. Today this is
+  only `edit.mix` (ffmpeg, about 0.1 GB). `voice.transcribe` loads Qwen3-ASR (about 3 GB), so it is in the model
+  lane.
+- A light job does not claim memory. It does not change the chat model's state or the held peak of the running model
+  job. So a mix starts at once, also while a video job of several minutes runs.
+- The light lane runs one job at a time. So at most one ffmpeg job runs next to a model job, and the model job keeps
+  most of the CPU. A mix takes a few seconds (0.6 s for a 10 s clip), so the next mix waits only briefly.
+- Cancel and shutdown work in both lanes in the same way: a cancel stops the job's process group, and the app stops
+  every job when it closes.
+- When the model lane is empty, the chat model can load again (`llm.reload_after_jobs`). A queued light job does not
+  delay this.
 
 `GET /files/{id}/{name}` serves an output file.
 
@@ -197,6 +219,8 @@ other name. The job stays in the job list, also when it has no outputs left.
 ## System
 
 `GET /api/system` returns `{"mem_total_gb": 48.0, "mem_free_gb": 37.5, "swap_used_gb": 2.8, "running": "job id or null", "queued": 1, "profile": "full"}`.
+`running` is the id of the running model job. When only a light job runs, it is the id of that job. `queued` counts
+the queued jobs of both lanes.
 
 `profile` is what the UI shows: `"full"` (every section) or `"chat"` (Chat, Models and Settings). It is `[app] profile`
 in `config.toml`, or `"chat"` when the app was started with `start.py --chat`. A change in Settings applies at once.
@@ -215,8 +239,9 @@ sent. Without the session cookie the answer has only `proof` and `profile`. A ba
 {
   "memory": {"mem_total_gb": 48.0, "mem_free_gb": 37.5, "swap_used_gb": 2.8, "reserve_gb": 8.0},
   "running": {"id": "20261023-231500-ab12", "tool": "video.t2v", "tool_label": "Text to Video", "status": "running",
-              "created": "2026-10-23T23:15:00", "position": 0, "waiting": null,
+              "created": "2026-10-23T23:15:00", "lane": "model", "position": 0, "waiting": null,
               "progress": {"stage": "Stage 2: 1/3", "fraction": 0.52, "eta_s": 95}, "elapsed": 42.5, "chat": null},
+  "running_jobs": [{"id": "20261023-231500-ab12", "lane": "model", "...": "..."}],
   "queue": [],
   "chat_model": {"label": "Qwen3.8 27B (4-bit)", "installed": true, "state": "off | loading | ready", "busy": false,
                  "peak_gb": 18.0, "held_gb": 0.0},
@@ -226,8 +251,10 @@ sent. Without the session cookie the answer has only `proof` and `profile`. A ba
 ```
 
 - `memory` has the numbers of `GET /api/system` and `reserve_gb`, the memory a tool leaves for macOS.
-- `running` is the running job or `null`. `queue` has the queued jobs in the order they run. Each job has the keys
-  above, with the values of `GET /api/jobs`.
+- `running_jobs` has every running job: at most one model job and one light job, the model job first.
+- `running` is the first job of `running_jobs` or `null`. A client that reads only `running` sees the model job.
+- `queue` has the queued jobs of the model lane in the order they run, then the queued jobs of the light lane. Each
+  job has the keys above, with the values of `GET /api/jobs`.
 - `held_gb` is the chat model's peak while it is loaded or loading, else 0.
 - `fit` uses the queue's rule (`models.fits`, `llm.fits_with`): `"fits"` (the tool fits next to the chat model, or
   the model is off), `"unloads_chat_model"` (the job unloads the model before it starts) or `"too_big"` (its peak
@@ -941,7 +968,8 @@ The page is split into ES modules; web/README.md describes the files, the view c
 views.
 
 - Sidebar: six sections (Create, Jobs, Chat, Library, Models, Settings, also Cmd-1 to Cmd-6), a dock with the running
-  job's stage and time left, and a memory meter (job, local LLM, other apps, swap). Narrow windows get a top tab bar.
+  job's stage and time left (and an "Also running" line for a light job next to a model job), and a memory meter
+  (the model job, local LLM, other apps, swap). Narrow windows get a top tab bar.
 - Chat profile (`profile` of `GET /api/system`, or `?profile=chat` in the page address): the sidebar and the tab bar
   show Chat, Models and Settings (Cmd-1 to Cmd-3), and the app opens on Chat. A route to Create, Jobs or Library
   opens Chat. There is no job dock, no job toast and no job count in the window title; the memory meter shows a job
@@ -951,12 +979,14 @@ views.
   window when the app on the port runs in the other profile.
 - Create: the tool picker with time, peak memory and fit; the selected tool's form with prompt help ("Improve", with
   Cancel while it waits, loads or writes, and Undo and Redo after it); an "On this Mac" card with peak memory, time
-  and queue wait; Generate ("Add to queue" while a job runs). Choosing another tool cancels the open tool's running
-  Improve; going to another view does not: its text goes into the tool's saved form, with a toast. Text that comes
+  and the wait in the tool's lane; Generate ("Add to queue" while a job of the same lane is queued or runs).
+  Choosing another tool cancels the open tool's running Improve; going to another view does not: its text goes into
+  the tool's saved form, with a toast. Text that comes
   into a `needs_off` field (typed, pasted or from "Use in") turns that checkbox off, with a toast and Undo.
 - Text selection: the window's text can be selected and copied (`start.py` passes `text_select=True` to pywebview).
   Buttons, switches and folds (`summary`) keep their labels unselectable (`web/css/base.css`).
-- Jobs: the running job with progress, the queue with start estimates and move buttons, and finished jobs with their media, settings,
+- Jobs: the running jobs with progress (a light job can run next to the model job), the queue with start estimates
+  and move buttons (the light jobs in their own list), and finished jobs with their media, settings,
   "Use these settings", "Send to" (an output into another tool's file field), download and delete.
 - Chat, Library, Models and Settings use the endpoints of their sections above.
 - Chat: the Thinking button under the message box opens a menu of the thinking levels, each with a short hint (arrow

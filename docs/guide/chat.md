@@ -132,7 +132,7 @@ The LLM and a media job share the memory.
   `outputs/llm-cache.safetensors`. This takes about 1 second. The job waits for the save for at most 10 seconds.
 - A message that you send while such a job runs waits. The chat shows "Waiting for memory". The answer starts when
   the job ends, before the next queued job.
-- When the queue is empty again, the LLM loads again in the background, so the next answer does not wait for the
+- When no model job is queued, the LLM loads again in the background, so the next answer does not wait for the
   load. It does this only when it was in use before the job: its last request was within the idle time (10 minutes by
   default).
 - The LLM reads the saved prompt cache back, so the next answer in that chat reads only your new message. Without

@@ -30,7 +30,7 @@ the tool's result, so it can answer the user.
 | `wait_for_job` | R0 | Waits until a job ends (120 s by default, at most 300 s), then shows it as `job_status` does. |
 | `cancel_job` | R2 | Cancels a queued or running job that this chat queued. |
 | `transcribe_audio` | R2 | Speech to text for an audio or video file (Qwen3-ASR 0.6B as a media job): the text with a time for about every 30 s, and the language. Its result is untrusted. |
-| `system_status` | R0 | Shows the Mac's memory, the running job and its progress, the queue, the chat model and whether each media tool fits now (`GET /api/status`). |
+| `system_status` | R0 | Shows the Mac's memory, the running jobs and their progress, the queue, the chat model and whether each media tool fits now (`GET /api/status`). |
 | `list_files` | R1 | Lists a folder inside the granted folder (at most 500 lines). |
 | `read_file` | R1 | Reads a text file inside the granted folder (the first 1 MB), by line range (`start_line`, `end_line`). The result gives the line count and where to read on. It stops before the 12,000-character cap of a result. |
 | `search_files` | R1 | Searches the text files of the granted folder (at most 5,000 files and 15 s). |
@@ -107,6 +107,7 @@ job that does not fit (a video, for example) waits for the lease, so it starts o
 - The wait does not wait for such a job, or for a job behind one in the queue. It returns at once, and the model
   tells the user that the job runs after the answer. The answer does not give its lease up to such a job: the model
   would then wait for the whole job before its next step.
+- A light job (`edit.mix`) needs no memory and does not wait for the model jobs, so the wait waits for it.
 - A wait takes at most 300 s. It ends early when the job ends or the user presses Stop.
 - The wait counts against the answer's 10 minutes. It stops 60 s before the answer's time ends, so the model can
   still answer. With less time left it does not wait and says so.

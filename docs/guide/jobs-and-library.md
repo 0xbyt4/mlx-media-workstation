@@ -1,25 +1,30 @@
 # Jobs and Library
 
-Jobs shows the running job, the queue and the finished jobs. Library shows every output of the finished jobs.
+Jobs shows the running jobs, the queue and the finished jobs. Library shows every output of the finished jobs.
 
 ## Jobs
 
 ![The Jobs screen with a finished Text to Video job](../images/jobs.png)
 
-Jobs run one at a time, in the order of the queue. Each model needs most of the memory of a 48 GB Mac, so two jobs
-never run together.
+Jobs that load a model run one at a time, in the order of the queue. Each model needs most of the memory of a 48 GB
+Mac, so two model jobs never run together.
+
+A Mix job loads no model. It uses ffmpeg, less than 1 GB of memory and a few seconds. So a Mix job does not wait
+for the model jobs: it runs next to the running model job. Mix jobs run one at a time.
 
 The Jobs screen has three parts:
 
-- **Running**: the job that runs now, with a progress bar, the stage, the elapsed time and the expected peak.
-- **Up next**: the queued jobs, in order. When earlier jobs of the same tools finished on this Mac, each row shows
-  when it is expected to start.
+- **Running**: the jobs that run now, each with a progress bar, the stage, the elapsed time and the expected peak.
+  This is one model job, and a Mix job when one runs next to it.
+- **Up next**: the queued model jobs, in order. Below them, under "Loads no model", the queued Mix jobs in their own
+  list. When earlier jobs of the same tools finished on this Mac, each row shows when it is expected to start.
 - **Finished**: the jobs that are done, failed or cancelled, newest first.
 
 The buttons at the top filter the list: All, Active, Done, or Failed or cancelled.
 
-The sidebar shows the running job on every screen. Click it to open Jobs. The memory meter under it shows the memory
-of the job, the local LLM and other apps. It warns when macOS swaps.
+The sidebar shows the running job on every screen. When a Mix job runs next to a model job, it shows "Also running"
+with the Mix job. Click it to open Jobs. The memory meter under it shows the memory of the model job, the local LLM
+and other apps. It warns when macOS swaps.
 
 ### Follow a running job
 
@@ -40,7 +45,7 @@ The app discards the part that is done and frees the memory.
 ### Change the queue
 
 - To move a queued job, press its up or down arrow. You can also focus the job and press Option-Up Arrow or
-  Option-Down Arrow.
+  Option-Down Arrow. A job moves only in its own list: a Mix job never moves past a model job.
 - To remove a queued job, press its remove button. This takes one click and has no Undo, because the next job can
   start within seconds.
 

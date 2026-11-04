@@ -10,7 +10,7 @@ A file field of a job takes file references (REF_HELP): a Library output, a file
 in the granted folder. The rules of the file tools apply (no hidden or secret files, real-path checks, O_NOFOLLOW).
 The file is opened here and the port copies it into the job folder as an upload is copied, with the upload's checks.
 
-system_status (R0) shows the Mac's memory, the running job, the queue, the chat model and which media tools fit now.
+system_status (R0) shows the Mac's memory, the running jobs, the queue, the chat model and which media tools fit now.
 The MCP server (app/mcp_server.py) offers the same tools with its own Host: local file paths, other words, longer waits.
 """
 
@@ -113,6 +113,15 @@ def format_tools(items: list[dict[str, Any]], ref_help: str = REF_HELP) -> str:
     return "\n".join(lines) or "No media tools."
 
 
+# a light-lane job (app/server.py lane_of) does not wait for the model jobs
+LIGHT_LANE = "light lane: loads no model, runs beside the model jobs"
+
+
+def _queue_of(job: dict[str, Any]) -> str:
+    """Where a queued job's position counts: its lane."""
+    return "the light lane" if job.get("lane") == "light" else "the queue"
+
+
 def format_job(
     job: dict[str, Any], chat_id: str | None = None, host: Host = CHAT
 ) -> str:
@@ -121,7 +130,9 @@ def format_job(
         lines.append(f"queued {host.by}")
     lines.append(f"status: {job.get('status')}")
     if job.get("position"):
-        lines.append(f"place in the queue: {job['position']}")
+        lines.append(f"place in {_queue_of(job)}: {job['position']}")
+    if job.get("lane") == "light" and job.get("status") in ("queued", "running"):
+        lines.append(LIGHT_LANE)
     if job.get("waiting"):
         lines.append(job["waiting"])
     progress = job.get("progress")
@@ -148,7 +159,9 @@ def job_line(job: dict[str, Any], chat_id: str, host: Host = CHAT) -> str:
     """One short line of list_jobs."""
     bits = [str(job.get("status"))]
     if job.get("position"):
-        bits.append(f"place {job['position']} in the queue")
+        bits.append(f"place {job['position']} in {_queue_of(job)}")
+    if job.get("lane") == "light" and job.get("status") in ("queued", "running"):
+        bits.append(LIGHT_LANE)
     progress = job.get("progress") or {}
     if progress.get("fraction") is not None:
         bits.append(f"{round(100 * float(progress['fraction']))}%")
@@ -249,10 +262,16 @@ def format_status(
             f"Chat model: {model.get('label')}, {model.get('state')}{busy}, holds about "
             f"{_gb(model.get('held_gb'))}."
         )
-    running = status.get("running")
-    lines.append("Running job:" if running else "Running job: none.")
-    if running:
-        lines.append(job_line(running, str(chat_id), host))
+    # running_jobs: a model job and a light-lane job can run at once; an app from before it has only "running"
+    running = status.get("running_jobs")
+    if running is None:
+        running = [status["running"]] if status.get("running") else []
+    if not running:
+        lines.append("Running job: none.")
+    else:
+        lines.append("Running job:" if len(running) == 1 else "Running jobs:")
+    for job in running:
+        lines.append(job_line(job, str(chat_id), host))
     queue = status.get("queue") or []
     lines.append(
         f"Queue ({len(queue)} jobs, in the order they run):"
@@ -716,7 +735,7 @@ def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
         Tool(
             name="system_status",
             description=(
-                "Show this Mac's memory, the running media job and its progress, the queue, whether the chat model "
+                "Show this Mac's memory, the running media jobs and their progress, the queue, whether the chat model "
                 "is loaded and how much it holds, and for each media tool whether it fits in memory now. Read it "
                 "before a large job, or when a job waits."
             ),

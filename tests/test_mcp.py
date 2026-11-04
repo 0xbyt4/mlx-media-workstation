@@ -722,6 +722,35 @@ def test_in_app_system_status_through_the_fake_port(tmp_path: Path) -> None:
     assert "queued by this chat): queued; place 1 in the queue" in r.content
 
 
+def test_system_status_text_shows_a_light_job_beside_the_model_job() -> None:
+    def job(job_id: str, label: str, lane: str, status: str, position: int = 0) -> dict:
+        return {
+            "id": job_id,
+            "tool_label": label,
+            "lane": lane,
+            "status": status,
+            "position": position,
+            "created": "2026-11-04T10:00:00",
+        }
+
+    video = job("v1", "Text to video", "model", "running")
+    mix = job("m1", "Mix (video + music)", "light", "running")
+    status = {
+        "running": video,
+        "running_jobs": [video, mix],
+        "queue": [job("m2", "Mix (video + music)", "light", "queued", 1)],
+    }
+    t = ws_tools.format_status(status, "c1")
+    assert "Running jobs:\n- v1 Text to video (2026-11-04T10:00:00): running\n" in t
+    assert "- m1 Mix (video + music) (2026-11-04T10:00:00): running; light lane" in t
+    assert "queued; place 1 in the light lane; light lane: loads no model" in t
+    # an app without running_jobs: "running" alone
+    del status["running_jobs"]
+    assert "Running job:\n- v1 Text to video" in ws_tools.format_status(status, "c1")
+    text = ws_tools.format_job(status["queue"][0])
+    assert "place in the light lane: 1" in text and ws_tools.LIGHT_LANE in text
+
+
 def test_start_py_mcp_runs_only_the_mcp_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

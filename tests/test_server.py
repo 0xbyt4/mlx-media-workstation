@@ -596,6 +596,79 @@ def test_jobs_without_an_order_sort_by_creation_first(
     assert queue(client) == ["new", "old1", "old2"]
 
 
+def test_a_light_job_wakes_only_the_light_lane(
+    client: TestClient, media: FakeMedia
+) -> None:
+    files = {"video": ("clip.mp4", b"v"), "music": ("song.mp3", b"m")}
+    job_id = post_job(client, "edit.mix", {}, files=files).json()["id"]
+    assert server.wake_light.is_set() and not server.wake.is_set()
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert (job["lane"], job["position"]) == ("light", 1)
+
+
+def test_each_lane_has_its_own_places_and_moves(
+    client: TestClient, make_job: Job
+) -> None:
+    for i, (job_id, tool) in enumerate(
+        (("a", "image.klein"), ("mix1", "edit.mix"), ("b", "video.t2v")), 1
+    ):
+        make_job(job_id, "queued", tool=tool, order=i)
+    make_job("mix2", "queued", tool="edit.mix", order=4)
+
+    def places() -> dict[str, tuple[str, int]]:
+        return {
+            j["id"]: (j["lane"], j["position"]) for j in client.get("/api/jobs").json()
+        }
+
+    # a light job does not count in the model jobs' places, nor they in its place
+    assert places() == {
+        "a": ("model", 1),
+        "mix1": ("light", 1),
+        "b": ("model", 2),
+        "mix2": ("light", 2),
+    }
+    # a move stays in the job's lane: "b" passes "a", not "mix1"
+    assert move(client, "b", "up").json() == {"position": 1}
+    assert move(client, "mix2", "top").json() == {"position": 1}
+    assert move(client, "mix2", "up").json() == {"position": 1}  # at the end
+    assert places() == {
+        "a": ("model", 2),
+        "mix1": ("light", 2),
+        "b": ("model", 1),
+        "mix2": ("light", 1),
+    }
+    with server.lock:
+        assert [j["id"] for j in server.queued_jobs("model")] == ["b", "a"]
+        assert [j["id"] for j in server.queued_jobs("light")] == ["mix2", "mix1"]
+    assert server.wake_light.is_set()
+
+
+def test_status_shows_both_running_jobs(
+    client: TestClient, make_job: Job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mem = {"mem_total_gb": 48.0, "mem_free_gb": 10.0, "swap_used_gb": 0.0}
+    monkeypatch.setattr(server, "memory", lambda: mem)
+    make_job("mix", "running", tool="edit.mix", started="2026-11-02T10:00:01")
+    make_job("video", "running", tool="video.t2v", started="2026-11-02T10:00:00")
+    make_job("next", "queued", tool="edit.mix", order=2)
+    make_job("later", "queued", order=1)
+    status = client.get("/api/status").json()
+    # "running" stays one job, the model lane's; running_jobs has both
+    assert status["running"]["id"] == "video"
+    assert [(j["id"], j["lane"]) for j in status["running_jobs"]] == [
+        ("video", "model"),
+        ("mix", "light"),
+    ]
+    # the model lane in its order, then the light lane
+    assert [(j["id"], j["lane"], j["position"]) for j in status["queue"]] == [
+        ("later", "model", 1),
+        ("next", "light", 1),
+    ]
+    assert client.get("/api/system").json()["running"] == "video"
+    server.jobs.pop("video")
+    assert client.get("/api/status").json()["running"]["id"] == "mix"
+
+
 @pytest.mark.parametrize("status", ["running", "done", "failed", "cancelled"])
 def test_move_refuses_jobs_that_are_not_queued(
     client: TestClient, make_job: Job, status: str

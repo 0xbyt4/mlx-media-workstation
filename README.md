@@ -171,7 +171,7 @@ The sidebar has six sections. Cmd-1 to Cmd-6 open them.
   whether it fits this Mac, the time it takes and the wait in the queue. The time is the median of the tool's
   finished jobs on this Mac ("No time yet" before the first one), so it does not change with the settings yet.
   "Improve" under a prompt field asks the local LLM to rewrite your draft. Undo brings your own text back.
-- **Jobs**: the running job with its progress and time left, the queue, and the finished jobs with their results.
+- **Jobs**: the running jobs with their progress and time left, the queue, and the finished jobs with their results.
   Move a queued job up or down. "Use these settings" fills the form again. "Send to" puts an output into a file field
   of another tool.
 - **Chat**: talk with the local LLM. See [Chat and agent mode](#chat-and-agent-mode).
@@ -295,7 +295,8 @@ loads on the first request. It unloads after 10 minutes without use. Settings > 
 
 ## Memory
 
-Jobs run one at a time, because each model can use most of the memory of a 48 GB Mac.
+Jobs that load a model run one at a time, because each model can use most of the memory of a 48 GB Mac. A Mix job
+loads no model (ffmpeg only, a few seconds), so it runs next to the model job and does not wait for it.
 
 The app keeps 8 GB for macOS and other apps. A model fits a Mac when its peak memory plus this 8 GB is at most the
 memory of the Mac. On a Mac with less memory than a tool needs, macOS swaps, and the job gets much slower or fails.
@@ -308,7 +309,7 @@ The local LLM shares the memory with the jobs:
   unloads and the job starts.
 - A prompt help or chat request that you send while such a job runs waits. It runs when the job ends, before the next
   job starts.
-- When the queue is empty again, an LLM that such a job unloaded loads again in the background, if its last request
+- When no model job is queued, an LLM that such a job unloaded loads again in the background, if its last request
   was within the idle time.
 - Before such a job, the LLM saves the prompt cache of its last chat to `outputs/llm-cache.safetensors`: 64 KiB for
   each token plus 0.15 GB, so about 0.75 GB for a chat of 9,000 tokens. The save takes about 1 second; the job waits

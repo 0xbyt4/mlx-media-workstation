@@ -82,8 +82,10 @@ Other store functions:
 - `store.refresh(key)` fetches a source now, for example after a submit or a download start.
 - `store.fast(key)` asks for faster polling and returns the function that ends the request.
 - `store.toolPeak(id)`, `store.toolInstalled(id)`, `store.toolModels(id)`, `store.toolTime(id)` give the facts of a tool.
-- `store.memTotal()`, `store.reserve()`, `store.runningJob()`, `store.queuedJobs()`, `store.queueSeconds()`,
-  `store.liveElapsed(job)` and `store.llmUnloadsFor(peakGb)` give the facts of this Mac and the queue.
+- `store.memTotal()`, `store.reserve()`, `store.runningJob(lane)`, `store.runningJobs()`, `store.queuedJobs(lane)`,
+  `store.queueSeconds(lane)`, `store.liveElapsed(job)` and `store.llmUnloadsFor(peakGb)` give the facts of this Mac
+  and the queue. The queue has two lanes: `'model'` (the default) and `'light'` (tools that load no model, such as
+  `edit.mix`). `store.laneOf(job)` and `store.toolLane(id)` name the lane of a job or a tool.
 - `store.profile()` gives the profile, `store.profilePinned()` tells whether it comes from the page address, and
   `store.shownModel(m)` tells whether the profile shows an entry of `GET /api/models`.
 

@@ -1,4 +1,4 @@
-"""The workstation server: the tool list, one job queue (one model at a time), output files and system info.
+"""The workstation server: the tool list, the job queue (one model at a time), output files and system info.
 
 Listens on 127.0.0.1 only and answers only requests addressed to it (Host check) from its own page (Origin check), so
 other web pages cannot reach it through the browser, and no page may show it in a frame (frame_headers). At start it
@@ -8,9 +8,15 @@ opens the window there. So another program or user on this Mac, which cannot rea
 In --browser mode the browser also sends the cookie to other servers on 127.0.0.1 (cookies ignore the port). Jobs live in outputs/<id>/ with job.json (state and parameters),
 job.log (the model's output) and the result files; the list is rebuilt from those folders at start.
 
-One model at a time: the worker starts a job's process (its own process group) under the lock, and does not take the
-next job until that whole group is gone; a cancel stops the group (SIGTERM, then SIGKILL after 10 s). shutdown()
-stops the queue and every model before the app exits; a group left over from a crash is killed at the next start.
+One model at a time: the model lane's worker starts a job's process (its own process group) under the lock, and does
+not take the next job until that whole group is gone; a cancel stops the group (SIGTERM, then SIGKILL after 10 s).
+shutdown() stops the queue and every model before the app exits; a group left over from a crash is killed at the next
+start.
+
+The queue has two lanes, each with its own worker. The model lane runs the jobs that load a model, one at a time, with
+the memory claim (llm.claim and llm.release). The light lane runs the jobs whose tool loads no model (models.tool_peak
+is 0: edit.mix, plain ffmpeg), one at a time beside the model lane, without a claim: such a job needs about 0.1 GB
+and a few seconds, so it does not wait for a model job of several minutes. A job's "position" is its place in its lane.
 
 The queue runs in `order` (a number saved in job.json; POST /api/jobs/{id}/move changes it). Jobs from before that
 key have none and sort first, by `created`. While a job is queued or running, app/macos.py keeps the Mac awake, and a
@@ -126,7 +132,8 @@ SIGN_IN = """<!doctype html><meta charset="utf-8"><title>Workstation</title>
 app = FastAPI(title="Workstation", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 lock = threading.Lock()
-wake = threading.Event()
+wake = threading.Event()  # the model lane's worker
+wake_light = threading.Event()  # the light lane's worker
 stopping = threading.Event()
 jobs: dict[str, dict[str, Any]] = {}
 procs: dict[str, subprocess.Popen] = {}
@@ -219,9 +226,27 @@ def queue_key(job: dict[str, Any]) -> tuple[float, str, str]:
     return (job.get("order") or 0, job.get("created") or "", job["id"])
 
 
-def queued_jobs() -> list[dict[str, Any]]:
-    """The queued jobs in the order they run (call with the lock held)."""
-    return sorted((j for j in jobs.values() if j["status"] == "queued"), key=queue_key)
+def lane_of(job: dict[str, Any]) -> str:
+    """The job's lane: "light" when its tool loads no model (edit.mix), else "model"."""
+    return "light" if models.tool_peak(job["tool"]) == 0.0 else "model"
+
+
+def running_jobs() -> list[dict[str, Any]]:
+    """The running jobs, the model lane's first: at most one in each lane (call with the lock held)."""
+    running = [j for j in jobs.values() if j["status"] == "running"]
+    return sorted(running, key=lambda j: lane_of(j) == "light")
+
+
+def queued_jobs(lane: str | None = None) -> list[dict[str, Any]]:
+    """The queued jobs of a lane (or of both) in the order they run (call with the lock held)."""
+    return sorted(
+        (
+            j
+            for j in jobs.values()
+            if j["status"] == "queued" and lane in (None, lane_of(j))
+        ),
+        key=queue_key,
+    )
 
 
 def next_order() -> int:
@@ -426,19 +451,22 @@ def run_job(job: dict[str, Any]) -> None:
         save(job)
 
 
-def worker() -> None:
+def worker(lane: str = "model") -> None:
+    """Run the queued jobs of one lane in order: a model job with the memory claim (run_next), a light job without it
+    (run_light). start() starts one worker for each lane."""
+    event = wake_light if lane == "light" else wake
     while not stopping.is_set():
-        wake.wait(2)
-        wake.clear()
+        event.wait(2)
+        event.clear()
         job: dict[str, Any] | None = None
         try:
             with lock:
                 if stopping.is_set():
                     return
-                queued = queued_jobs()
+                queued = queued_jobs(lane)
                 job = queued[0] if queued else None
             if job:
-                run_next(job)
+                (run_light if lane == "light" else run_next)(job)
         except Exception as e:  # noqa: BLE001 - e.g. a full disk: this job fails, the queue keeps running
             traceback.print_exc()
             with lock:
@@ -460,7 +488,7 @@ def worker() -> None:
                 1
             )  # a disk that stays full must not turn this loop into a busy loop
         if job:
-            wake.set()
+            event.set()
 
 
 def run_next(job: dict[str, Any]) -> None:
@@ -478,7 +506,7 @@ def run_next(job: dict[str, Any]) -> None:
             claiming.discard(job["id"])
             go = go and job["status"] == "queued" and not stopping.is_set()
             # a move during the claim may have put another job first: the next round picks that one
-            go = go and queued_jobs()[0] is job
+            go = go and queued_jobs("model")[0] is job
             if go:
                 job["status"], job["started"] = "running", now()
                 save(job)
@@ -489,9 +517,24 @@ def run_next(job: dict[str, Any]) -> None:
     if go:
         ended(job)
     with lock:
-        idle = not queued_jobs()
+        # a light job needs no memory: it does not hold the reload back
+        idle = not queued_jobs("model")
     if idle:
         llm.reload_after_jobs()
+
+
+def run_light(job: dict[str, Any]) -> None:
+    """Run the first queued light job beside the model lane. It claims no memory, so the chat model and llm.job_peak
+    stay as they are."""
+    with lock:
+        go = job["status"] == "queued" and not stopping.is_set()
+        go = go and queued_jobs("light")[0] is job
+        if go:
+            job["status"], job["started"] = "running", now()
+            save(job)
+    if go:
+        run_job(job)
+        ended(job)
 
 
 def shutdown() -> None:
@@ -511,6 +554,7 @@ def shutdown() -> None:
     models.stop()
     llm.close("The app was closed.")
     wake.set()
+    wake_light.set()
     chat.wait_all(answers)
     remove_token()
 
@@ -549,9 +593,10 @@ def view(job: dict[str, Any]) -> dict[str, Any]:
         if job["status"] == "running" and job.get("started")
         else None
     )
+    v["lane"] = lane_of(job)
     v["position"] = 0
     if job["status"] == "queued":
-        v["position"] = 1 + [j["id"] for j in queued_jobs()].index(job["id"])
+        v["position"] = 1 + queued_jobs(v["lane"]).index(job)
     return v
 
 
@@ -562,6 +607,7 @@ STATUS_KEYS = (
     "tool_label",
     "status",
     "created",
+    "lane",
     "position",
     "waiting",
     "progress",
@@ -710,7 +756,7 @@ def queue_job(
         jobs[job_id] = job
         save(job)
     sync_awake()
-    wake.set()
+    (wake_light if lane_of(job) == "light" else wake).set()
 
 
 def upload_writer(up: Any) -> Callable[[Path], None]:
@@ -781,8 +827,10 @@ async def create_job(request: Request) -> dict[str, str]:
 def needs_memory(job: dict[str, Any]) -> bool:
     """Whether a queued job, or a job before it in the queue, needs the memory that the chat model holds: such a job
     starts only after the agent turn's memory lease ends, so a wait inside the turn would only time out (call with the
-    lock held)."""
-    queued = queued_jobs()
+    lock held). A light job needs none, and the light jobs are not ahead of a model job."""
+    if lane_of(job) == "light":
+        return False
+    queued = queued_jobs("model")
     ahead = queued[: queued.index(job) + 1] if job in queued else [job]
     return any(not llm.fits_with(models.tool_peak(j["tool"])) for j in ahead)
 
@@ -918,10 +966,8 @@ class Workstation:
             return {**{k: v.get(k) for k in STATUS_KEYS}, "chat": job.get("chat")}
 
         with lock:
-            running = next(
-                (short(j) for j in jobs.values() if j["status"] == "running"), None
-            )
-            queue = [short(j) for j in queued_jobs()]
+            running = [short(j) for j in running_jobs()]
+            queue = [short(j) for j in queued_jobs("model") + queued_jobs("light")]
         fit = []
         for t in self.list_tools():
             peak = models.tool_peak(t["id"])
@@ -942,7 +988,8 @@ class Workstation:
             )
         return {
             "memory": {**mem, "reserve_gb": models.RESERVE_GB},
-            "running": running,
+            "running": running[0] if running else None,
+            "running_jobs": running,
             "queue": queue,
             "chat_model": {
                 "label": model["model"],
@@ -980,7 +1027,7 @@ def library_search(
 
 @app.get("/api/status")
 def get_status() -> dict[str, Any]:
-    """The memory, the running job, the queue, the chat model and whether each media tool fits now."""
+    """The memory, the running jobs, the queue, the chat model and whether each media tool fits now."""
     return workstation.system_status()
 
 
@@ -1017,7 +1064,7 @@ def move_job(job_id: str, body: Move) -> dict[str, int]:
             raise HTTPException(404, "No such job")
         if job["status"] != "queued":
             raise HTTPException(409, "Only a queued job can move")
-        queued = queued_jobs()
+        queued = queued_jobs(lane_of(job))
         i = queued.index(job)
         to = {"up": i - 1, "down": i + 1, "top": 0, "bottom": len(queued) - 1}[body.to]
         to = max(0, min(to, len(queued) - 1))
@@ -1029,7 +1076,7 @@ def move_job(job_id: str, body: Move) -> dict[str, int]:
                 if j.get("order") != n:
                     j["order"] = n
                     save(j)
-    wake.set()
+    (wake_light if lane_of(job) == "light" else wake).set()
     return {"position": to + 1}
 
 
@@ -1228,9 +1275,7 @@ def system(request: Request, nonce: str | None = None) -> dict[str, Any]:
     if nonce is not None and not signed_in(request):
         return {"proof": proof(nonce), "profile": config.APP.profile}
     with lock:
-        running = next(
-            (j["id"] for j in jobs.values() if j["status"] == "running"), None
-        )
+        running = next((j["id"] for j in running_jobs()), None)  # the model job first
         queued = sum(1 for j in jobs.values() if j["status"] == "queued")
     info = {
         **memory(),
@@ -1280,6 +1325,7 @@ def start() -> None:
         settings_api.AGENT = chat.settings
     chat.registry()
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=worker, args=("light",), daemon=True).start()
     threading.Thread(target=llm.watch_idle, daemon=True).start()
 
 
