@@ -1,6 +1,7 @@
 """The tool catalogue, the small helpers in app/tools.py, the ffmpeg/ffprobe wrappers and validate()."""
 
 import re
+import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -326,3 +327,42 @@ def test_validate_extend_checks_the_source(
     tools.validate("video.extend", {"end_at": "1.5"}, files)
     with pytest.raises(ValueError, match="'Use the clip up to' is 3.0 s"):
         tools.validate("video.extend", {"end_at": "3"}, files)
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("in_video_0.mp4", "The video file has no picture, or it could not be read."),
+        ("in_music_0.mp3", "The music file has no sound, or it could not be read."),
+    ],
+)
+def test_validate_mix_needs_a_picture_and_a_sound(
+    monkeypatch: pytest.MonkeyPatch, media: FakeMedia, name: str, message: str
+) -> None:
+    monkeypatch.setattr(tools, "REQUIRES", {})
+    files = {"video": [Path("in_video_0.mp4")], "music": [Path("in_music_0.mp3")]}
+    tools.validate("edit.mix", {}, files)
+    media.codecs[name] = None
+    with pytest.raises(ValueError) as exc:
+        tools.validate("edit.mix", {}, files)
+    assert str(exc.value) == message
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg is not installed",
+)
+def test_stream_codec_skips_a_cover_picture(tmp_path: Path) -> None:
+    song, text = tmp_path / "song.mp3", tmp_path / "notes.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=duration=1", "-f", "lavfi", "-i",
+         "testsrc=size=64x48:duration=1", "-map", "0", "-map", "1", "-frames:v", "1", "-c:v", "mjpeg",
+         "-disposition:v", "attached_pic", str(song)],
+        check=True,
+    )  # fmt: skip
+    text.write_text("not a video")
+    assert tools.stream_codec(song, "a") == "mp3"
+    assert (
+        tools.stream_codec(song, "V") is None
+    )  # an audio file with cover art is not a video
+    assert tools.stream_codec(text, "V") is None

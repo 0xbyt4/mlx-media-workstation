@@ -8,7 +8,7 @@ import runpy
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -257,3 +257,35 @@ def test_transcribe_with_a_given_language(
     load("transcribe").main()
     assert {c["language"] for c in asr.calls} == {"German"}
     assert (tmp_path / "transcript.txt").read_text().startswith("Language: German\n")
+
+
+# Mix level
+
+
+def test_mix_level_adds_the_measured_loudness_to_the_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mix = tmp_path / "mixed.mp4"
+    (tmp_path / "notes.json").write_text(
+        json.dumps({"mixed.mp4": "no sound in the video: music at -16 LUFS"})
+    )
+    runner = load("mix_level")
+    summary = (
+        "  Integrated loudness:\n    I:         -14.2 LUFS\n    Threshold: -24.2 LUFS\n"
+    )
+    monkeypatch.setattr(
+        runner.subprocess, "run", lambda cmd, **kw: SimpleNamespace(stderr=summary)
+    )
+    monkeypatch.setattr(sys, "argv", ["mix_level.py", str(mix)])
+    runner.main()
+    assert json.loads((tmp_path / "notes.json").read_text()) == {
+        "mixed.mp4": "no sound in the video: music at -16 LUFS; final mix -14.2 LUFS"
+    }
+    assert capsys.readouterr().out == "final mix -14.2 LUFS\n"
+
+
+def test_mix_level_without_a_measurement() -> None:
+    assert (
+        load("mix_level").measured("Error opening input file")
+        == "final mix not measured"
+    )

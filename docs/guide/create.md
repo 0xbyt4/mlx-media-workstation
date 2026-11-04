@@ -310,20 +310,37 @@ The clip must be at least about 1.1 s long. The longest step we measured was 8 s
 
 ### Mix (video + music)
 
-Puts music under a video's own sound with ffmpeg. It needs no model. The picture is copied, not encoded again.
+Puts music under a video's own sound with ffmpeg. It needs no model. The picture is copied when an MP4 file can hold
+it (H.264, HEVC, AV1, VP9, MPEG-4). Other pictures, for example ProRes, are encoded again as H.264.
 
 | Field | Default | Notes |
 |---|---|---|
-| Video | | Its own sound (the voice) stays. |
+| Video | | Its own sound (voice, rain, effects) stays. |
 | Music | | Looped when it is shorter than the video, cut when it is longer. |
-| Music under the voice (dB) | 14 | 3 to 30. 10 is lively, 14 is normal, 20 is a quiet background. |
-| Duck under speech | on | The music goes down a few more dB while someone speaks. |
-| Fade in (s) (advanced) | 0.5 | |
-| Fade out (s) (advanced) | 1.5 | |
+| Music under the voice (dB) | 14 | 3 to 30. 10 is lively, 14 is normal, 20 is a quiet background. Used only when the video has speech. |
+| Duck under speech | on | The music goes down by about 5 dB while someone speaks, at any voice level. Only when the video has speech. |
+| Fade in (s) (advanced) | 0.5 | 0 means no fade. |
+| Fade out (s) (advanced) | 1.5 | 0 means no fade. |
 | Start the music at (s) (advanced) | 0 | Skips the start of the music track. |
 
-The output is `mixed.mp4`. The final mix is at -14 LUFS. When the video has no sound, the music goes to -16 LUFS
-before the final mix.
+The tool measures the video's own sound and picks one of these cases:
+
+| Video sound | Test | Music level | Ducked |
+|---|---|---|---|
+| Speech | -40 LUFS or louder, with pauses or a wide loudness range | "Music under the voice" dB under the speech | when "Duck under speech" is on |
+| Steady sound (rain, effects) | -40 LUFS or louder, no pauses, narrow loudness range | 6 dB under the sound | no |
+| Near-silent sound (room tone, hiss) | quieter than -40 LUFS | -16 LUFS | no |
+| No sound | | -16 LUFS | no |
+
+Pauses: at least 15% of the 400 ms windows are more than 10 dB under the sound's loudness. Wide loudness range: 5 LU
+or more.
+
+The tool measures the music only on the part that the mix uses. It raises quiet music by 20 dB at most. The video's
+sound and the music are always stereo, and the mix is as long as the video.
+
+The output is `mixed.mp4`. The tool measures the mix and then sets it to -14 LUFS in a second pass. A mix with high
+peaks can end lower, because loudnorm keeps the true peak near -1.5 dBTP. The job note shows the case that was used
+and the measured loudness of the final file.
 
 To put music under a video:
 

@@ -278,7 +278,7 @@ client and the tools.
 | Video | Image to Video | LTX-2.5 from a start image | 4 s in about 2 min | 35 GB |
 | Video | Voice to Video (talking) | LTX-2.5 audio-to-video: a person from an image speaks the audio | 7 s in about 3.5 min | 35 GB |
 | Video | Extend Video | LTX-2.5 extend: continues a clip from its last second | 5 s more in about 2.5 min | 35 GB |
-| Edit | Mix (video + music) | ffmpeg only: music under a video's own sound, ducked, -14 LUFS | a few seconds | none |
+| Edit | Mix (video + music) | ffmpeg only: music under a video's own sound, ducked under speech, about -14 LUFS | a few seconds | none |
 
 The peak memory is the value that the app plans with: the highest peak of the tools that use the same model. Most
 jobs use less. We measured these ranges: MOSS-Image 20-22 GB, FLUX.3 Klein 11-14 GB, Fish Drama 3 26-39 GB (short
