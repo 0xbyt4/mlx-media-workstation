@@ -91,7 +91,8 @@ checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Erro
 - `log_tail` holds the last 25 lines of `job.log`. While the job runs, it is read from the file on each request.
 - Only one job runs at a time (each model needs most of the memory of a 32-48 GB Mac).
 - `kind: "text"` is a `.txt` output: the transcript of a `voice.transcribe` job.
-- A job that an agent chat queued has `"chat": "<chat id>"` in its `job.json`. `GET /api/jobs` does not show it.
+- A job that an agent chat queued has `"chat": "<chat id>"` in its `job.json`. `GET /api/jobs` lists the job like
+  any other job, without this key.
 
 `POST /api/jobs/{id}/cancel` cancels a queued or running job and returns `{"status": "cancelled"}`, or the job's
 status when it has already ended. `DELETE /api/jobs/{id}` removes a finished job from the list and deletes its folder

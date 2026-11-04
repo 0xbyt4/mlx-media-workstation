@@ -435,7 +435,7 @@ TOOLS: list[dict[str, Any]] = [
         "id": "video.i2v",
         "group": "Video",
         "label": "Image to Video",
-        "description": "Animates a start image. Describe what changes, not what the image shows.",
+        "description": "Animates a start image. Describe what changes, not what the image shows. About 2 min for 4 s.",
         "fields": [
             field(
                 "image",
@@ -475,7 +475,8 @@ TOOLS: list[dict[str, Any]] = [
         "id": "video.a2v",
         "group": "Video",
         "label": "Voice to Video (talking)",
-        "description": "A person from an image speaks the audio, lips in sync. One speaker per clip; length = audio.",
+        "description": "A person from an image speaks the audio, lips in sync. One speaker per clip; length = audio. "
+        "About 3.5 min for 7 s.",
         "fields": [
             field(
                 "image",
@@ -521,7 +522,7 @@ TOOLS: list[dict[str, Any]] = [
         "group": "Video",
         "label": "Extend Video",
         "description": "Continues a clip: LTX-2.5 picks up its last second (picture and sound) and adds new seconds after it. "
-        "The result is the whole clip plus the new part.",
+        "The result is the whole clip plus the new part. About 2.5 min for 5 s more.",
         "fields": [
             field(
                 "video",
