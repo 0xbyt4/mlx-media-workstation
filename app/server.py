@@ -80,6 +80,9 @@ KINDS = {
     ".jpg": "image",
     ".jpeg": "image",
     ".webp": "image",
+    ".gif": "image",
+    ".heic": "image",
+    ".heif": "image",
     ".wav": "audio",
     ".mp3": "audio",
     ".flac": "audio",
@@ -343,17 +346,39 @@ class JobFailed(Exception):
     """A job failure the app itself describes: its message is the whole error, with no exception name."""
 
 
+def step_failed(cmd: list[str], code: int, log_path: Path, start: int) -> str:
+    """The error of a failed step. For ffmpeg its line that names the cause (from start, where the step's output
+    begins in the log); a model's last lines are mostly progress, so its log has the details."""
+    if Path(cmd[0]).name == "ffmpeg":
+        with log_path.open("rb") as f:
+            end = f.seek(0, os.SEEK_END)
+            f.seek(max(start, end - TAIL_BYTES))
+            why = tools.ffmpeg_error(
+                TIME_REPORT.sub("", f.read().decode(errors="replace"))
+            )
+        return (
+            f"ffmpeg failed (exit code {code}): {why}"
+            if why
+            else f"ffmpeg failed (exit code {code}). See the log."
+        )
+    return f"The model process exited with code {code}. See the log."
+
+
 def run_job(job: dict[str, Any]) -> None:
     job_dir = OUT / job["id"]
     log_path = job_dir / "job.log"
     files = {k: [job_dir / n for n in v] for k, v in job.get("files", {}).items()}
     t0 = time.time()
     try:
-        plan = tools.plan(job["tool"], job["params"], files, job_dir)
+        try:
+            plan = tools.plan(job["tool"], job["params"], files, job_dir)
+        except ValueError as e:  # bad input, an unreadable file, a time limit: the message is for the user
+            raise JobFailed(str(e)) from None
         with log_path.open("w") as log:
             for cmd in plan.commands:
                 log.write("$ " + " ".join(cmd)[:2000] + "\n")
                 log.flush()
+                start = log.tell()
                 with (
                     lock
                 ):  # check and start under the lock, so a cancel cannot slip in between
@@ -379,9 +404,7 @@ def run_job(job: dict[str, Any]) -> None:
                 if job["status"] == "cancelled":
                     return
                 if code != 0:
-                    raise JobFailed(
-                        f"The model process exited with code {code}. See the log."
-                    )
+                    raise JobFailed(step_failed(cmd, code, log_path, start))
         notes_file = job_dir / "notes.json"
         notes = json.loads(notes_file.read_text()) if notes_file.exists() else {}
         job["outputs"] = outputs(job_dir, notes)

@@ -292,6 +292,52 @@ def test_run_job_stops_at_a_failed_command(
 
 
 @macos_time
+def test_run_job_names_the_cause_of_a_failed_ffmpeg_step(
+    state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed ffmpeg step shows ffmpeg's cause line without its [name @ 0x...] prefix, from that step's output
+    only; a failed model keeps the exit code message (its last lines are mostly progress)."""
+    fake = (
+        tmp_path / "bin" / "ffmpeg"
+    )  # writes what ffmpeg 9 writes when -c:v copy meets ProRes in an mp4
+    fake.parent.mkdir()
+    fake.write_text(
+        f"#!{sys.executable}\nimport sys\n"
+        "sys.stderr.write('[mp4 @ 0x7cf0c0c500] Could not find tag for codec prores in stream #0, codec not "
+        "currently supported in container\\n[out#0/mp4 @ 0x7cf1024180] Could not write header (incorrect codec "
+        "parameters ?): Invalid argument\\n')\nsys.exit(234)\n"
+    )
+    fake.chmod(0o755)
+    model = [sys.executable, "-c", "print('Error: an earlier step that worked')"]
+    job_dir = state / "j1"
+    job_dir.mkdir()
+
+    def plan(*args: Any) -> tools.Plan:
+        return tools.Plan([model, [str(fake), "-i", "in.mov", "out.mp4"]], {})
+
+    monkeypatch.setattr(tools, "plan", plan)
+    job = {"id": "j1", "tool": "edit.mix", "params": {}, "status": "running"}
+    server.jobs["j1"] = job
+    server.run_job(job)
+    assert job["status"] == "failed"
+    assert job["error"] == (
+        "ffmpeg failed (exit code 234): Could not find tag for codec prores in stream #0, codec not currently "
+        "supported in container"
+    )
+    # a model step: the message stays
+    assert (
+        server.step_failed(model, 3, job_dir / "job.log", 0)
+        == "The model process exited with code 3. See the log."
+    )
+    # an ffmpeg step with no output of its own
+    log = job_dir / "job.log"
+    assert (
+        server.step_failed([str(fake)], 1, log, log.stat().st_size)
+        == "ffmpeg failed (exit code 1). See the log."
+    )
+
+
+@macos_time
 def test_run_job_without_output(run: Callable[..., dict[str, Any]]) -> None:
     job = run("pass")
     assert job["status"] == "failed"
@@ -307,7 +353,7 @@ def test_run_job_bad_input(state: Path, monkeypatch: pytest.MonkeyPatch) -> None
     job = {"id": "j1", "tool": "video.extend", "params": {}, "status": "running"}
     server.run_job(job)
     assert job["status"] == "failed"
-    assert job["error"] == "ValueError: The file could not be read as a video."
+    assert job["error"] == "The file could not be read as a video."  # no exception name
     assert (job["log_tail"], job["peak_gb"]) == ("", None)
     assert saved(state, "j1")["status"] == "failed"
 

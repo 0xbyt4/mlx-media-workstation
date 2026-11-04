@@ -2,6 +2,7 @@
 the upload's checks and a type check; the chat that queued a job; list, wait, cancel and output files; and no wait for
 a job that needs the chat model's memory. The worker thread never runs here, so a queued job stays queued."""
 
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -51,10 +52,19 @@ def test_the_input_type_must_match_the_field(
     for name, message in (
         ("notes.txt", "Start image takes image files; notes.txt is not one."),
         ("clip.mp4", "takes image files"),
-        ("photo.heic", "takes image files"),  # not a media type the app serves
+        ("photo.avif", "takes image files"),  # not a media type the app serves
     ):
         with pytest.raises(ValueError, match=message):
             port.create_job("video.i2v", {"prompt": "x"}, {"image": [given(name)]})
+    # iPhone photos and GIFs are images: the job converts a HEIC with sips and takes a GIF's first frame
+    for name, kept in (
+        ("IMG_0001.HEIC", "in_image_0.heic"),
+        ("loop.gif", "in_image_0.gif"),
+    ):
+        job_id = port.create_job("video.i2v", {"prompt": "x"}, {"image": [given(name)]})
+        assert server.jobs[job_id]["files"] == {"image": [kept]}
+        server.jobs.pop(job_id)
+        shutil.rmtree(state / job_id)
     # a field that takes audio or video
     assert port.create_job("voice.transcribe", {}, {"audio": [given("talk.mp4")]})
     with pytest.raises(ValueError, match="takes audio or video files"):

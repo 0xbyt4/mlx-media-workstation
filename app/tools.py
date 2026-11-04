@@ -704,35 +704,19 @@ def frames_for(seconds: float) -> int:
 
 
 def has_audio(path: Path) -> bool:
-    out = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "a",
-            "-show_entries",
-            "stream=index",
-            "-of",
-            "csv=p=0",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout
-    return bool(out.strip())
+    return bool(probe(path, "-select_streams", "a", "-show_entries", "stream=index"))
 
 
 def stream_codec(path: Path, kind: str) -> str | None:
     """The codec of the first picture ("V") or sound ("a") stream, or None when there is none or the file cannot be
-    read. "V" skips a cover picture. The probe gives up after 10 s."""
+    read. "V" skips a cover picture."""
     try:
-        out = subprocess.run(
+        out = run_media(
             [
                 "ffprobe",
                 "-v",
                 "error",
+                *GUARD,
                 "-select_streams",
                 f"{kind}:0",
                 "-show_entries",
@@ -741,12 +725,9 @@ def stream_codec(path: Path, kind: str) -> str | None:
                 "csv=p=0",
                 str(path),
             ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
+            READ_SECONDS,
         ).stdout
-    except subprocess.TimeoutExpired:
+    except ValueError:
         return None
     return out.strip() or None
 
@@ -758,10 +739,11 @@ def ebur128(path: Path, start: float = 0.0, seconds: float | None = None) -> str
     if seconds is not None:
         loop = ["-stream_loop", "-1"]
         trim = f"atrim=start={start:.3f},asetpts=PTS-STARTPTS,atrim=0:{seconds:.3f},"
-    return subprocess.run(
+    return run_media(
         [
             "ffmpeg",
             "-nostats",
+            *GUARD,
             *loop,
             "-i",
             str(path),
@@ -772,9 +754,7 @@ def ebur128(path: Path, start: float = 0.0, seconds: float | None = None) -> str
             "null",
             "-",
         ],
-        capture_output=True,
-        text=True,
-        check=False,
+        PREP_SECONDS,
     ).stderr
 
 
@@ -810,66 +790,36 @@ def sound_levels(path: Path) -> tuple[float, float, float] | None:
 
 
 def media_seconds(path: Path) -> float:
-    out = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "csv=p=0",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    return float(out.strip())
+    out = probe(path, "-show_entries", "format=duration")
+    try:
+        return float(out)
+    except ValueError:
+        raise ValueError("Could not read the length of the input file.") from None
 
 
 def video_size(path: Path) -> tuple[int, int]:
-    out = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height",
-            "-of",
-            "csv=p=0",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    w, h = out.strip().split(",")[:2]
-    return int(w), int(h)
+    out = probe(path, "-select_streams", "v:0", "-show_entries", "stream=width,height")
+    try:
+        w, h = out.split(",")[:2]
+        return int(w), int(h)
+    except ValueError:
+        raise ValueError("The input file has no video stream.") from None
 
 
 def frame_count(path: Path) -> int:
-    out = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
+    """The frames of the first video stream: the count in the header, or (when it has none) the decoded frames."""
+    out = probe(path, "-select_streams", "v:0", "-show_entries", "stream=nb_frames")
+    if not out.isdigit():
+        out = probe(
+            path,
             "-count_frames",
             "-select_streams",
             "v:0",
             "-show_entries",
             "stream=nb_read_frames",
-            "-of",
-            "csv=p=0",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    return int(out.strip())
+            seconds=PREP_SECONDS,
+        )
+    return int(out)
 
 
 def check_extend_source(path: Path, end_at: float | None) -> float:
@@ -897,43 +847,169 @@ def check_extend_source(path: Path, end_at: float | None) -> float:
 
 # the demuxers the transcription's ffmpeg step may use (audio and video files; nothing that reads other files)
 SPEECH_DEMUXERS = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,wav,w64,mp3,aac,flac,ogg,aiff,caf,asf,amr,mpeg,mpegts"
+# the options before each input file of a job's other ffmpeg and ffprobe calls: the file protocol, and the audio, video
+# and image demuxers only (no playlist or concat list that makes them read other files or the network)
+GUARD = [
+    "-protocol_whitelist",
+    "file",
+    "-format_whitelist",
+    SPEECH_DEMUXERS + ",png_pipe,jpeg_pipe,webp_pipe,gif,apng,bmp_pipe,tiff_pipe",
+]
+# time limits: one ffprobe or sips run (or a still for prompt help), and one ffmpeg step that prepares an input (an
+# extend encodes the whole clip)
+READ_SECONDS, PREP_SECONDS = 30, 600
+SIPS = "/usr/bin/sips"
+# the major brands of a HEIC or HEIF file ("ftyp" box): iPhone photos; ffmpeg fails on their tiled grid
+HEIF_BRANDS = {b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"mif1", b"msf1"}
+# the pixel formats with an alpha channel (a palette can hold transparent colours)
+ALPHA = re.compile(r"pal8|argb|rgba|abgr|bgra|yuva|ya|gbrap|ayuv|vuya|uyva")
+# "[out#0/mp4 @ 0x...] ": the part of ffmpeg that wrote a line, noise to the user
+FF_PREFIX = re.compile(r"\[[^\]]+ @ 0x[0-9a-f]+\]\s*")
+# lines ffmpeg writes after the error that caused them: they do not name the cause
+FF_FOLLOW_UP = re.compile(
+    r"Error opening (input|output) files?\b|Error opening input: |Could not write header|"
+    r"Error binding filtergraph|Error initializing (bitstream )?filter|Error submitting a packet to the muxer|"
+    r"Error muxing a packet|Task finished with error code|Terminating thread with return code|"
+    r"Last message repeated|Conversion failed|Nothing was written into output file"
+)
+
+
+def ffmpeg_error(text: str) -> str:
+    """The line of ffmpeg's error output that names the cause, without the [name @ 0x...] prefixes: the last line
+    that is not a follow-up of an earlier one, else the first line ("" for no output)."""
+    lines = [FF_PREFIX.sub("", line).strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    causes = [line for line in lines if not FF_FOLLOW_UP.match(line)]
+    return (causes[-1] if causes else lines[0] if lines else "")[:300]
+
+
+def run_media(cmd: list[str], seconds: float) -> subprocess.CompletedProcess[str]:
+    """Run ffmpeg, ffprobe or sips with a time limit. Raises ValueError (shown to the user) when it is missing or
+    takes too long."""
+    try:
+        return subprocess.run(
+            cmd, capture_output=True, text=True, timeout=seconds, check=False
+        )
+    except FileNotFoundError:
+        hint = (
+            " Install it with Homebrew: brew install ffmpeg." if "ff" in cmd[0] else ""
+        )
+        raise ValueError(f"{Path(cmd[0]).name} was not found.{hint}") from None
+    except subprocess.TimeoutExpired:
+        raise ValueError(
+            f"{Path(cmd[0]).name} took more than {seconds:.0f} s on the input file. Use a shorter or smaller file."
+        ) from None
+
+
+def probe(path: Path, *entries: str, seconds: float = READ_SECONDS) -> str:
+    """ffprobe's answer (CSV, no keys) about one file. Raises ValueError (shown to the user) when it cannot read it."""
+    r = run_media(
+        ["ffprobe", "-v", "error", *GUARD, *entries, "-of", "csv=p=0", str(path)],
+        seconds,
+    )
+    if r.returncode != 0:
+        why = ffmpeg_error(r.stderr) or f"exit code {r.returncode}"
+        raise ValueError(f"Could not read the input file: {why}")
+    return r.stdout.strip()
 
 
 def prep(cmd: list[str]) -> None:
     """Run a quick ffmpeg step while a job is planned; a failure is shown to the user with ffmpeg's own words."""
-    r = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    r = run_media(cmd, PREP_SECONDS)
     if r.returncode != 0:
-        why = (
-            " ".join(r.stderr.strip().splitlines()[-3:]) or f"exit code {r.returncode}"
-        )
+        why = ffmpeg_error(r.stderr) or f"exit code {r.returncode}"
         raise ValueError(f"Could not prepare the input file: {why}")
 
 
 def loudnorm_stats(cmd: list[str]) -> dict[str, str]:
     """Run a loudnorm first pass (print_format=json) while a job is planned and return what it measured."""
-    err = subprocess.run(cmd, capture_output=True, text=True, check=False).stderr
+    err = run_media(cmd, PREP_SECONDS).stderr
     try:
         return json.loads(err[err.rindex("{") : err.rindex("}") + 1])
     except ValueError:
-        why = " ".join(err.strip().splitlines()[-3:]) or "no measurement"
+        why = ffmpeg_error(err) or "no measurement"
         raise ValueError(f"Could not measure the mix: {why}") from None
 
 
+def is_heif(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            head = f.read(12)
+    except OSError:
+        return False
+    return head[4:8] == b"ftyp" and head[8:12] in HEIF_BRANDS
+
+
+def readable_image(src: Path, folder: Path) -> Path:
+    """The image as ffmpeg can read it: a HEIC or HEIF file becomes a PNG in folder (macOS's sips keeps its colour
+    profile); any other file is returned as it is. Raises ValueError (shown to the user)."""
+    if not is_heif(src):
+        return src
+    png = folder / f"{src.name}.png"
+    r = run_media(
+        [SIPS, "-s", "format", "png", str(src), "--out", str(png)], READ_SECONDS
+    )
+    if r.returncode != 0 or not png.is_file():
+        why = (r.stderr.strip().splitlines() or [f"exit code {r.returncode}"])[0]
+        raise ValueError(f"Could not convert the HEIC image: {why}")
+    return png
+
+
+def image_format(path: Path) -> tuple[int, int, str]:
+    """Width, height and pixel format of an image (its first frame)."""
+    out = probe(
+        path, "-select_streams", "v:0", "-show_entries", "stream=width,height,pix_fmt"
+    )
+    try:
+        w, h, fmt = out.split(",")[:3]
+        return int(w), int(h), fmt
+    except ValueError:
+        raise ValueError("The input file is not an image.") from None
+
+
+def image_filter(src: Path, vf: str) -> list[str]:
+    """ffmpeg's filter options that apply vf to the image. An image with alpha is laid on white first: LTX and the LLM
+    drop alpha, and the hidden colours of see-through pixels then show, mostly as dark edges."""
+    w, h, fmt = image_format(src)
+    if not ALPHA.match(fmt):
+        return ["-vf", vf]
+    flat = f"[0:v]format=rgba[fg];color=c=white:s={w}x{h}[bg];[bg][fg]overlay=shortest=1:format=auto,format=rgb24"
+    return ["-filter_complex", f"{flat},{vf}"]
+
+
 def fit_image(src: Path, dst: Path, w: int, h: int) -> None:
-    """Scale to cover, then centre-crop to exactly w x h."""
+    """Scale to cover, then centre-crop to exactly w x h. One frame: the first of an animated GIF."""
+    src = readable_image(src, dst.parent)
+    vf = (
+        f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}"
+    )
     prep(
         [
             "ffmpeg",
             "-v",
             "error",
             "-y",
+            *GUARD,
             "-i",
             str(src),
-            "-vf",
-            f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}",
+            *image_filter(src, vf),
+            "-frames:v",
+            "1",
+            "-update",
+            "1",
             str(dst),
         ]
     )
+
+
+# the colour tags of an LTX video, written into its H.264 header: BT.709 primaries and transfer, the BT.601 matrix of
+# LTX's encode, limited range (ffmpeg 9 does not write -color_primaries/-color_trc for libx264; the filter does)
+LTX_COLOURS = "h264_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=6"
+
+
+def finish_video(path: Path) -> list[str]:
+    """The step after LTX writes a video: tag its colours and put its index first (app/runners/tag_video.py)."""
+    return [sys.executable, str(APP / "runners" / "tag_video.py"), str(path)]
 
 
 def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) -> None:
@@ -1045,6 +1121,7 @@ def plan(
         refs = files.get("references", [])
         if not refs:
             raise ValueError("Add at least one reference image.")
+        refs = [readable_image(r, out) for r in refs]
         w, h = size(params)
         return Plan(
             [
@@ -1196,7 +1273,10 @@ def plan(
             fitted = out / "start.png"
             fit_image(img, fitted, w, h)
             cmd += ["--image", str(fitted)]
-        return Plan([cmd], offline | {"LTX2_COMPUTE_DTYPE": "float16"})
+        return Plan(
+            [cmd, finish_video(out / "video.mp4")],
+            offline | {"LTX2_COMPUTE_DTYPE": "float16"},
+        )
     if tool == "video.a2v":
         img, aud = files.get("image", [None])[0], files.get("audio", [None])[0]
         if img is None or aud is None:
@@ -1216,6 +1296,7 @@ def plan(
                 "-v",
                 "error",
                 "-y",
+                *GUARD,
                 "-i",
                 str(aud),
                 "-af",
@@ -1251,7 +1332,8 @@ def plan(
                     *seed_args,
                     "-o",
                     str(out / "video.mp4"),
-                ]
+                ],
+                finish_video(out / "video.mp4"),
             ],
             offline | {"LTX2_COMPUTE_DTYPE": "float16"},
         )
@@ -1277,6 +1359,7 @@ def plan(
                 "-v",
                 "error",
                 "-y",
+                *GUARD,
                 "-i",
                 str(src),
                 *audio_in,
@@ -1309,6 +1392,7 @@ def plan(
                 "-v",
                 "error",
                 "-y",
+                *GUARD,
                 "-i",
                 str(source),
                 "-vf",
@@ -1351,8 +1435,10 @@ def plan(
             "-v",
             "error",
             "-y",
+            *GUARD,
             "-i",
             str(source),
+            *GUARD,
             "-i",
             str(raw),
             "-filter_complex",
@@ -1367,6 +1453,8 @@ def plan(
             "16",
             "-pix_fmt",
             "yuv420p",
+            "-bsf:v",
+            LTX_COLOURS,
             "-c:a",
             "aac",
             "-b:a",
@@ -1439,7 +1527,16 @@ def plan(
                 )
             else:
                 graph = f"{voice};{bed}[bed];[key]anullsink;[voice][bed]amix=inputs=2:normalize=0:duration=first[mix]"
-        inputs = ["-i", str(video), "-stream_loop", "-1", "-i", str(music)]
+        inputs = [
+            *GUARD,
+            "-i",
+            str(video),
+            *GUARD,
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(music),
+        ]
         # two-pass loudness: the first pass measures the mix now; the job's command uses that measurement and keeps one
         # steady gain when the peaks and the loudness range allow it (else loudnorm rides the level as before)
         stats = loudnorm_stats(

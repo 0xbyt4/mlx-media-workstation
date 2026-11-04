@@ -10,7 +10,6 @@ client's request id (track), and cancel stops it, also when the cancel comes bef
 """
 
 import json
-import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -18,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from app import llm
+from app import llm, tools
 from app.config import ASSIST, ROOT
 
 GUIDE = ROOT / "docs" / "PROMPTING.md"
@@ -128,23 +127,29 @@ def cancel(request_id: str) -> bool:
 
 
 def still(src: Path, dst: Path, video: bool, at: float | None = None) -> Path:
-    """A JPEG of at most IMAGE_SIDE px: the image itself, or the video frame at `at` (default: its last frame)."""
-    seek = ["-sseof", "-0.2"] if at is None else ["-ss", f"{max(at - 0.05, 0):.3f}"]
-    cmd = ["ffmpeg", "-v", "error", "-y", *(seek if video else []), "-i", str(src)]
-    cmd += [
-        "-frames:v",
-        "1",
-        "-vf",
-        f"scale='min({IMAGE_SIDE},iw)':'min({IMAGE_SIDE},ih)':force_original_aspect_ratio=decrease",
-        "-q:v",
-        "3",
-        str(dst),
-    ]
-    r = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    """A JPEG of at most IMAGE_SIDE px: the image itself (as tools.fit_image reads it: HEIC converted, alpha on
+    white, the first frame of a GIF), or the video frame at `at` (default: its last frame)."""
+    vf = f"scale='min({IMAGE_SIDE},iw)':'min({IMAGE_SIDE},ih)':force_original_aspect_ratio=decrease"
+    try:
+        if video:
+            seek = (
+                ["-sseof", "-0.2"]
+                if at is None
+                else ["-ss", f"{max(at - 0.05, 0):.3f}"]
+            )
+            filters = ["-vf", vf]
+        else:
+            seek = []
+            src = tools.readable_image(src, dst.parent)
+            filters = tools.image_filter(src, vf)
+        cmd = ["ffmpeg", "-v", "error", "-y", *seek, *tools.GUARD, "-i", str(src)]
+        cmd += [*filters, "-frames:v", "1", "-update", "1", "-q:v", "3", str(dst)]
+        r = tools.run_media(cmd, tools.READ_SECONDS)
+    # a HEIC that sips cannot convert, an image ffprobe cannot read, a time limit
+    except ValueError as e:
+        raise AssistError(str(e)) from None
     if r.returncode != 0 or not dst.exists():
-        why = (
-            " ".join(r.stderr.strip().splitlines()[-2:]) or f"exit code {r.returncode}"
-        )
+        why = tools.ffmpeg_error(r.stderr) or f"exit code {r.returncode}"
         raise AssistError(f"Could not read the input file for prompt help: {why}")
     return dst
 

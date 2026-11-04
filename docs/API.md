@@ -60,6 +60,20 @@ added to it.
 checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Errors return HTTP 400 with
 `{"detail": "message"}`.
 
+Input files:
+
+- An image field (`"accept": "image/*"`) takes PNG, JPEG, WebP, GIF, HEIC and HEIF. The job converts a HEIC or HEIF
+  file to PNG with `/usr/bin/sips` (it finds one by its content, also under another name). It uses the first frame of
+  a GIF. `video.i2v`, `video.a2v` and prompt help put an image with alpha on white (`tools.image_filter`).
+- A browser upload of another type is kept as `in_<field>_<n>.bin`; ffmpeg finds its format by its content.
+- The job's ffmpeg and ffprobe calls open each input with `-protocol_whitelist file` and a list of audio, video and
+  image demuxers (`tools.GUARD`), so a playlist or concat list cannot make them read other files or the network.
+  A probe may take 30 s and a preparing ffmpeg step 600 s (`tools.READ_SECONDS`, `tools.PREP_SECONDS`).
+- `video.t2v`, `video.i2v` and `video.a2v` end with `app/runners/tag_video.py`: a stream copy of `video.mp4` that
+  tags BT.709 primaries and transfer, the BT.601 matrix and limited range, and moves the index (moov) to the front.
+  When it fails, it keeps the file as it was and the job does not fail. The `video.extend` splice writes the same tags
+  (`tools.LTX_COLOURS`).
+
 An optional `client` part with the value `mcp` marks a job from the MCP server ([MCP.md](MCP.md)). The job gets the
 checks of an agent's job (see docs/AGENT.md, "Input files": a file must have a media type that its field accepts) and
 `"chat": "mcp"` in its `job.json`. Another `client` value is HTTP 400.
@@ -101,6 +115,9 @@ checks of an agent's job (see docs/AGENT.md, "Input files": a file must have a m
 - `elapsed` counts from `started` while the job runs; after it, it is the time the job took.
 - `log_tail` holds the last 25 lines of `job.log`. While the job runs, it is read from the file on each request.
   It leaves out the report that `/usr/bin/time -l` writes after each command; `peak_gb` comes from that report.
+- `error` is set when a job fails or is cancelled. It is a plain message without an exception name. When an ffmpeg
+  step fails, it is `ffmpeg failed (exit code N): ` with the line of ffmpeg's output that names the cause (the
+  `[name @ 0x...]` prefixes removed). When a model fails, it is `The model process exited with code N. See the log.`
 - Only one job runs at a time (each model needs most of the memory of a 32-48 GB Mac).
 - `kind: "text"` is a `.txt` output: the transcript of a `voice.transcribe` job.
 - A job that an agent chat queued has `"chat": "<chat id>"` in its `job.json`; a job from the MCP server has

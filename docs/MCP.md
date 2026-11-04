@@ -103,8 +103,8 @@ file in one of these forms:
   password files (the rules of the agent's file tools, `app/agent/file_tools.py`). For a file in the app's
   `outputs` folder, only the parts below that folder count.
 - The app checks the file as it checks an upload: at most 200 MB, the count of the field, and a media type that the
-  field accepts (`image/*` takes `.png`, `.jpg`, `.jpeg` and `.webp`; `audio/*` takes `.wav`, `.mp3`, `.flac`,
-  `.m4a`, `.aac`, `.ogg`, `.opus`, `.aiff` and `.aif`; `video/*` takes `.mp4` and `.mov`).
+  field accepts (`image/*` takes `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.heic` and `.heif`; `audio/*` takes
+  `.wav`, `.mp3`, `.flac`, `.m4a`, `.aac`, `.ogg`, `.opus`, `.aiff` and `.aif`; `video/*` takes `.mp4` and `.mov`).
 - The app copies the file into the job's folder. The job does not use your original file after that.
 
 ### Results

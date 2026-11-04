@@ -450,9 +450,11 @@ function acceptKind(f) {
   return a.startsWith('image/') ? 'image' : a.startsWith('audio/') ? 'audio' : a.startsWith('video/') ? 'video' : null;
 }
 
+// Some browsers give a HEIC photo no type: its name says it is an image (the job converts it).
 function accepts(f, file) {
   const kind = acceptKind(f);
-  return !kind || (file.type || '').startsWith(kind + '/');
+  const type = file.type || (/\.hei[cf]$/i.test(file.name) ? 'image/heic' : '');
+  return !kind || type.startsWith(kind + '/');
 }
 
 function makeFileControl(tool, f) {
