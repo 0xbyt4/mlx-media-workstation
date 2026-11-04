@@ -16,6 +16,7 @@ Some changes apply at once. Others apply after a restart, because the app reads 
 | Local LLM | `[app] chat_effort` | At once |
 | Jobs | `[app] notify`, `keep_awake`, `llm_idle_minutes` | At once |
 | Agent | `[agent]` | After a restart |
+| MCP servers | none (`outputs/mcp_servers.json` and the Keychain) | At once, for new agent chats |
 | Model paths | `[paths]` | After a restart |
 
 If you edit `config.toml` by hand, restart the app. When the file has an error, Settings shows "config.toml cannot
@@ -95,6 +96,12 @@ Press Save, then restart the app.
 
 The path must be absolute ("~" is allowed) and the file must exist. No other user may be able to change the file or
 the folders above it.
+
+## MCP servers
+
+Add, approve, test and remove MCP servers. Their tools go to the agent of new Agent chats. Each server needs your
+approval of its command line, and each tool needs your approval of its definition. Secrets go to the macOS Keychain.
+The steps are in [MCP servers](mcp-servers.md).
 
 ## Model paths
 

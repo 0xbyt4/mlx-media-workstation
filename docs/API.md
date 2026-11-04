@@ -973,6 +973,53 @@ name programs that the app runs.
   table); the file is then not changed.
 - Settings hold no secrets.
 
+## MCP servers
+
+The endpoints of Settings > MCP servers (`app/mcp_api.py`; [MCP.md](MCP.md#mcp-client)). Every write needs the
+`Origin` header of the app's own page (HTTP 403 without it). No answer holds a secret value.
+
+`GET /api/mcp/servers` returns `{"servers": [server, ...], "max_servers": 20, "max_direct": 4,
+"keychain_service": "mlx-media-workstation-mcp"}`. A server:
+
+```json
+{
+  "name": "git", "kind": "stdio", "enabled": false, "exposure": "deferred",
+  "approval": "<sha256 of the launch spec>", "approved": true, "warnings": [],
+  "state": "ready", "error": null, "listed": true,
+  "command": "/opt/homebrew/bin/uvx", "args": ["mcp-server-git"], "cwd": "",
+  "env": [{"name": "API_KEY", "set": true}],
+  "command_line": "/opt/homebrew/bin/uvx mcp-server-git", "log": "outputs/mcp/git.log",
+  "tools": [{"name": "git_log", "label": "git_log", "full_name": "git__git_log", "title": "",
+             "description": "Shows the commit log.", "hints": {"readOnlyHint": true},
+             "state": "approved", "approved_description": null, "hash": "<sha256 of the live definition>"}]
+}
+```
+
+- A remote server has `url` and `token_set` instead of `command`, `args`, `cwd`, `env`, `command_line` and `log`.
+- `state`: `stopped`, `starting`, `ready` or `failed`. `error` is the last error, with the end of the server's stderr.
+- `listed` is true when the app has the server's own tool list of this run. Without it, the approved tools show as
+  `approved`.
+- A tool's `state`: `approved`, `new`, `changed` (the server lists another definition now) or `gone` (approved, but
+  not listed now). `hash` is the SHA-256 of the definition the server lists now (`null` when not listed).
+  `approved_description` is the approved description when the definition changed. `label` is the name with hidden
+  characters written as `\uXXXX`.
+
+| Endpoint | Body | What it does |
+|---|---|---|
+| `POST /api/mcp/servers` | `name`, `kind` (`stdio` or `remote`), `command`, `args`, `cwd`, `env` (names), or `url`; `exposure`; `secrets` | Adds a server: off and not approved. |
+| `PUT /api/mcp/servers/{name}` | any of `command`, `args`, `cwd`, `env`, `url`, `exposure`, `enabled`, `secrets` | Changes the given fields. A new launch spec needs a new approval. The server stops when its spec or secrets change or it is turned off. |
+| `DELETE /api/mcp/servers/{name}` | none | Stops the server and removes it and its Keychain item. Returns `{"removed": name}`. |
+| `POST /api/mcp/servers/{name}/approve` | `{"approval": "<hash>"}` | Approves the launch spec. HTTP 409 when the hash is not the current one. |
+| `POST /api/mcp/servers/{name}/test` | none | Starts the server again (also when it is off) and lists its tools. HTTP 409 when it is not approved. |
+| `POST /api/mcp/servers/{name}/tools` | `{"approve": {"tool": "<hash>"}, "revoke": ["tool"]}` | Approves tools at the hash the page showed, or revokes them. HTTP 409 when the server does not list the tool now or its hash differs. |
+
+- `secrets` maps a name to a value: an environment variable of a stdio server, or `token` of a remote server. A text
+  (at most 8,192 ASCII characters) sets the value in the Keychain; `""` or `null` removes it; a name not sent keeps
+  its value.
+- Each answer except DELETE is the server as `GET` shows it.
+- Errors: HTTP 400 with `{"detail": {"message": "...", "fields": {"url": "message"}}}` for a bad value; HTTP 404 for
+  an unknown server; HTTP 409 for a name in use, more than 20 servers, or a stale hash.
+
 ## UI behaviour
 
 The page is split into ES modules; web/README.md describes the files, the view contract and the handoff between

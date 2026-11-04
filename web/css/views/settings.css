@@ -247,3 +247,37 @@
 .v-settings .input[aria-invalid="true"] {
   border-color: var(--err);
 }
+
+/* MCP servers (js/views/settings/mcp.js) */
+.v-settings .set-mcp-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  align-items: center;
+  min-width: 0;
+}
+.v-settings .set-mcp-head .mono {
+  overflow-wrap: anywhere;
+}
+.v-settings .set-mcp-tools {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.v-settings .set-mcp-tool {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  align-items: start;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.v-settings .set-mcp-tool:first-child {
+  border-top: 0;
+}
+.v-settings .set-mcp-err {
+  max-height: 14em;
+  overflow: auto;
+  padding-right: 12px;
+}

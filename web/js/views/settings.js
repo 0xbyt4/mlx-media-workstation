@@ -5,6 +5,7 @@
 // job switches and the paths Chat does not use.
 
 import {h, icon, toast, confirm, errorBox, getTheme, setTheme, onTheme} from '../ui.js';
+import {mcpServers} from './settings/mcp.js';
 
 const THEMES = [['system', 'System', 'monitor'], ['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']];
 const README = [
@@ -122,6 +123,7 @@ function build() {
     localLlm(),
     jobs(),
     agent(),
+    mcpServers(s.ctx),
     modelPaths(),
     about(),
   ].filter(Boolean));

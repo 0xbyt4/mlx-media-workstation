@@ -45,6 +45,9 @@ the tool's result, so it can answer the user.
 | `run_python` | R3 | Runs Python code in the sandbox. Present only when the sandbox works on this Mac. |
 | `run_shell` | R3 | Runs a shell command (zsh) in the sandbox. Present only when the sandbox works on this Mac. |
 
+Tools of MCP servers that the user added (`<server>__<tool>`, always R2) come in too: see
+[MCP tools](#mcp-tools).
+
 The Workstation tools exist only in the full profile. The chat profile has no Workstation, so its registry has none
 of them.
 
@@ -426,6 +429,27 @@ the text. The page uses the lengths to show the two parts. A long part is folded
 It does not scrape search engines. Each request takes at most 10 s. A source that fails is named in the result. The
 search fails only when every source fails.
 
+## MCP tools
+
+The user adds MCP servers in Settings > MCP servers ([MCP.md](MCP.md#mcp-client), user guide:
+[MCP servers](guide/mcp-servers.md)). `app/agent/mcp_tools.py` gives their tools to chats as a Provider
+(`app/agent/extensions.py`).
+
+- A chat gets the approved tools of each server that is on, approved and not hidden. A tool is named
+  `<server>__<tool>`.
+- Every MCP tool is R2, also when the server marks it read-only: tool annotations are untrusted. Its result is
+  untrusted and taints the chat. So each call asks, and "Allow in this chat" is not offered.
+- The approval card says what runs: "Runs the tool X of the MCP server Y, a program on this Mac with your user
+  rights", or for a remote server "Sends a call of the tool X to the remote MCP server Y (host), off this Mac". A
+  remote server's tools have `network` set and name the host.
+- Deferred (the default): the tool is not in the tools array; the model finds it with tool search. Direct: it is in
+  the tools array (at most 4 MCP tools). The prompt section "MCP servers" lists only the servers (at most 150
+  tokens).
+- The model gets the definition the user approved. Before each call the app lists the server's tools again; a
+  changed or removed tool is refused until the user approves it again.
+- An error of the tool or the server, a timeout (120 s) or a failed start (30 s) becomes the tool's error text. Only
+  that server's tools fail.
+
 ## What is not protected
 
 - Seatbelt (`sandbox-exec`) is deprecated by Apple. It works on current macOS, but Apple may remove it.
@@ -468,6 +492,10 @@ search fails only when every source fails.
 - The readers of attached files run outside the sandboxes: PDFKit in a child process of the app, `textutil`, and the
   standard library's zip and XML parsers. A file made to attack them could reach them. The limits (file size, zip
   size and part count, no XML `DOCTYPE`, 60 s per reader) make most such files fail.
+- An MCP server of the "local program" kind runs outside the sandboxes, with the user's rights. The approval of
+  its command line is the only check. It can read and change the user's files and use the network.
+- The values of an MCP server's secrets go to `/usr/bin/security` as arguments. While that program runs (a few
+  milliseconds), another process of this user can read them in the process list.
 - A local program can send any `Origin` header. The same-origin check stops other web pages. Programs on this Mac
   need the session cookie, which only the token file of this user gives (docs/API.md). A program that runs as this
   user can read that file.
