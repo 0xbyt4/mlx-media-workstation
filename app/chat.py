@@ -1862,7 +1862,7 @@ def start_answer(
             if staged:
                 message["files"] = store_files(chat, staged, room)
                 # a file's text is untrusted content in the model's context, as a web page is (docs/AGENT.md)
-                if mode_of(chat) == "agent":
+                if uses_tools(chat):  # an agent chat, or a workstation chat with the media tools
                     chat["agent"] = {**agent_of(chat), "tainted": True}
             chat["messages"].append(message)
             if chat["title"] == "New chat" and (text or staged):

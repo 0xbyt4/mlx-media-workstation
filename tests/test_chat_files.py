@@ -582,6 +582,13 @@ def test_an_agent_chat_is_tainted_by_an_attached_file(client, ws):
     assert saved(client, other)["agent"]["tainted"] is True
 
 
+def test_a_workstation_chat_with_tools_is_tainted_by_an_attached_file(client, ws):
+    cid = new_chat(client, "workstation")
+    r = send(client, cid, "read", [("n.txt", io.BytesIO(b"note"), "text/plain")])
+    assert r.status_code == 200
+    assert saved(client, cid)["agent"]["tainted"] is True
+
+
 def test_an_image_alone_does_not_taint(client, ws):
     cid = new_chat(client, "agent")
     client.post(
