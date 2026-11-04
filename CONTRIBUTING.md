@@ -9,6 +9,8 @@ welcome.
 - Open an issue before you start a large change, a new tool or a new model. Then we can agree on the approach first.
 - Small fixes (typos, clear bugs, a missing test) can go directly to a pull request.
 - Report a security problem in private. Do not open a public issue. Read [SECURITY.md](SECURITY.md).
+- Follow the [code of conduct](CODE_OF_CONDUCT.md) in issues, pull requests and discussions. To report a problem
+  with the conduct of a person, send a direct message to [@0xbyt4 on X](https://x.com/0xbyt4).
 
 ## Set up the development environment
 
