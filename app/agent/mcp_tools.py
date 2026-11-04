@@ -41,9 +41,24 @@ def tool_name(server: str, tool: str) -> str:
     return f"{server}__{UNSAFE.sub('_', tool)}"[:MAX_NAME]
 
 
+def shown(v: Any, depth: int = 0) -> Any:
+    """A schema value with every text (keys too) through visible(): no invisible or direction character reaches the
+    model unseen. A value nested too deep is dropped."""
+    if depth > 20:
+        return None
+    if isinstance(v, str):
+        return visible(v)
+    if isinstance(v, list):
+        return [shown(x, depth + 1) for x in v]
+    if isinstance(v, dict):
+        return {visible(str(k)): shown(x, depth + 1) for k, x in v.items()}
+    return v
+
+
 def clean_schema(s: Any, depth: int = 0) -> dict[str, Any]:
     """A server's JSON schema with the keys app/agent/schema.py checks made safe for it (a type it knows, dicts and
-    lists where it expects them); other keys stay for the model to read."""
+    lists where it expects them); other keys stay for the model to read, with their texts through visible(). The
+    Settings page shows this schema as the model gets it (app/mcp_api.py)."""
     if not isinstance(s, dict) or depth > 20:
         return {}
     out: dict[str, Any] = {}
@@ -55,19 +70,21 @@ def clean_schema(s: Any, depth: int = 0) -> dict[str, Any]:
                 out[k] = kinds[0] if len(kinds) == 1 else kinds
         elif k == "properties":
             if isinstance(v, dict):
-                out[k] = {str(n): clean_schema(p, depth + 1) for n, p in v.items()}
+                out[k] = {
+                    visible(str(n)): clean_schema(p, depth + 1) for n, p in v.items()
+                }
         elif k == "items":
             out[k] = clean_schema(v, depth + 1)
         elif k == "additionalProperties":
             out[k] = v if isinstance(v, bool) else clean_schema(v, depth + 1)
         elif k in ("required", "enum"):
             if isinstance(v, list):
-                out[k] = v
+                out[k] = shown(v, depth + 1)
         elif k in NUMBERS:
             if isinstance(v, int | float) and not isinstance(v, bool):
                 out[k] = v
         else:
-            out[k] = v
+            out[visible(str(k))] = shown(v, depth + 1)
     return out
 
 
@@ -106,6 +123,14 @@ def build_tool(
     host = urlsplit(entry["url"]).hostname if remote else None
 
     def run(args: dict[str, Any], ctx: Context) -> str:
+        """call(), with the server's secret values taken out of its result and of every error text: a server can echo
+        its key ("Invalid API key sk-...")."""
+        try:
+            return manager.redact(server, call(args, ctx))
+        except ToolError as e:
+            raise ToolError(manager.redact(server, str(e))) from None
+
+    def call(args: dict[str, Any], ctx: Context) -> str:
         current = mcp_client.server(server)
         if current is None or not current.get("enabled"):
             raise ToolError(

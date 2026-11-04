@@ -4,17 +4,20 @@ Every write needs the Origin of the app's own page (chat.same_origin): a server 
 No answer holds a secret: an environment variable or a bearer token shows only as "set" or "not set".
 """
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app import chat, mcp_client
-from app.agent.mcp_tools import MAX_DIRECT, tool_name
+from app.agent.mcp_tools import MAX_DESCRIPTION, MAX_DIRECT, parameters, tool_name
 from app.agent.registry import visible
 
 router = APIRouter(prefix="/api/mcp")
-MAX_SHOWN = 600  # characters of a tool's description in the list
+MAX_SHOWN = (
+    MAX_DESCRIPTION  # characters of a tool's description: as much as the model gets
+)
 
 
 class ServerIn(BaseModel):
@@ -46,6 +49,11 @@ def hints(d: dict[str, Any]) -> dict[str, Any]:
     return {k: a[k] for k in keys if isinstance(a.get(k), bool)}
 
 
+def schema_text(d: dict[str, Any]) -> str | None:
+    params = parameters(d)
+    return None if params is None else json.dumps(params, ensure_ascii=False, indent=1)
+
+
 def tools_view(
     entry: dict[str, Any], live: dict[str, Any] | None
 ) -> list[dict[str, Any]]:
@@ -54,6 +62,12 @@ def tools_view(
     for name in sorted(set(saved) | set(live or {})):
         d = (live or {}).get(name) or saved[name]["definition"]
         text = visible(str(d.get("description") or ""))
+        changed = (
+            name in saved
+            and live is not None
+            and name in live
+            and live[name] != saved[name]["definition"]
+        )
         out.append(
             {
                 "name": name,
@@ -64,15 +78,19 @@ def tools_view(
                 if len(text) <= MAX_SHOWN
                 else text[: MAX_SHOWN - 3] + "...",
                 "hints": hints(d),
+                # the input schema as the model gets it (None: too large, so the tool is not offered)
+                "schema": schema_text(d),
                 "state": mcp_client.tool_state(entry, name, live),
                 # the description the user approved, when the server changed the tool since
                 "approved_description": visible(
                     str(saved[name]["definition"].get("description") or "")
                 )[:MAX_SHOWN]
-                if name in saved
-                and live
-                and name in live
-                and live[name] != saved[name]["definition"]
+                if changed
+                else None,
+                # the schema the user approved, when the server changed the tool since (also a change of the
+                # schema alone, which the descriptions do not show)
+                "approved_schema": schema_text(saved[name]["definition"])
+                if changed
                 else None,
                 # what an approval of the current definition sends back
                 "hash": mcp_client.definition_hash(live[name])
@@ -230,6 +248,11 @@ def approve_server(name: str, body: Approve, request: Request) -> dict[str, Any]
         if body.approval != mcp_client.approval(entry):
             raise HTTPException(
                 409, "The command changed after the page showed it. Read it again."
+            )
+        if entry["kind"] == "stdio" and mcp_client.resolve(entry["command"]) is None:
+            raise HTTPException(
+                409,
+                f"The program {entry['command']} was not found. Enter its absolute path, then approve it.",
             )
         entry["approved"] = body.approval
         mcp_client.save(data)

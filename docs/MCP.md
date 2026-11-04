@@ -209,10 +209,12 @@ Agent chat  -->  mcp_tools (Provider)  -->  Manager: one asyncio loop in its own
 - **Command.** The approval is the SHA-256 of the launch spec: the resolved command line (a bare program name is
   looked up in `PATH`), the working folder and the names of the environment variables (stdio), or the URL (remote).
   A server with no matching approval does not start. A change of any of these needs a new approval. A secret value
-  is not part of it.
+  is not part of it. A stdio program that is not found cannot be approved. A command, argument, working folder or URL
+  with a hidden character (for example a bidirectional control) is refused.
 - **Tools.** For each tool, the user approves the definition the server lists now. The app stores the definition
   (name, title, description, input and output schema, annotations) and its SHA-256. The agent gets the stored
-  definition, never the live one.
+  definition, never the live one. Settings shows the input schema the agent sees, and the schema approved before
+  when the definition changed.
 - **Rug-pull guard.** Before each call, the app lists the server's tools again. When the tool's definition differs
   from the approved one ("changed") or the server no longer lists it ("gone"), the call is refused with an error text
   for the model. The tool stays off until the user approves it again. A chat that starts later does not get it.
@@ -226,8 +228,9 @@ Agent chat  -->  mcp_tools (Provider)  -->  Manager: one asyncio loop in its own
   characters. A name that two tools share after this keeps the first tool only.
 - Description: the server's description with hidden characters written as `\uXXXX`, at most 1,000 characters, and
   a note: the server, and that the result is untrusted data.
-- Input schema: the server's schema, with the keys that `app/agent/schema.py` checks made safe for it. A tool whose
-  schema is over 8,000 characters (JSON) is not offered.
+- Input schema: the server's schema, with the keys that `app/agent/schema.py` checks made safe for it. Every text in
+  it (keys, descriptions, enum values) has its hidden characters written as `\uXXXX`. A tool whose schema is over
+  8,000 characters (JSON) is not offered.
 - Exposure per server: `deferred` (the default: not in the tools array, found with tool search), `direct` (in the
   tools array; at most 4 MCP tools of all servers, the rest stay deferred) or `hidden` (not offered).
 - The prompt section "MCP servers" lists the servers with their tool counts, at most 150 tokens. It names no tool.
@@ -245,6 +248,7 @@ Agent chat  -->  mcp_tools (Provider)  -->  Manager: one asyncio loop in its own
   caps what the model reads (12,000 characters).
 - A result with `isError`, a protocol error, a timeout, a start failure or a stopped server becomes the tool's error
   text. The chat goes on.
+- In a result and in an error text, each secret value of the server is replaced by `[secret]`.
 
 ### Processes
 
@@ -256,4 +260,5 @@ Agent chat  -->  mcp_tools (Provider)  -->  Manager: one asyncio loop in its own
   This happens when the user turns the server off, edits its command, presses Test connection, removes it, and at app
   shutdown (`server.shutdown`).
 - `outputs/mcp/pids.json` records the running groups. At the next start, the app stops a group left by a crash, but
-  only when its leader still runs the recorded command line.
+  only when its leader still runs the recorded command line and has the recorded start time. A new process that got
+  the same PID is not stopped.

@@ -51,6 +51,8 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
 from mcp.shared.message import SessionMessage
 
+from app.agent.registry import HIDDEN
+
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / "outputs" / "mcp_servers.json"
 LOGS = ROOT / "outputs" / "mcp"  # <name>.log (a stdio server's stderr) and pids.json
@@ -148,6 +150,14 @@ def valid_name(name: Any) -> bool:
     )
 
 
+# the approval card shows the command line as text: a control, invisible or direction character (a line break, a
+# zero-width space, U+202E) could make it read as another command than the one the hash approves
+HIDDEN_TEXT = (
+    "Must not contain line breaks, control characters or invisible characters (such as zero-width or "
+    "right-to-left marks)."
+)
+
+
 def _text(
     value: Any, field_name: str, errors: dict[str, str], *, required: bool = False
 ) -> str:
@@ -161,8 +171,8 @@ def _text(
         errors[field_name] = "Required."
     elif len(value) > MAX_TEXT:
         errors[field_name] = f"At most {MAX_TEXT} characters."
-    elif "\x00" in value:
-        errors[field_name] = "Must not contain a NUL character."
+    elif HIDDEN.search(value):
+        errors[field_name] = HIDDEN_TEXT
     return value
 
 
@@ -214,10 +224,10 @@ def checked(raw: dict[str, Any], old: dict[str, Any] | None = None) -> dict[str,
             args = []
         elif len(args) > MAX_ARGS:
             errors["args"] = f"At most {MAX_ARGS} arguments."
-        elif any(len(a) > MAX_TEXT or "\x00" in a for a in args):
-            errors["args"] = (
-                f"Each argument: at most {MAX_TEXT} characters, no NUL character."
-            )
+        elif any(len(a) > MAX_TEXT for a in args):
+            errors["args"] = f"Each argument: at most {MAX_TEXT} characters."
+        elif any(HIDDEN.search(a) for a in args):
+            errors["args"] = HIDDEN_TEXT
         entry["args"] = list(args)
         cwd = _text(raw.get("cwd"), "cwd", errors)
         if cwd and not os.path.isabs(os.path.expanduser(cwd)):
@@ -382,6 +392,10 @@ def approval(entry: dict[str, Any]) -> str:
 
 
 def approved(entry: dict[str, Any]) -> bool:
+    """Whether the user approved this exact launch. A program that is not found never counts: its bare name would
+    run whatever program of that name appears in PATH later, under the old approval."""
+    if entry["kind"] == "stdio" and resolve(entry["command"]) is None:
+        return False
     return entry.get("approved") == approval(entry)
 
 
@@ -595,8 +609,20 @@ def record_pid(name: str, pid: int | None, command: list[str] | None = None) -> 
         if pid is None:
             data.pop(name, None)
         else:
-            data[name] = {"pid": pid, "command": command}
+            data[name] = {"pid": pid, "command": command, "started": started(pid)}
         _write_pids(data)
+
+
+def started(pid: int) -> str | None:
+    """When the process started, as ps shows it: with the command line it tells a leftover server from a process
+    that got its id later."""
+    r = subprocess.run(
+        ["/bin/ps", "-o", "lstart=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return r.stdout.strip() or None if r.returncode == 0 else None
 
 
 def leader_command(pid: int) -> str | None:
@@ -621,7 +647,8 @@ def same_command(shown: str | None, command: list[str]) -> bool:
 
 def reap_leftovers() -> list[str]:
     """Stop the process groups of servers that a crashed run left: only a group whose leader still runs the recorded
-    command (a reused process id is left alone). Returns the names of the servers it stopped."""
+    command and started at the recorded time (a reused process id is left alone). Returns the names of the servers
+    it stopped."""
     stopped = []
     with pids_lock:
         data = _pids()
@@ -630,7 +657,13 @@ def reap_leftovers() -> list[str]:
             command = item.get("command") if isinstance(item, dict) else None
             if not isinstance(pid, int) or pid <= 1 or not isinstance(command, list):
                 continue
-            if group_alive(pid) and same_command(leader_command(pid), command):
+            when = item.get("started")
+            if (
+                isinstance(when, str)
+                and group_alive(pid)
+                and started(pid) == when
+                and same_command(leader_command(pid), command)
+            ):
                 for sig in (signal.SIGTERM, signal.SIGKILL):
                     with contextlib.suppress(ProcessLookupError, PermissionError):
                         os.killpg(pid, sig)
@@ -799,6 +832,12 @@ class Manager:
         except OSError:
             return ""
         return f"\nThe server's last output (stderr):\n{text}" if text else ""
+
+    def redact(self, name: str, text: str) -> str:
+        """The text with the server's secret values (its env values or token) written as [secret]: for its results
+        and errors, which go to the model and into chat.json."""
+        conn = self.peek(name)
+        return self._redact(conn, text) if conn is not None else text
 
     def _redact(self, conn: Conn, text: str) -> str:
         for value in conn.secrets:

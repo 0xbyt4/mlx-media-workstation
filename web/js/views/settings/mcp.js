@@ -214,6 +214,14 @@ function toolsRow(s) {
         t.approved_description !== null && t.approved_description !== t.description
           ? h('p', {class: 'help faint'}, 'The description you approved: ' + (t.approved_description || '(none)'))
           : null,
+        // the parameters as the model reads them: their texts reach the model too, so the user sees them before
+        // an approval; a changed tool also shows the parameters that were approved
+        t.schema ? h('details', null, h('summary', {class: 'help'}, 'Parameters the agent sees'),
+          h('pre', {class: 'cmd-text', tabindex: '0'}, h('code', null, t.schema))) : null,
+        t.approved_schema && t.approved_schema !== t.schema
+          ? h('details', null, h('summary', {class: 'help faint'}, 'Parameters you approved before'),
+            h('pre', {class: 'cmd-text', tabindex: '0'}, h('code', null, t.approved_schema)))
+          : null,
         hints.length ? h('p', {class: 'help faint'}, 'The server says: ' + hints.join(', ') +
           '. These are hints only.') : null),
       button);

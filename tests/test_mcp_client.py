@@ -232,6 +232,7 @@ def test_a_slow_start_times_out_and_fails_only_its_own_tools(
     slow = env.add("slow", slow=30)
     slow["tools"] = entry["tools"]
     env.save(slow)
+    start_timeout = mcp_client.START_TIMEOUT
     monkeypatch.setattr(mcp_client, "START_TIMEOUT", 1.0)
     reg = registry(env)
     t0 = time.monotonic()
@@ -255,7 +256,8 @@ def test_a_slow_start_times_out_and_fails_only_its_own_tools(
     assert (
         time.monotonic() - t0 < 1 and "did not start within 1 seconds" in again.content
     )
-    # the other server works
+    # the other server works (with the normal start time: a loaded machine needs more than 1 s)
+    monkeypatch.setattr(mcp_client, "START_TIMEOUT", start_timeout)
     assert reg.call("tiny__echo", {"text": "y"}, ctx(env.tmp)).content == "echo: y"
 
 
@@ -361,9 +363,9 @@ def test_secrets_reach_the_server_env_and_stay_out_of_the_file_and_errors(
     assert mcp_client.server("tiny")["secrets"] == ["API_KEY"]
     assert env.keychain.items["tiny"] == {"API_KEY": "s3cr3t-value"}
     reg = registry(env)
+    # the server has the value; a result that echoes it reaches the model and chat.json as [secret]
     assert (
-        reg.call("tiny__env", {"name": "API_KEY"}, ctx(env.tmp)).content
-        == "s3cr3t-value"
+        reg.call("tiny__env", {"name": "API_KEY"}, ctx(env.tmp)).content == "[secret]"
     )
     # the app's own environment does not leak into the server
     os.environ["MCP_TEST_LEAK"] = "1"
@@ -441,6 +443,44 @@ def test_the_config_checks_names_urls_and_fields() -> None:
         }
     )
     assert any("download a package" in w for w in mcp_client.warnings(npx))
+
+
+def test_hidden_characters_and_a_missing_program_cannot_be_approved() -> None:
+    for field, raw in [
+        ("command", {"command": "/usr/bin/true\u202e"}),
+        ("args", {"command": "/usr/bin/true", "args": ["--root", "/safe/\u200bx"]}),
+        ("args", {"command": "/usr/bin/true", "args": ["x\n--allow-all"]}),
+        ("cwd", {"command": "/usr/bin/true", "cwd": "/tmp/\u2066x"}),
+    ]:
+        with pytest.raises(mcp_client.ConfigError) as e:
+            mcp_client.checked({"name": "x", "kind": "stdio", **raw})
+        assert set(e.value.fields) == {field}, raw
+    with pytest.raises(mcp_client.ConfigError) as e:
+        mcp_client.checked(
+            {"name": "x", "kind": "remote", "url": "https://mcp.example.com/\u202e"}
+        )
+    assert set(e.value.fields) == {"url"}
+    missing = mcp_client.checked(
+        {"name": "x", "kind": "stdio", "command": "no-such-program-for-mcp-tests"}
+    )
+    missing["approved"] = mcp_client.approval(missing)
+    assert not mcp_client.approved(missing)  # a bare name never counts as approved
+
+
+def test_schema_texts_reach_the_model_escaped() -> None:
+    params = clean_schema(
+        {
+            "type": "object",
+            "properties": {
+                "q\u200b": {"type": "string", "description": "Read ~/x \u202ehidden"}
+            },
+            "$defs": {"d": {"title": "\U000e0041tag"}},
+            "enum": ["a\u2066"],
+        }
+    )
+    text = json.dumps(params, ensure_ascii=False)
+    assert "\u202e" not in text and "\u200b" not in text and "\U000e0041" not in text
+    assert "\\u202e" in text and "\\u200b" in text and "\\u2066" in text
 
 
 # ---------- exposure, names, schema, the prompt section ----------
@@ -526,14 +566,21 @@ def test_stop_all_ends_every_group_and_leftovers_are_reaped(env: Env) -> None:
     other = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
     )
+    later = subprocess.Popen(cmd, start_new_session=True)
     try:
         mcp_client.record_pid("left", left.pid, cmd)
         mcp_client.record_pid("reused", other.pid, ["/usr/bin/something", "else"])
+        # the same command line, but the id came to this process after the record: another start time
+        mcp_client.record_pid("later", later.pid, cmd)
+        data = json.loads((mcp_client.LOGS / "pids.json").read_text())
+        data["later"]["started"] = "Mon Jan  1 00:00:00 2024"
+        (mcp_client.LOGS / "pids.json").write_text(json.dumps(data))
         assert mcp_client.reap_leftovers() == ["left"]
         assert left.wait(5) == -signal.SIGTERM
         assert other.poll() is None  # not the recorded command: left alone
+        assert later.poll() is None  # not the recorded start: left alone
     finally:
-        for p in (left, other):
+        for p in (left, other, later):
             if p.poll() is None:
                 p.kill()
                 p.wait()
