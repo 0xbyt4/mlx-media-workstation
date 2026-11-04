@@ -129,6 +129,7 @@ All paths are in the app folder, unless the table says otherwise.
 | A chat and the images and files sent in it | `outputs/chats/<chat id>/` |
 | The work folder of an agent chat | `outputs/chats/<chat id>/ws/` |
 | The log of the local LLM | `outputs/llm.log` |
+| The local LLM's saved prompt cache of one chat (after a big job) | `outputs/llm-cache.safetensors` |
 | The app log, when you start it from `Workstation.app` or `Workstation Chat.app` | `outputs/app.log` |
 | The app log, when you start it from a terminal | The terminal |
 | The settings | `config.toml` |

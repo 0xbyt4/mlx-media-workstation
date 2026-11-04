@@ -406,6 +406,7 @@ llm.generate(messages, images=(), *, thinking=False, schema=None, max_tokens=409
              session=None) -> Iterator[dict]
 llm.complete(messages, images=(), on_start=None, **same_keywords) -> dict   # the "done" event; LLMError on error
 llm.cancel(request_id) -> bool
+llm.forget_chat(chat_id) -> None   # delete the saved prompt cache of a deleted chat
 with llm.session(abort=lambda: False, limit=600.0) as s: ...
 ```
 
@@ -416,6 +417,14 @@ with llm.session(abort=lambda: False, limit=600.0) as s: ...
   "reasoning": "...", "stats": {...}}`, plus `"tool_calls": [...]` when the request had `tools`.
 - `chat` keeps the prompt cache of that chat in the worker, so a request that extends the previous prompt reads only
   the new tokens. Use the same `chat` for every step of a tool turn.
+- A media job that unloads the model keeps that cache too. Before the stop, `claim` asks the worker to save it to
+  `outputs/llm-cache.safetensors` (`llm.CACHE`) and waits at most `llm.SAVE_WAIT` (10 s); a slower worker is killed
+  without a save. The next worker reads the file back right after the load after jobs (`reload_after_jobs`), or
+  before its first request with the same `chat`. Then the first answer after the job has `cached_tokens` near
+  `prompt_tokens` in its `done` stats. The file holds one chat's cache. It holds the model's tag
+  (`llm_worker.model_tag`: the weights folder and the size and time of its files), the MLX versions and the token
+  ids; the worker refuses any file that does not match. A restore deletes the file, also when it fails.
+  `llm.forget_chat(chat_id)` deletes the file of a deleted chat (`DELETE /api/chats/{id}` calls it).
 - `reasoning_effort` is `"low"`, `"medium"` or `"xhigh"` (the Qwen3.8 template's default). It applies only with
   `thinking=True`. Another value raises `ValueError`: the template itself fails on any other value.
 - `thinking_budget` (a positive whole number, or `None` for no limit) applies only with `thinking=True`. After that

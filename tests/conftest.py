@@ -34,6 +34,14 @@ def app_client(base_url: str = f"http://127.0.0.1:{server.PORT}") -> TestClient:
 
 
 @pytest.fixture(autouse=True)
+def llm_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The LLM's saved prompt cache in the test's own folder, never in the repository's outputs/."""
+    path = tmp_path / "llm-cache.safetensors"
+    monkeypatch.setattr(llm, "CACHE", path)
+    return path
+
+
+@pytest.fixture(autouse=True)
 def model_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fixed model paths, so the command lines do not depend on this Mac's config.toml."""
     fixed = {
