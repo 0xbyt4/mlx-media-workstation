@@ -3,7 +3,8 @@
 //
 // Events: 'tools', 'jobs', 'system', 'llm', 'assist', 'models' (the new value), 'offline' (true/false),
 // 'job:finished' (a job that went from queued/running to done, failed or cancelled while the page was open),
-// 'profile' ('full' or 'chat': what the UI shows; see profile() below).
+// 'profile' ('full' or 'chat': what the UI shows; see profile() below), 'signedout' (true/false: the server answers
+// HTTP 401, because it restarted with a new session token).
 
 import {api, poll} from './api.js';
 
@@ -29,10 +30,12 @@ const state = {
   assist: null,
   models: null,
   offline: false,
+  signedOut: false,
   profile: pinned, // null until /api/system answers
 };
 const listeners = new Map();
 const offlineBy = {};
+const signedOutBy = {};
 const fastWanted = {jobs: 0, system: 0, llm: 0, models: 0};
 const loops = {};
 let started = false;
@@ -66,7 +69,16 @@ function setOffline(source, value) {
   }
 }
 
-// Wraps a fetch: stores the value, emits it, and tracks the offline state.
+function setSignedOut(source, value) {
+  signedOutBy[source] = value;
+  const any = Object.values(signedOutBy).some(Boolean);
+  if (any !== state.signedOut) {
+    state.signedOut = any;
+    emit('signedout', any);
+  }
+}
+
+// Wraps a fetch: stores the value, emits it, and tracks the offline and signed-out states.
 function loader(key, fetcher, after) {
   let seq = 0;
   return async () => {
@@ -75,13 +87,17 @@ function loader(key, fetcher, after) {
       const value = await fetcher();
       if (mine !== seq) return value; // a newer fetch of this source started meanwhile
       setOffline(key, false);
+      setSignedOut(key, false);
       const prev = state[key];
       state[key] = value;
       if (after) after(value, prev);
       emit(key, value);
       return value;
     } catch (e) {
-      if (mine === seq) setOffline(key, !!e.offline);
+      if (mine === seq) {
+        setOffline(key, !!e.offline);
+        setSignedOut(key, e.status === 401);
+      }
       throw e;
     }
   };

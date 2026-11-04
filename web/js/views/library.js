@@ -200,7 +200,8 @@ function render(dataChanged) {
     return;
   }
   const list = filtered();
-  s.count.textContent = list.length === all.length ? all.length + ' outputs' : list.length + ' of ' + all.length + ' outputs';
+  const count = list.length === all.length ? all.length + ' outputs' : list.length + ' of ' + all.length + ' outputs';
+  if (s.count.textContent !== count) s.count.textContent = count;  // a live region: only a change is read out
   if (!list.length) {
     const q = prefs.q.trim();
     s.body.replaceChildren(emptyState({icon: 'search', title: q ? 'No outputs match "' + q + '"' : 'No outputs match these filters',

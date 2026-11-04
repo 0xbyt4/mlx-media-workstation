@@ -31,6 +31,10 @@ const AGENT_KEYS = ['python', 'searxng_url', 'wikipedia_language', 'marginalia']
 const LANGUAGE_NAMES = {en: 'English', tr: 'Turkish', de: 'German', fr: 'French', es: 'Spanish', it: 'Italian',
   ja: 'Japanese', zh: 'Chinese'};
 
+// Kept across mounts for this session: the unsaved edits of the paths and the agent values, each with the saved value
+// it started from. An edit whose value was saved again meanwhile (in another window) is dropped.
+const kept = {paths: {}, agent: {}};
+
 let s = null;
 
 function mount(root, ctx) {
@@ -52,6 +56,7 @@ function chatOnly() {
 
 function unmount() {
   if (!s) return;
+  if (s.data) keepEdits();
   for (const off of s.offs) off();
   s.abort.abort();
   s = null;
@@ -66,6 +71,7 @@ async function load() {
     s.errors = {};
     s.agentDraft = agentValues(data.agent);
     s.agentErrors = {};
+    restoreEdits(data);
     build();
   } catch (e) {
     if (!s || e.name === 'AbortError') return;
@@ -76,6 +82,28 @@ async function load() {
       actions: [h('button', {type: 'button', class: 'btn btn-sm', onclick: load}, icon('refresh', 'ic-sm'), 'Try again')],
     }));
   }
+}
+
+function keepEdits() {
+  kept.paths = {};
+  for (const r of s.data.paths) if (s.draft[r.key] !== r.value) kept.paths[r.key] = {draft: s.draft[r.key], base: r.value};
+  kept.agent = {};
+  for (const k of AGENT_KEYS) {
+    if (s.agentDraft[k] !== s.data.agent[k]) kept.agent[k] = {draft: s.agentDraft[k], base: s.data.agent[k]};
+  }
+}
+
+function restoreEdits(data) {
+  for (const r of data.paths) {
+    const k = kept.paths[r.key];
+    if (k && k.base === r.value) s.draft[r.key] = k.draft;
+  }
+  for (const key of AGENT_KEYS) {
+    const k = kept.agent[key];
+    if (k && k.base === data.agent[key]) s.agentDraft[key] = k.draft;
+  }
+  kept.paths = {};
+  kept.agent = {};
 }
 
 // ---------- layout ----------

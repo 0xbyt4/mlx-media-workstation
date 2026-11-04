@@ -46,6 +46,7 @@ function show(route) {
     if (mod.update) mod.update(route.params);
     return;
   }
+  const switching = !!active;
   if (active) {
     try {
       active.mod.unmount();
@@ -69,6 +70,8 @@ function show(route) {
     console.error('Mount of ' + route.view + ' failed', e);
     root.replaceChildren(ui.errorBox({title: 'This section could not open', text: String(e && e.message ? e.message : e)}));
   }
+  // The focus was in the old view (Cmd-1 to Cmd-6 from a field): start the new one from its top, not from the page.
+  if (switching && (!document.activeElement || document.activeElement === document.body)) area.focus({preventScroll: true});
 }
 
 // ---------- sidebar: sections ----------
@@ -83,7 +86,7 @@ function renderNav() {
   const list = started ? router.views() : []; // no sections before the profile is known, so none flash
   nav.replaceChildren(...list.map((v, i) => {
     let extra;
-    if (v.id === 'jobs' && activeJobs) extra = h('span', {class: 'badge', 'aria-label': activeJobs + ' active'}, String(activeJobs));
+    if (v.id === 'jobs' && activeJobs) extra = [h('span', {class: 'badge', 'aria-hidden': 'true'}, String(activeJobs)), h('span', {class: 'sr-only'}, ', ' + activeJobs + ' active')];
     else if (v.id === 'models' && missing) extra = [h('span', {class: 'nav-dot', title: 'Some models are not installed'}), h('span', {class: 'sr-only'}, 'Some models are not installed')];
     else extra = h('span', {class: 'nav-kbd', 'aria-hidden': 'true'}, '⌘' + (i + 1));
     return h('button', {
@@ -195,10 +198,15 @@ function renderTheme(mode) {
   btn.title = 'Theme: ' + name;
 }
 
-function renderOffline(off) {
+// Server offline, or a server that restarted with a new session: this page's cookie no longer works (HTTP 401).
+function renderOffline() {
   const el = $('offline');
-  el.hidden = !off;
-  el.replaceChildren(...(off ? [icon('alert'), 'Server offline. Retrying...'] : []));
+  const off = store.get('offline');
+  const out = !off && store.get('signedOut');
+  el.hidden = !off && !out;
+  el.replaceChildren(...(off ? [icon('alert'), 'Server offline. Retrying...']
+    : out ? [icon('alert'), 'This window is signed out: the app restarted. Open Workstation again, or open the new link that start.py printed.']
+      : []));
 }
 
 function renderTitle() {
@@ -281,15 +289,16 @@ function boot() {
   });
   store.on('system', renderMem);
   store.on('llm', renderMem);
-  store.on('offline', (off) => {
-    renderOffline(off);
+  store.on('offline', () => {
+    renderOffline();
     renderMem();
   });
+  store.on('signedout', renderOffline);
   store.on('job:finished', (job) => {
     if (chatOnly() || (active && active.id === 'jobs')) return;
     const label = job.tool_label || job.tool;
     const text = job.status === 'done' ? label + ' finished.' : job.status === 'failed' ? label + ' failed.' : label + ' was cancelled.';
-    ui.toast(text, {kind: job.status === 'failed' ? 'err' : null, action: {label: 'Open Jobs', run: () => router.go('jobs')}});
+    ui.toast(text, {kind: job.status === 'failed' ? 'err' : null, action: {label: 'Open in Jobs', run: () => router.go('jobs')}});
   });
   setInterval(() => store.emit('tick'), 1000);
   store.on('profile', applyProfile);

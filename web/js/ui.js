@@ -206,7 +206,17 @@ export function toast(msg, opts = {}) {
   box.appendChild(el);
   while (box.children.length > 4) box.firstChild.remove();
   const ms = opts.timeout || (opts.action ? 8000 : opts.kind === 'err' ? 7000 : 4500);
-  const timer = setTimeout(close, ms);
+  let timer = setTimeout(close, ms);
+  // the toast stays while the pointer or the focus is on it, so its action button can still be reached
+  const hold = () => clearTimeout(timer);
+  const release = () => {
+    clearTimeout(timer);
+    if (!el.matches(':hover') && !el.contains(document.activeElement)) timer = setTimeout(close, 3000);
+  };
+  el.addEventListener('mouseenter', hold);
+  el.addEventListener('focusin', hold);
+  el.addEventListener('mouseleave', release);
+  el.addEventListener('focusout', () => setTimeout(release));
   return close;
 }
 
