@@ -26,6 +26,12 @@ GUARD = [
     + ",image2,png_pipe,jpeg_pipe,webp_pipe,gif,apng,bmp_pipe,tiff_pipe",
 ]
 
+# an image with alpha laid on white: a copy of the frame turned white, so the size is the upright frame's
+WHITE = (
+    "[0:v]format=rgba,split[fg][c];[c]format=rgb24,drawbox=c=white:t=fill[bg];"
+    "[bg][fg]overlay=format=auto,format=rgb24"
+)
+
 
 def params(tool: str, **values: Any) -> dict[str, Any]:
     """The parameters as the server stores them: each form field's default, then the given values."""
@@ -150,7 +156,9 @@ def test_klein_seed(tmp_path: Path, seed: str | None, expected: list[str]) -> No
     assert plan.env == OFFLINE
 
 
-def test_klein_edit_passes_references_in_upload_order(tmp_path: Path) -> None:
+def test_klein_edit_passes_references_in_upload_order(
+    tmp_path: Path, media: FakeMedia
+) -> None:
     refs = [tmp_path / "in_references_0.png", tmp_path / "in_references_1.jpg"]
     p = params(
         "image.klein_edit", prompt="<ref_image_0> in <ref_image_1>", size="1024x1024"
@@ -171,6 +179,39 @@ def test_klein_edit_passes_references_in_upload_order(tmp_path: Path) -> None:
             "--prompt=<ref_image_0> in <ref_image_1>",
             "--output",
             str(tmp_path / "image.png"),
+        ]
+    ]
+
+
+@pytest.mark.parametrize("pix_fmt", ["rgba", "pal8", "ya8"])
+def test_klein_edit_lays_a_reference_with_alpha_on_white(
+    tmp_path: Path, media: FakeMedia, pix_fmt: str
+) -> None:
+    """mflux reads the references itself and drops alpha: a see-through reference is laid on white first, into an
+    in_* file that is never listed as an output; an opaque one is passed as it is."""
+    refs = [tmp_path / "in_references_0.png", tmp_path / "in_references_1.jpg"]
+    media.pix_fmt[refs[0].name] = pix_fmt
+    p = params("image.klein_edit", prompt="x", size="1024x1024")
+    [cmd] = tools.plan("image.klein_edit", p, {"references": refs}, tmp_path).commands
+    white = tmp_path / "in_references_0_white.png"
+    at = cmd.index("--image-paths")
+    assert cmd[at + 1 : at + 3] == [str(white), str(refs[1])]
+    assert media.prepped == [
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            *GUARD,
+            "-i",
+            str(refs[0]),
+            "-filter_complex",
+            f"{WHITE},null",
+            "-frames:v",
+            "1",
+            "-update",
+            "1",
+            str(white),
         ]
     ]
 
@@ -383,14 +424,13 @@ def test_i2v_lays_an_image_with_alpha_on_white(
     tmp_path: Path, media: FakeMedia, pix_fmt: str
 ) -> None:
     img = tmp_path / "in_image_0.png"
-    media.pix_fmt[img.name] = pix_fmt  # 640x480
+    media.pix_fmt[img.name] = pix_fmt
     p = params("video.i2v", prompt="It turns.", size="576x1024")
     tools.plan("video.i2v", p, {"image": [img]}, tmp_path)
     [cmd] = media.prepped
     graph = cmd[cmd.index("-filter_complex") + 1]
     assert graph == (
-        "[0:v]format=rgba[fg];color=c=white:s=640x480[bg];[bg][fg]overlay=shortest=1:format=auto,format=rgb24,"
-        "scale=576:1024:force_original_aspect_ratio=increase:flags=lanczos,crop=576:1024"
+        f"{WHITE},scale=576:1024:force_original_aspect_ratio=increase:flags=lanczos,crop=576:1024"
     )
     assert "-vf" not in cmd
     assert cmd[-5:] == ["-frames:v", "1", "-update", "1", str(tmp_path / "start.png")]

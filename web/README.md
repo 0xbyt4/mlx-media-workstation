@@ -18,7 +18,7 @@ The design is in `docs/DESIGN.md` and `docs/design/mock.html`. The endpoints are
 | `js/main.js` | Boot: theme, store, router, sidebar, toolbar, view mounting. |
 | `js/api.js` | Fetch wrappers for every endpoint, `ApiError`, the SSE reader, `poll()`. |
 | `js/store.js` | Shared state, events and the one polling loop. |
-| `js/ui.js` | DOM helper `h()`, icons, formatters, toasts, dialogs, menus, the fit rule, media, theme. |
+| `js/ui.js` | DOM helper `h()`, icons, formatters, `readablePrompt()`, `leave()` (exit animations), toasts, dialogs, menus, the fit rule, media, theme. |
 | `js/router.js` | Hash routes, the sections of each profile and the Cmd-1 to Cmd-6 shortcuts. |
 | `js/handoff.js` | "Send to", "Use in" and "Use these settings" between views. |
 | `js/views/<view>.js` | One view: `create`, `jobs`, `chat`, `library`, `models`, `settings`. |

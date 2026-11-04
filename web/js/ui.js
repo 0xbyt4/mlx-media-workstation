@@ -186,6 +186,50 @@ export function fit(peakGb, memGb, reserveGb = 8) {
   return {k: 'no', short: 'Needs ' + need + ' GB', text: 'Needs ' + need + ' GB', pill: 'err', need};
 }
 
+// ---------- text ----------
+
+// A prompt as people read it, for display only: the stored text, "Use these settings", the model and the Library
+// search keep the raw text. Klein Edit's <ref_image_N> (0-based, in upload order) becomes "reference N+1". Fish
+// Drama 3's <|speaker:N|> tags go, or become "Speaker N:" (as the voice reference fields name them) when the text has
+// more than one speaker.
+export function readablePrompt(text) {
+  if (typeof text !== 'string') return text;
+  const t = text.replace(/<ref_image_(\d+)>/g, (_, n) => 'reference ' + (Number(n) + 1));
+  const speakers = new Set([...t.matchAll(/<\|speaker:(\d+)\|>/g)].map((m) => m[1]));
+  return t.replace(/<\|speaker:(\d+)\|>[ \t]*/g, (_, n) => (speakers.size > 1 ? 'Speaker ' + n + ': ' : '')).trim();
+}
+
+// ---------- leaving ----------
+
+const leaving = new WeakMap(); // element -> the token of its running leave
+
+// Plays the leave animation of el (motion.css: .is-leaving), then runs done, which removes el by default. Nothing
+// waits for it: el is inert at once (no clicks, no focus), and a timer finishes also when no animation runs.
+// stayOpen(el) keeps an element that opens again before the end.
+export function leave(el, done = () => el.remove()) {
+  if (!el.isConnected || leaving.has(el)) return;
+  const token = {};
+  leaving.set(el, token);
+  el.classList.add('is-leaving');
+  el.inert = true;
+  const finish = (e) => {
+    if (e && e.target !== el) return; // the end of a child's animation
+    el.removeEventListener('animationend', finish);
+    clearTimeout(timer);
+    if (leaving.get(el) !== token) return;
+    stayOpen(el);
+    done();
+  };
+  const timer = setTimeout(finish, 400);
+  el.addEventListener('animationend', finish);
+}
+
+export function stayOpen(el) {
+  leaving.delete(el);
+  el.classList.remove('is-leaving');
+  el.inert = false;
+}
+
 // ---------- toasts ----------
 
 // toast('Saved') or toast('Failed', {kind: 'err'}) or toast('Removed', {action: {label: 'Undo', run}})
@@ -195,11 +239,7 @@ export function toast(msg, opts = {}) {
   const el = h('div', {class: 'toast' + (opts.kind ? ' ' + opts.kind : '')}, h('span', null, msg));
   const close = () => {
     clearTimeout(timer);
-    if (!el.isConnected || el.classList.contains('is-leaving')) return;
-    // fades out (motion.css), then goes; the timer removes it also when no animation runs
-    el.classList.add('is-leaving');
-    el.addEventListener('animationend', () => el.remove(), {once: true});
-    setTimeout(() => el.remove(), 400);
+    leave(el); // fades out (motion.css), then goes
   };
   if (opts.action) {
     el.appendChild(h('button', {type: 'button', onclick: () => {
@@ -238,11 +278,17 @@ export function confirm({title, text, confirmLabel = 'OK', cancelLabel = 'Cancel
       text ? h('p', null, text) : null,
       h('div', {class: 'dialog-actions'}, no, ok));
     let result = false;
+    // a short leave animation first; the result comes after the focus is back, so the caller can move it on
+    const shut = () => leave(dlg, () => dlg.close());
     ok.addEventListener('click', () => {
       result = true;
-      dlg.close();
+      shut();
     });
-    no.addEventListener('click', () => dlg.close());
+    no.addEventListener('click', shut);
+    dlg.addEventListener('cancel', (e) => {
+      e.preventDefault(); // Escape: the same leave as Cancel
+      shut();
+    });
     dlg.addEventListener('close', () => {
       dlg.remove();
       if (back && back.isConnected) back.focus();
@@ -304,7 +350,7 @@ export function closeMenu() {
   const {el, anchor, cleanup} = openMenu;
   openMenu = null;
   cleanup();
-  el.remove();
+  leave(el);
   anchor.setAttribute('aria-expanded', 'false');
 }
 
@@ -405,21 +451,33 @@ function lazySrc(el, url) {
 
 const TEXT_PREVIEW = 20000; // characters of a text output that media() shows
 
+// The URL of a small JPEG of a done job's image or video output (app/library.py get_thumb).
+export function thumbUrl(job, name) {
+  return '/api/library/thumbs/' + encodeURIComponent(job) + '/' + encodeURIComponent(name);
+}
+
 // A job output ({url, kind, name, note}) as real media. opts.onOpen(output) runs when an image is clicked;
-// opts.actions are nodes placed in the caption (Send to, Download). Returns null for a URL off this origin.
+// opts.actions are nodes placed in the caption (Send to, Download); opts.thumb is the URL of a small JPEG of an image
+// or video (GET /api/library/thumbs): the image shows it (the file itself when it fails), the video shows it as its
+// poster and loads nothing before Play. Returns null for a URL off this origin.
 export function media(output, opts = {}) {
   const url = safeFileUrl(output.url);
   if (!url) return null;
   const name = output.name || url.split('/').pop();
   let el;
   if (output.kind === 'image') {
+    const img = h('img', {src: opts.thumb || url, alt: name, loading: 'lazy'});
+    if (opts.thumb) img.addEventListener('error', () => (img.src = url), {once: true});
     el = h('button', {type: 'button', class: 'media-img', 'aria-label': 'Enlarge ' + name,
-      onclick: () => (opts.onOpen ? opts.onOpen(output) : lightbox([{url, name}], 0))},
-    h('img', {src: url, alt: name, loading: 'lazy'}));
+      onclick: () => (opts.onOpen ? opts.onOpen(output) : lightbox([{url, name}], 0))}, img);
   } else if (output.kind === 'audio') {
     el = h('div', {class: 'media-audio'}, lazySrc(h('audio', {controls: true, preload: 'metadata', 'aria-label': name}), url));
   } else if (output.kind === 'video') {
-    el = lazySrc(h('video', {controls: true, playsinline: true, preload: 'metadata', 'aria-label': name}), url);
+    const video = h('video', {controls: true, playsinline: true, preload: opts.thumb ? 'none' : 'metadata', 'aria-label': name});
+    el = whenNear(video, () => {
+      if (opts.thumb) video.poster = opts.thumb;
+      video.src = url;
+    });
   } else if (output.kind === 'text') {
     // a transcript: the file itself is the result, so show its text (the start of a very long one)
     // loads like the players: only near the screen
@@ -488,7 +546,7 @@ export function lightbox(items, index) {
   };
   function done() {
     document.removeEventListener('keydown', onKey, true);
-    box.remove();
+    leave(box);
     if (back && back.isConnected) back.focus();
   }
   box.addEventListener('click', (e) => {

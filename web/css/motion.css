@@ -2,7 +2,9 @@
    Rules: quick (about 120 to 250 ms) and quiet; only transform and opacity move; nothing waits for an animation, so
    input is never blocked; only real activity (spinners, progress, the streaming caret) repeats. An enter animation
    runs when its element is inserted or stops being display: none, so it is used only on elements that are made once
-   when they appear (not on parts a view builds again on every update).
+   when they appear (not on parts a view builds again on every update). A leave animation runs on .is-leaving, which
+   ui.js leave() sets: the element is inert at once and goes at the animation's end (a dialog closes then, so its
+   result comes about 120 ms later).
    Reduced motion (base.css) makes every animation and transition instant; the end of this file keeps the activity
    indicators readable. */
 
@@ -58,6 +60,29 @@
     transform: translateY(4px);
   }
 }
+@keyframes motion-fade-away {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes motion-pop-out {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+@keyframes motion-slide-out-right {
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@keyframes motion-slide-out-left {
+  to {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+}
 @keyframes motion-mark-pop {
   from {
     transform: scale(0.6);
@@ -92,17 +117,32 @@
 .menu-pop {
   animation: motion-pop-in var(--dur-fast) var(--ease-out);
 }
+.menu-pop.is-leaving {
+  animation: motion-pop-out var(--dur-fast) var(--ease-in) forwards;
+}
 .dialog[open] {
   animation: motion-pop-in var(--dur-base) var(--ease-out);
 }
 .dialog[open]::backdrop {
   animation: motion-fade-in var(--dur-base) var(--ease-out);
 }
+.dialog[open].is-leaving {
+  animation: motion-pop-out var(--dur-fast) var(--ease-in) forwards;
+}
+.dialog[open].is-leaving::backdrop {
+  animation: motion-fade-away var(--dur-fast) var(--ease-in) forwards;
+}
 .lightbox {
   animation: motion-fade-in var(--dur-base) var(--ease-out);
 }
 .lightbox figure {
   animation: motion-pop-in var(--dur-base) var(--ease-out);
+}
+.lightbox.is-leaving {
+  animation: motion-fade-away var(--dur-fast) var(--ease-in) forwards;
+}
+.lightbox.is-leaving figure {
+  animation: motion-pop-out var(--dur-fast) var(--ease-in) forwards;
 }
 .toast {
   animation: motion-rise-in var(--dur-base) var(--ease-out);
@@ -138,13 +178,47 @@ details[open] > :not(summary) {
 .v-library .lib-drawer {
   animation: motion-slide-in-right var(--dur-slow) var(--ease-out);
 }
+.v-library .lib-scrim.is-leaving {
+  animation: motion-fade-away var(--dur-base) var(--ease-in) forwards;
+}
+.v-library .lib-drawer.is-leaving {
+  animation: motion-slide-out-right var(--dur-base) var(--ease-in) forwards;
+}
+/* a lazy thumbnail fades in when it has loaded (library.js sets is-loaded) */
+.v-library .thumb img.is-lazy {
+  opacity: 0;
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+.v-library .thumb img.is-lazy.is-loaded {
+  opacity: 1;
+}
 
 /* ---------- Chat ---------- */
 .v-chat .chat.show-convos .convos {
   animation: motion-slide-in-left var(--dur-slow) var(--ease-out);
 }
+.v-chat .chat.show-convos .convos.is-leaving {
+  animation: motion-slide-out-left var(--dur-base) var(--ease-in) forwards;
+}
+.v-chat .chat.show-convos .convos-scrim {
+  animation: motion-fade-in var(--dur-slow) var(--ease-out);
+}
+.v-chat .convos.is-leaving + .convos-scrim {
+  animation: motion-fade-away var(--dur-base) var(--ease-in) forwards;
+  pointer-events: none;
+}
 .v-chat .tools-pop {
   animation: motion-rise-in var(--dur-base) var(--ease-out);
+}
+.v-chat .tools-pop.is-leaving {
+  animation: motion-fade-out var(--dur-fast) var(--ease-in) forwards;
+}
+.v-chat .jump-latest {
+  animation: motion-rise-in var(--dur-base) var(--ease-out);
+}
+/* Jobs: a page of older jobs fades in under the last one */
+.v-jobs .job.is-new {
+  animation: motion-fade-in var(--dur-base) var(--ease-out);
 }
 .v-chat .approval {
   animation: motion-fade-in var(--dur-base) var(--ease-out);

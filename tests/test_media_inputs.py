@@ -4,13 +4,15 @@ Each test is skipped when a binary it needs is missing."""
 
 import json
 import shutil
+import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 import pytest
 
-from app import assist, tools
+from app import assist, chat, tools
 from app.runners import tag_video
 
 needs_ffmpeg = pytest.mark.skipif(
@@ -140,7 +142,112 @@ def test_klein_edit_gets_heic_references_as_png(
     files = {"references": [see_through, heic]}
     [cmd] = tools.plan("image.klein_edit", p, files, tmp_path).commands
     refs = cmd[cmd.index("--image-paths") + 1 : cmd.index("--image-paths") + 3]
-    assert refs == [str(see_through), str(tmp_path / "in_image_0.heic.png")]
+    # the see-through PNG is laid on white first (mflux drops alpha); the HEIC from sips is opaque
+    white = tmp_path / "in_image_0_white.png"
+    assert refs == [str(white), str(tmp_path / "in_image_0.heic.png")]
+    assert stream(white)["pix_fmt"] == "rgb24"
+    r, g, b = pixel(white)
+    assert r == 255 and abs(g - 128) <= 2 and abs(b - 128) <= 2
+
+
+@needs_sips
+def test_a_heic_can_become_a_jpeg(tmp_path: Path, heic: Path) -> None:
+    """The chat stores an iPhone photo as JPEG (far smaller than a PNG of a photo)."""
+    jpeg = tools.readable_image(heic, tmp_path, "jpeg")
+    assert jpeg == tmp_path / "in_image_0.heic.jpg"
+    assert jpeg.read_bytes()[:3] == b"\xff\xd8\xff" and stream(jpeg)["width"] == 1200
+
+
+# EXIF orientation: a phone stores the pixels as the sensor saw them and an Orientation tag that turns them upright
+
+# a TIFF block with one tag: Orientation (0x0112) = 6, turn 90 degrees clockwise to show
+ORIENTATION_6 = b"MM\x00\x2a" + struct.pack(">IHHHIHHI", 8, 1, 0x0112, 3, 1, 6, 0, 0)
+RED, BLUE = "red", "blue"
+
+
+def turned(path: Path, see_through: bool = False) -> Path:
+    """An image stored 400x200 (left half red, right half blue) with Orientation 6: upright it is 200x400 with red
+    on top. A .jpg gets the tag in an APP1 segment, a .png (see-through: half alpha) in an eXIf chunk."""
+    alpha, fmt = ("@0.5", ",format=rgba") if see_through else ("", "")
+    graph = f"color=c=red{alpha}:s=200x200{fmt}[a];color=c=blue{alpha}:s=200x200{fmt}[b];[a][b]hstack"
+    ffmpeg("-f", "lavfi", "-i", graph, "-frames:v", "1", str(path))
+    data = path.read_bytes()
+    if path.suffix == ".png":
+        chunk = b"eXIf" + ORIENTATION_6
+        tag = (
+            struct.pack(">I", len(ORIENTATION_6))
+            + chunk
+            + struct.pack(">I", zlib.crc32(chunk))
+        )
+        path.write_bytes(data[:33] + tag + data[33:])  # after the signature and IHDR
+    else:
+        app1 = b"Exif\x00\x00" + ORIENTATION_6
+        at = 4 + struct.unpack(">H", data[4:6])[0]  # after the JFIF segment
+        path.write_bytes(
+            data[:at]
+            + b"\xff\xe1"
+            + struct.pack(">H", len(app1) + 2)
+            + app1
+            + data[at:]
+        )
+    return path
+
+
+def upright(path: Path) -> tuple[int, int, str, str]:
+    """Width, height and the colour names at the top and the bottom centre, as the app's ffmpeg calls see the image
+    (ffmpeg turns it upright by its EXIF orientation)."""
+    out = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-f", "image2pipe", "-c:v", "ppm", "-"],
+        capture_output=True,
+        check=True,
+    ).stdout  # fmt: skip
+    _, w, h, _, px = out.split(maxsplit=4)
+    w, h = int(w), int(h)
+
+    def name(y: int) -> str:
+        r, _, b = px[(y * w + w // 2) * 3 : (y * w + w // 2) * 3 + 3]
+        return RED if r > b else BLUE
+
+    return w, h, name(2), name(h - 3)
+
+
+def test_a_turned_photo_comes_out_upright(tmp_path: Path) -> None:
+    src = turned(tmp_path / "in_image_0.jpg")
+    assert stream(src)["width"] == 400  # stored sideways
+    dst = tmp_path / "start.png"
+    tools.fit_image(src, dst, 200, 400)
+    assert upright(dst) == (200, 400, RED, BLUE)
+
+
+def test_a_turned_see_through_image_is_laid_on_white_upright(
+    tmp_path: Path,
+) -> None:
+    """The white goes under the upright frame: a white of the stored size (400x200) cut the turned frame."""
+    src = turned(tmp_path / "in_image_0.png", see_through=True)
+    dst = tmp_path / "start.png"
+    tools.fit_image(src, dst, 200, 400)
+    assert upright(dst) == (200, 400, RED, BLUE)
+    assert pixel(dst) != (255, 255, 255)
+    white = tools.on_white(src, tmp_path)
+    assert upright(white) == (200, 400, RED, BLUE)
+    assert stream(white)["pix_fmt"] == "rgb24"
+
+
+@needs_sips
+def test_a_turned_iphone_photo_keeps_its_orientation(tmp_path: Path) -> None:
+    """sips keeps the Orientation tag (it does not turn the pixels); every reader of the converted file turns it
+    upright: ffmpeg (jobs), PIL's exif_transpose (mlx-vlm and mflux) and the browser."""
+    heic = tmp_path / "in_image_0.heic"
+    subprocess.run(
+        [tools.SIPS, "-s", "format", "heic", str(turned(tmp_path / "photo.jpg")), "--out", str(heic)],
+        capture_output=True,
+        check=True,
+    )  # fmt: skip
+    png = tools.readable_image(heic, tmp_path)
+    assert stream(png)["width"] == 400 and upright(png) == (200, 400, RED, BLUE)
+    jpeg = tmp_path / "chat.jpg"
+    jpeg.write_bytes(chat.heif_to_jpeg(heic.read_bytes()))
+    assert stream(jpeg)["width"] == 400 and upright(jpeg) == (200, 400, RED, BLUE)
 
 
 # Alpha

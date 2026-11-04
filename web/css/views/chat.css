@@ -8,6 +8,9 @@
 }
 
 /* ---------- conversation list ---------- */
+.v-chat .convos-scrim {
+  display: none; /* the narrow slide-over only (see the end of this file) */
+}
 .v-chat .convos {
   border-right: 1px solid var(--border);
   background: var(--surface-2);
@@ -1052,6 +1055,19 @@
 .v-chat .composer-wrap {
   position: relative;
 }
+/* "Jump to latest": over the end of the messages, centred (no transform: the button press scales) */
+.v-chat .jump-latest {
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  width: max-content;
+  margin-inline: auto;
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
 .v-chat .tools-pop {
   position: absolute;
   z-index: 6;
@@ -1177,6 +1193,13 @@
     inset: 0 auto 0 0;
     width: min(280px, 85%);
     box-shadow: var(--shadow-lg);
+  }
+  .v-chat .chat.show-convos .convos-scrim {
+    display: block;
+    position: absolute;
+    z-index: 4;
+    inset: 0;
+    background: var(--scrim);
   }
   .v-chat .conv-toggle {
     display: inline-flex;

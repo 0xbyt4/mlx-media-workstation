@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from app import attachments, chat, config, llm, models
+from app import attachments, chat, config, llm, models, tools
 from app.agent import Limits, Settings, build_registry
 from tests.conftest import app_client
 from tests.fake_workstation import FakeWorkstation
@@ -570,6 +570,64 @@ def test_images_still_go_in_the_images_field_and_count_with_the_files(client):
     msg = saved(client, cid)["messages"][0]
     assert msg["images"] == ["img_0.png", "img_1.png"]
     assert [f["name"] for f in msg["files"]] == ["n.md"]
+
+
+@pytest.mark.skipif(not Path(tools.SIPS).exists(), reason="sips (macOS) is not here")
+def test_an_iphone_photo_is_stored_as_jpeg(client, tmp_path):
+    """HEIC and HEIF become JPEG with sips before the model sees them; a browser that does not know the type sends
+    application/octet-stream, so the name counts too."""
+    png, heic = tmp_path / "p.png", tmp_path / "IMG_0001.HEIC"
+    png.write_bytes(PNG)
+    for args in (
+        ["-z", "64", "64"],
+        ["-s", "format", "heic"],
+    ):  # HEVC needs more than 1x1
+        subprocess.run(
+            [
+                tools.SIPS,
+                *args,
+                str(png),
+                "--out",
+                str(heic if "heic" in args else png),
+            ],
+            capture_output=True,
+            check=True,
+        )
+    cid = new_chat(client)
+    r = client.post(
+        f"/api/chats/{cid}/messages",
+        data={"text": "what is this"},
+        files=[
+            ("images", ("IMG_0001.HEIC", io.BytesIO(heic.read_bytes()), "image/heic")),
+            (
+                "files",
+                ("b.heif", io.BytesIO(heic.read_bytes()), "application/octet-stream"),
+            ),
+        ],
+    )
+    assert r.status_code == 200, r.text
+    msg = saved(client, cid)["messages"][0]
+    assert msg["images"] == ["img_0.jpg", "img_1.jpg"] and "files" not in msg
+    jpeg = client.get(f"/api/chats/{cid}/files/img_0.jpg")
+    assert jpeg.status_code == 200 and jpeg.content[:3] == b"\xff\xd8\xff"
+
+
+def test_a_heic_that_is_not_one_is_refused(client):
+    cid = new_chat(client)
+    r = client.post(
+        f"/api/chats/{cid}/messages",
+        data={"text": "x"},
+        files=[("files", ("fake.heic", io.BytesIO(PNG), "image/heic"))],
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"] == "fake.heic: this is not a HEIC or HEIF image."
+    r = client.post(
+        f"/api/chats/{cid}/messages",
+        data={"text": "x"},
+        files=[("images", ("a.gif", io.BytesIO(b"GIF89a"), "image/gif"))],
+    )
+    assert r.json()["detail"] == "a.gif: use a PNG, JPEG, WebP or HEIC image."
+    assert saved(client, cid)["messages"] == []
 
 
 def test_an_agent_chat_is_tainted_by_an_attached_file(client, ws):

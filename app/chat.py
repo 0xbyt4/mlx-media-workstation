@@ -26,6 +26,7 @@ import re
 import secrets
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -67,6 +68,8 @@ ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{4}")
 # images sent in the chat (img_<n>) and the copies view_image made for the model (view_<hex>.png)
 IMAGE = re.compile(r"img_\d+\.(png|jpg|jpeg|webp)|view_[0-9a-f]{12}\.png")
 IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+# iPhone photos: stored as JPEG (heif_to_jpeg); a browser that does not know the type sends only the name
+HEIF_TYPES, HEIF_SUFFIXES = {"image/heic", "image/heif"}, {".heic", ".heif"}
 MAX_IMAGES = 4  # per message
 MAX_IMAGE = 20 * 1024 * 1024
 MAX_TEXT = 20000  # characters per message
@@ -1739,6 +1742,27 @@ def drop_staged(staged: list[Staged]) -> None:
         st.path.unlink(missing_ok=True)
 
 
+def is_heif_upload(up: Any) -> bool:
+    return (
+        up.content_type in HEIF_TYPES
+        or Path(up.filename or "").suffix.lower() in HEIF_SUFFIXES
+    )
+
+
+def heif_to_jpeg(data: bytes) -> bytes:
+    """An iPhone photo (HEIC or HEIF) as a JPEG, which the model and the page can read (tools.readable_image: macOS's
+    sips). Raises ValueError (shown to the user)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "photo.heic"
+        src.write_bytes(data)
+        if not tools.is_heif(src):
+            raise ValueError("this is not a HEIC or HEIF image.")
+        jpeg = tools.readable_image(src, Path(tmp), "jpeg")
+        if jpeg.stat().st_size > MAX_IMAGE:
+            raise ValueError("image too large as JPEG (max 20 MB).")
+        return jpeg.read_bytes()
+
+
 def too_large(kind: str) -> str:
     return f"too large (max {attachments.max_size(kind) // (1024 * 1024)} MB)."
 
@@ -1816,8 +1840,8 @@ async def send_message(chat_id: str, request: Request) -> StreamingResponse:
     uploads = [u for u in form.getlist("images") if getattr(u, "filename", None)]
     others = [u for u in form.getlist("files") if getattr(u, "filename", None)]
     # an image is an image in either field
-    uploads += [u for u in others if u.content_type in IMAGE_TYPES]
-    others = [u for u in others if u.content_type not in IMAGE_TYPES]
+    uploads += [u for u in others if u.content_type in IMAGE_TYPES or is_heif_upload(u)]
+    others = [u for u in others if u not in uploads]
     if len(text) > MAX_TEXT:
         raise HTTPException(
             400, f"The message is too long (max {MAX_TEXT} characters)."
@@ -1843,12 +1867,21 @@ async def send_message(chat_id: str, request: Request) -> StreamingResponse:
         attached.append((up, name, kind))
     files = []
     for up in uploads:
-        ext = IMAGE_TYPES.get(up.content_type or "")
+        heif = is_heif_upload(up)
+        ext = ".jpg" if heif else IMAGE_TYPES.get(up.content_type or "")
         if ext is None:
-            raise HTTPException(400, f"{up.filename}: use a PNG, JPEG or WebP image.")
+            raise HTTPException(
+                400, f"{up.filename}: use a PNG, JPEG, WebP or HEIC image."
+            )
         if (up.size or 0) > MAX_IMAGE:
             raise HTTPException(400, f"{up.filename}: image too large (max 20 MB).")
-        files.append((ext, await up.read()))
+        data = await up.read()
+        if heif:
+            try:  # sips takes a second or two: off the event loop
+                data = await asyncio.to_thread(heif_to_jpeg, data)
+            except ValueError as e:
+                raise HTTPException(400, f"{up.filename}: {e}") from None
+        files.append((ext, data))
     if not regenerate and not text and not files and not attached:
         raise HTTPException(400, "Write a message first.")
     staged: list[Staged] = []
