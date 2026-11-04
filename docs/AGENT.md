@@ -47,6 +47,25 @@ the tool's result, so it can answer the user.
 The Workstation tools exist only in the full profile. The chat profile has no Workstation, so its registry has none
 of them.
 
+### Workstation chats
+
+A workstation chat in the full profile runs the same loop (`Turn`) with the Workstation tools only:
+`list_workstation_tools`, `job_status`, `search_library`, `create_job`, `list_jobs`, `wait_for_job`, `cancel_job`
+and `transcribe_audio`. `workstation_registry()` in `app/chat.py` builds them with `ws_tools.build(port)`.
+
+- It has no file, web, media, plan, Python or shell tool. A call to one of them is refused: no such tool.
+- The tools keep their risk levels. `create_job`, `cancel_job` and `transcribe_audio` ask first, as above.
+- The policy, the approval cards, the grants, the taint, the step limit and the memory lease are those of an agent
+  chat. A job that needs the chat model's memory starts after the answer.
+- It has no folder. A folder grant is refused (HTTP 400), so a `folder:` file reference fails. A `library:`
+  reference works.
+- The Tools menu turns each tool on or off and ends a grant. A new workstation chat has every tool on.
+- The prompt lists every field of each media tool and tells the model when to queue a job: when the user asks it
+  to make something. When the request is unclear, or the user wants to edit the text first, it writes `prompt`
+  blocks instead.
+- The registry needs no `[agent]` settings and no sandbox.
+- In the chat profile a workstation chat has no tools. It answers in one model request, without the loop.
+
 ### Input files
 
 A file field of `create_job` (`"type": "file"`) takes one file reference. A `files` field takes a list of them (at
@@ -436,7 +455,8 @@ search fails only when every source fails.
 
 ## How the chat loop uses the package
 
-`app/chat.py` builds a registry with `build_registry(port, settings)` at the first use and keeps it. It keeps one
+`app/chat.py` builds a registry with `build_registry(port, settings)` at the first use and keeps it. A workstation
+chat uses `workstation_registry()` instead (see [Workstation chats](#workstation-chats)). It keeps one
 registry per media flag, so at most one per profile: with the media tools (the full profile; the port is the server's
 `Workstation` object from `app/server.py`) and without them (the chat profile; the port is `None`). One answer
 (`Turn`) runs these steps:

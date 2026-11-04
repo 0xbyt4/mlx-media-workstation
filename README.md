@@ -11,7 +11,7 @@ service.
   (ACE-Step 1.5), video with sound (LTX-2.5: text, image, voice and extend) and a video + music mix.
 - **Prompt help**: "Improve" under a prompt field asks the local LLM to rewrite your draft for that tool.
 - **Chat**: talk with a local Qwen3.8 27B. Attach images, pick a thinking level, and let it write prompts for the
-  tools.
+  tools or queue the jobs itself.
 - **Agent mode**: the chat model can search the web, read files in a folder you grant, run code in a sandbox and
   queue jobs. Each risky call asks you first.
 - **Jobs and Library**: a queue with live progress and time left, and a searchable library of every output.
@@ -202,14 +202,16 @@ you used in it.
 
 A new chat has one of three modes. The mode is fixed after the first message.
 
-- **Workstation**: the model knows the app's tools. When it writes a prompt for a tool, the answer shows a "Use in"
-  card. The card copies the text into that tool's form.
+- **Workstation**: the model knows the app's tools and every field of their forms. When you ask it to make
+  something, it queues the job itself with the Workstation tools, after you approve it. When it writes a prompt for a
+  tool, the answer shows a "Use in" card. The card copies the text into that tool's form.
 - **General**: a plain assistant.
 - **Agent**: the model can call tools. It can search the web, read web pages, read and write files in a folder that
   you grant, look at images, run Python and shell commands in a sandbox, search the Library and queue jobs.
 
-In Agent mode, a call that sends data off the Mac, queues a job, writes a file or runs code shows an approval card
-first. The Tools menu of the chat turns tools on or off and grants the folder. Python and shell are off until you turn
+In Agent and Workstation mode, a call that sends data off the Mac, queues a job, writes a file or runs code shows an
+approval card first. A Workstation chat has only the Workstation tools: no web, file, Python or shell tools. The Tools
+menu of the chat turns tools on or off and, in Agent mode, grants the folder. Python and shell are off until you turn
 them on. [docs/AGENT.md](docs/AGENT.md) has each tool, its risk level and the limits of the sandbox.
 
 ### Chat only

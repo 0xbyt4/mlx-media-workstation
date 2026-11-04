@@ -46,6 +46,10 @@ added to it.
 - `advanced: true` fields go in a collapsed "Advanced" section.
 - `step` may be given for numbers (for example 0.05). A `null` default means an empty input.
 - `assist: true` marks a text field that has an "Improve" button (see Prompt help below).
+- `needs_off: "<checkbox name>"` marks a text field that the tool uses only while that checkbox is off (`lyrics` of
+  `music.ace` needs `instrumental` off). A job with text in such a field and the checkbox on is refused with HTTP 400
+  (`tools.validate`, which `POST /api/jobs` and the agent's `create_job` share). The Create form turns the checkbox
+  off when text comes into the field, and marks the field at Generate while the checkbox is on.
 
 ## Jobs
 
@@ -450,7 +454,8 @@ return HTTP 404 for an unknown chat.
   - `{"event": "reasoning", "text": "..."}` and `{"event": "content", "text": "..."}` deltas;
   - `{"event": "done", "finish": "stop" | "length" | "cancelled", "content": "...", "reasoning": "...", "stats": {...}}`
     or `{"event": "error", "message": "..."}` at the end.
-  - An agent chat has more events: see [Agent mode](#agent-mode).
+  - A chat with tools (an agent chat, or a workstation chat in the full profile) has more events: see
+    [Agent mode](#agent-mode).
   - `stats` has `seconds`, and when the model ran, `prompt_tokens`, `generation_tokens`, `cached_tokens`,
     `prompt_tps`, `generation_tps` and `peak_gb`.
   - `text` is at most 20,000 characters. An answer is at most 4,096 tokens after its thinking (see
@@ -467,9 +472,17 @@ The mode of a chat sets its system prompt:
 
 | Mode | System prompt | "Use in" cards |
 |---|---|---|
-| `workstation` | The app's tools with their prompt-help fields, and the `prompt` block rule below. | yes |
+| `workstation` | The app's tools with every field (name, label, type, range or choices, default, advice), the rules that join fields, and the `prompt` block rule below. In the full profile, also the rules for the Workstation tools: the model gets them (see below). | yes |
 | `general` | A short assistant prompt with today's date. It does not list the tools. | no |
 | `agent` | The `general` prompt without the "no internet" line, plus the agent rules and the granted folder. The model gets the chat's tools (see [Agent mode](#agent-mode)). | no |
+
+A workstation chat in the full profile answers with the agent loop (see [Agent mode](#agent-mode)), but with the
+Workstation tools only: `list_workstation_tools`, `job_status`, `search_library`, `create_job`, `list_jobs`,
+`wait_for_job`, `cancel_job` and `transcribe_audio`. It has no file, web, media, plan, Python or shell tool, and no
+folder. The policy, the approval cards, the Tools menu, the grants and the taint are those of an agent chat. Its
+prompt tells the model to queue a job when the user asks it to make something, and to write `prompt` blocks when the
+request is unclear or the user wants to edit the text first. In the chat profile a workstation chat has no tools and
+answers in one model request.
 
 Every mode tells the model to answer in the user's language and not to use emoji. The LLM worker also bans emoji
 tokens in every answer ([AGENT.md](AGENT.md#how-the-chat-loop-uses-the-package)). A chat saved before modes existed has
@@ -529,7 +542,9 @@ The chat's agent state is in `chat.json` under `agent`:
 ```
 
 - `tools` are the tools this chat offers. A new agent chat has every tool except `run_python` and `run_shell`. They
-  run code and commands that the model writes, so the user turns them on in the Tools menu.
+  run code and commands that the model writes, so the user turns them on in the Tools menu. A workstation chat has
+  the same state, with every Workstation tool on. A workstation chat without `agent` (one saved before it had tools)
+  gets that default. A mode change of an empty chat sets the default tools of the new mode.
 - `folder` is the folder that the file tools may use, or `null`. The tools that read or write the user's files are
   offered only while a folder is granted. `media_info` and `view_image` are offered without one: they also read the
   chat's work folder and the Library.
@@ -543,10 +558,11 @@ with another one).
 
 - `GET /api/chats/{id}/agent` returns the state for the Tools menu: `folder`, `grants`, `tainted`, `enabled` (the
   names), `limits` (`steps`, `seconds`, `approval_s`) and `tools`, a list of `{name, label, description, risk,
-  risk_text, network, enabled, granted}` for every tool this app has. HTTP 409 for a chat that is not an agent chat.
+  risk_text, network, enabled, granted}` for every tool that the chat's mode can have (a workstation chat: the
+  Workstation tools). HTTP 409 for a chat without tools: a general chat, or a workstation chat in the chat profile.
 - `PATCH /api/chats/{id}/agent` changes it and returns the new state. The JSON body has any of:
   - `tools`: the names of the enabled tools (HTTP 400 for an unknown name);
-  - `folder`: a folder to grant, or `null` or `""` to revoke it;
+  - `folder`: a folder to grant, or `null` or `""` to revoke it (HTTP 400 for a grant in a workstation chat);
   - `revoke`: tools whose "allow in this chat" ends.
   The changes apply from the next tool call, also while an answer runs. The folder must be an absolute path to an
   existing folder. The server stores its real path as the disk spells it (`F_GETPATH`). It refuses `/`, a folder
@@ -768,7 +784,10 @@ views.
 - Create: the tool picker with time, peak memory and fit; the selected tool's form with prompt help ("Improve", with
   Cancel while it waits, loads or writes, and Undo and Redo after it); an "On this Mac" card with peak memory, time
   and queue wait; Generate ("Add to queue" while a job runs). Choosing another tool cancels the open tool's running
-  Improve; going to another view does not: its text goes into the tool's saved form, with a toast.
+  Improve; going to another view does not: its text goes into the tool's saved form, with a toast. Text that comes
+  into a `needs_off` field (typed, pasted or from "Use in") turns that checkbox off, with a toast and Undo.
+- Text selection: the window's text can be selected and copied (`start.py` passes `text_select=True` to pywebview).
+  Buttons, switches and folds (`summary`) keep their labels unselectable (`web/css/base.css`).
 - Jobs: the running job with progress, the queue with start estimates and move buttons, and finished jobs with their media, settings,
   "Use these settings", "Send to" (an output into another tool's file field), download and delete.
 - Chat, Library, Models and Settings use the endpoints of their sections above.

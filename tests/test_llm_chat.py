@@ -13,6 +13,7 @@ import pytest
 import uvicorn
 
 from app import assist, chat, config, llm, models, server, tools
+from app.agent import ws_tools
 from tests.conftest import app_client
 
 FAKE = Path(__file__).with_name("fake_llm_worker.py")
@@ -485,7 +486,9 @@ def test_assist_is_cancelled_when_the_client_goes_away(draft):
 
 
 def new_chat(client):
-    return client.post("/api/chats").json()["id"]
+    """A general chat: its answers take the plain path (answer()). A workstation chat in the full profile answers
+    with its tools (tests/test_workstation_chat.py)."""
+    return client.post("/api/chats", json={"mode": "general"}).json()["id"]
 
 
 def test_chat_round_trip(client):
@@ -702,18 +705,32 @@ def test_model_input_keeps_the_newest_turns_that_fit(monkeypatch):
     assert images == [str(chat.CHATS / "c" / "img_0.png")]
 
 
-def test_system_prompt_names_every_tool_with_prompt_help():
-    system = chat.system_prompt({"mode": "workstation"})
+def test_system_prompt_names_every_field_of_every_tool():
+    """Every field with its label, type, range or choices, default and advice, so the model knows the form (it once
+    said that music.ace has no duration); advice that several tools share is written once."""
+    system = chat.workstation_prompt()
     for tool in tools.TOOLS:
-        fields = [f for f in tool["fields"] if f.get("assist")]
-        if fields:
-            assert f"- {tool['id']}: {tool['label']}" in system
-        for f in fields:  # each field with its advice, so the model follows it
-            assert (
-                f"{f['name']} ({f['help']})" if f.get("help") else f["name"]
-            ) in system
-    assert "edit.mix" not in system  # nothing to write for it
-    assert "emoji" in system
+        assert (
+            f"- {tool['id']}: {tool['label']} ({tool['group']}). {tool['description']}"
+            in system
+        )
+        for f in tool["fields"]:
+            line = ws_tools._field_line(f, label=True)
+            assert f"  {line}" in system
+            if f.get("help"):
+                assert (
+                    f"  {line}: {f['help']}" in system
+                    or f"- {f['name']}: {f['help']}" in system
+                )
+    assert '  duration "Duration (s)" (number, 10..240, default 30)' in system
+    assert "  instrumental (checkbox, default true)" in system
+    # the rules that join fields
+    assert "music.ace: lyrics is used only when instrumental is false" in system
+    assert "its seconds or duration field" in system
+    assert system.count("Same seed and settings = same result.") == 1
+    assert "emoji" in system and "```prompt music.ace lyrics" in system
+    # compact: it goes into every workstation chat (2,748 characters before the fields; tools add their rules)
+    assert len(system) < 9500
 
 
 def test_system_prompt_follows_the_mode(monkeypatch):
@@ -737,18 +754,18 @@ def test_system_prompt_follows_the_mode(monkeypatch):
 
 def test_model_input_counts_the_chat_s_own_system_prompt(monkeypatch):
     monkeypatch.setattr(chat, "today", lambda: "Tuesday 3 November 2026")
-    monkeypatch.setattr(chat, "CONTEXT_TOKENS", 1500)
-    msgs = [{"role": "user", "content": "x" * 92, "images": []} for _ in range(40)]
+    monkeypatch.setattr(chat, "CONTEXT_TOKENS", 6000)
+    msgs = [{"role": "user", "content": "x" * 92, "images": []} for _ in range(200)]
     kept = {}
     for mode in ("workstation", "general"):
         c = {"id": "c", "mode": mode, "messages": msgs}
         messages, _ = chat.model_input(c, 256)
         assert messages[0] == {"role": "system", "content": chat.system_prompt(c)}
-        budget = 1500 - 256 - len(chat.system_prompt(c)) // 3
+        budget = 6000 - 256 - len(chat.system_prompt(c)) // 3
         kept[mode] = len(messages) - 1
         # a trim fills TRIM_TO of the budget; 92 // 3 + 8 tokens a message
         assert kept[mode] == int(budget * chat.TRIM_TO) // 38
-        assert c["window"] == {"start": 40 - kept[mode], "short": 0}
+        assert c["window"] == {"start": 200 - kept[mode], "short": 0}
     assert kept["general"] > kept["workstation"]
 
 
@@ -850,7 +867,7 @@ def test_chat_modes(client):
 
 
 def test_mode_changes_only_from_the_app_s_page(client):
-    cid = new_chat(client)
+    cid = client.post("/api/chats").json()["id"]
     r = client.patch(
         f"/api/chats/{cid}",
         json={"mode": "general"},

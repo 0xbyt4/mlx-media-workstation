@@ -289,6 +289,27 @@ def test_reference_without_transcript(client: TestClient, state: Path) -> None:
     assert list(state.iterdir()) == []
 
 
+def test_lyrics_need_instrumental_off(client: TestClient, state: Path) -> None:
+    """ACE-Step sings no lyrics in an instrumental: the job is refused instead of dropping them. Instrumental is on
+    by default, so lyrics alone are refused too; the agent's create_job goes through the same check."""
+    song = {"caption": "calm synth-pop", "lyrics": "[verse]\nRain on the glass"}
+    refused = "Lyrics: used only when Instrumental is off. Turn Instrumental off, or clear Lyrics."
+    for given in ({}, {"instrumental": "true"}):
+        r = post_job(client, "music.ace", {**song, **given})
+        assert (r.status_code, r.json()) == (400, {"detail": refused})
+    with pytest.raises(ValueError, match=refused):
+        server.Workstation().create_job("music.ace", song)
+    assert list(state.iterdir()) == []
+    r = post_job(client, "music.ace", {**song, "instrumental": "false"})
+    assert r.status_code == 200
+    assert saved(state, r.json()["id"])["params"]["lyrics"] == song["lyrics"]
+    # no lyrics (or only spaces) with Instrumental on: an instrumental
+    assert (
+        post_job(client, "music.ace", {"caption": "rain", "lyrics": " \n"}).status_code
+        == 200
+    )
+
+
 # Same-origin rule for writes
 
 

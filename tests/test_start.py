@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import sys
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -328,3 +329,23 @@ def test_the_server_runs_in_the_profile(
     start.main(argv)
     assert ran == ["start", profile, "shutdown"]
     assert calls.windows == []
+
+
+def test_the_window_lets_the_user_select_text(
+    start: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pywebview's text_select defaults to False, which makes the whole page unselectable: the window turns it on
+    (the page's CSS keeps only the labels of controls unselectable)."""
+    made: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    fake = SimpleNamespace(
+        settings={},
+        create_window=lambda *a, **kw: made.append((a, kw)),
+        start=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    monkeypatch.setattr(start, "dock_identity", lambda title: None)
+    start.open_window("full", "http://127.0.0.1:7870/")
+    ((args, kwargs),) = made
+    assert args == (start.TITLES["full"], "http://127.0.0.1:7870/")
+    assert kwargs["text_select"] is True
+    assert fake.settings["ALLOW_DOWNLOADS"] is True

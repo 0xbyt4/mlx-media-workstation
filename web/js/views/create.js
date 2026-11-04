@@ -375,10 +375,53 @@ function makeControl(tool, f) {
       return null;
     }
     if (f.required && v.trim() === '') return 'Required.';
+    const box = blockingBox(f);
+    if (box && v.trim()) return 'Used only when ' + box.field.label + ' is off. Turn ' + box.field.label + ' off, or clear this field.';
     return null;
   };
   ctl.reset();
   return ctl;
+}
+
+// A text field with needs_off (app/tools.py: Lyrics needs Instrumental off) is not used while that checkbox is on.
+// The server refuses such a job; here the checkbox goes off when text comes in, and Generate marks the field.
+
+// The checkbox control that keeps this field from being used: the needs_off box while it is on, else null.
+function blockingBox(f) {
+  const box = f.needs_off ? s.controls.get(f.needs_off) : null;
+  return box && box.get() === true ? box : null;
+}
+
+// The text fields that need this checkbox off.
+function dependents(ctl) {
+  return [...s.controls.values()].filter((c) => c.field.needs_off && c.field.needs_off === ctl.field.name);
+}
+
+// Text came into a needs_off field: turn its checkbox off. Returns the checkbox it turned off, or null.
+function turnOffFor(ctl) {
+  const box = blockingBox(ctl.field);
+  if (!box || !String(ctl.get()).trim()) return null;
+  box.set(false);
+  return box;
+}
+
+// The user typed or pasted text into a needs_off field while its checkbox is on: turn the box off and say so. Undo
+// turns it on again and keeps the text; the field then does not turn it off again until it is cleared.
+function typedInto(ctl) {
+  if (!String(ctl.get()).trim()) {
+    ctl.keepBox = false;
+    return;
+  }
+  if (ctl.keepBox) return;
+  const box = turnOffFor(ctl);
+  if (!box) return;
+  scheduleSave();
+  toast('Turned ' + box.field.label + ' off to use ' + ctl.field.label + '.', {action: {label: 'Undo', run: () => {
+    if (!s || s.controls.get(box.field.name) !== box) return;
+    box.set(true);
+    ctl.keepBox = true;
+    saveFormNow();
+  }}});
 }
 
 function makeCheckbox(f) {
@@ -578,6 +621,16 @@ function onFormInput(e) {
     showFieldError(ctl, null);
     recountSummary();
   }
+  if (ctl && ctl.field.needs_off) typedInto(ctl);
+  // a checkbox that changed: the fields that need it off are checked again. A box the user turned on stays on while
+  // they edit the text (Generate marks the field).
+  for (const dep of ctl ? dependents(ctl) : []) {
+    if (ctl.get() === true) dep.keepBox = true;
+    if (dep.wrap.classList.contains('invalid') && dep.validate() === null) {
+      showFieldError(dep, null);
+      recountSummary();
+    }
+  }
   const key = ctl && s.tool.id + ':' + ctl.field.name;
   if (ctl && ctl.improveBtn && ['empty', 'error', 'cancelled'].includes((improve.get(key) || {}).status)) {
     improve.delete(key);
@@ -591,10 +644,13 @@ function onFormChange(e) {
   scheduleSave();
   const ctl = s.controls.get(e.target.name);
   if (!ctl || ctl.isFile || e.target !== ctl.input || (ctl.get() === '' && !e.target.validity.badInput)) return;
-  const msg = ctl.validate();
-  if (msg) {
-    showFieldError(ctl, msg);
-    recountSummary();
+  // a checkbox turned on marks the text fields that it now keeps from being used
+  for (const c of [ctl, ...dependents(ctl)]) {
+    const msg = c.validate();
+    if (msg) {
+      showFieldError(c, msg);
+      recountSummary();
+    }
   }
 }
 
@@ -1087,9 +1143,11 @@ function useText(item) {
   if (!ctl || ctl.isFile) return;
   const before = collectValues();
   ctl.set(item.text);
+  const box = turnOffFor(ctl); // lyrics from the chat are meant to be sung
   saveFormNow();
   if (ctl.field.advanced && s.els.adv) s.els.adv.open = true;
-  toast('Put the text into ' + s.tool.label + ' › ' + ctl.field.label + '.', {action: undoAction(before)});
+  toast('Put the text into ' + s.tool.label + ' › ' + ctl.field.label + '.' + (box ? ' Turned ' + box.field.label + ' off to use it.' : ''),
+    {action: undoAction(before)});
   ctl.focus();
 }
 

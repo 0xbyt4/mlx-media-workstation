@@ -170,8 +170,15 @@ def open_window(profile: str, url: str) -> None:
         True  # without it a Download link replaces the app page
     )
     width, height, min_size = SIZES[profile]
+    # text_select: pywebview's default makes the whole page unselectable; the page's CSS keeps only the labels of
+    # buttons and switches unselectable (web/css/base.css). The default Edit menu gives Cmd-C, Cmd-V and Cmd-A.
     webview.create_window(
-        TITLES[profile], url, width=width, height=height, min_size=min_size
+        TITLES[profile],
+        url,
+        width=width,
+        height=height,
+        min_size=min_size,
+        text_select=True,
     )
     dock_identity(TITLES[profile])
     webview.start()

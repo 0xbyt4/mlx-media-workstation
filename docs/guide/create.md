@@ -192,12 +192,21 @@ Music from a description, instrumental or with lyrics.
 |---|---|---|
 | Description | | Genre, mood, instruments, tempo feel and use. |
 | Instrumental | on | Turn it off for a song with lyrics. |
-| Lyrics | | Only when Instrumental is off. Use `[verse]` and `[chorus]` tags. |
+| Lyrics | | Sung only when Instrumental is off. Use `[verse]` and `[chorus]` tags. |
 | Duration (s) | 30 | 10 to 240. |
 | BPM (advanced) | automatic | 30 to 300. |
 | Key (advanced) | automatic | For example `D minor`. |
 | Takes (advanced) | 2 | 1 to 4. |
 | Seed (advanced) | random | |
+
+Lyrics need Instrumental off:
+
+- When you type or paste lyrics while Instrumental is on, the form turns Instrumental off. A note says so. Press Undo
+  in the note to turn it on again. After Undo, or when you turn Instrumental on yourself, the form leaves it on until
+  you clear the lyrics.
+- "Use in ACE-Step 1.5 › Lyrics" in a chat also turns Instrumental off. Undo in its note puts the form back.
+- With Instrumental on and text in Lyrics, Generate marks the Lyrics field. The server also refuses such a job, so
+  the app never ignores lyrics.
 
 The output is `take1.wav`, `take2.wav` and so on. Each note gives the seed, the key and the BPM.
 

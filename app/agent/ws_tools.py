@@ -44,7 +44,9 @@ def _accepts(f: dict[str, Any]) -> str:
     return " or ".join(k for k in kinds if k) or "media"
 
 
-def _field_line(f: dict[str, Any]) -> str:
+def _field_line(f: dict[str, Any], label: bool = False) -> str:
+    """name (type, range or choices, required, default); with label, the form's label after the name when it says
+    more than the name."""
     bits = [f["type"]]
     if f["type"] == "select":
         bits = ["one of " + " | ".join(str(o["value"]) for o in f.get("options", []))]
@@ -57,8 +59,12 @@ def _field_line(f: dict[str, Any]) -> str:
     if f.get("required"):
         bits.append("required")
     if f.get("default") not in (None, ""):
-        bits.append(f"default {f['default']}")
-    return f"{f['name']} ({', '.join(bits)})"
+        default = f["default"]
+        bits.append(
+            f"default {str(default).lower() if isinstance(default, bool) else default}"
+        )
+    shown = f' "{f["label"]}"' if label and f["label"].lower() != f["name"] else ""
+    return f"{f['name']}{shown} ({', '.join(bits)})"
 
 
 def format_tools(items: list[dict[str, Any]]) -> str:
