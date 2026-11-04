@@ -1,0 +1,116 @@
+name: Bug report
+description: Something does not work as the documentation says.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Do not report a security problem here: read SECURITY.md.
+        Before you paste a log, remove your user name, home folder paths and any sign-in link (`/auth?t=...`).
+        The sign-in link holds the session token of the run.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you see? Copy the exact error text.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest number of steps that show the problem.
+      placeholder: |
+        1. Open Create and select Text to Video.
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Tool or area
+      options:
+        - MOSS-Image
+        - FLUX.3 Klein
+        - Klein Edit (references)
+        - Fish Drama 3
+        - Transcribe
+        - ACE-Step 1.5
+        - Text to Video
+        - Image to Video
+        - Voice to Video (talking)
+        - Extend Video
+        - Mix (video + music)
+        - Prompt help (Improve)
+        - Chat
+        - Chat agent mode
+        - Models and downloads
+        - Jobs
+        - Library
+        - Settings
+        - Start, window or launcher app
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: start
+    attributes:
+      label: How you started the app
+      options:
+        - start.py (window)
+        - start.py --browser
+        - start.py --chat
+        - Workstation.app or Workstation Chat.app
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Settings > About > Version (the version and the commit), or the output of `git log -1 --format='%h %cs'`.
+      placeholder: 0.1.0 (abc1234 2026-11-04)
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      description: Apple menu > About This Mac, or `sw_vers -productVersion`.
+      placeholder: "26.1"
+    validations:
+      required: true
+  - type: input
+    id: chip
+    attributes:
+      label: Chip
+      description: Apple menu > About This Mac.
+      placeholder: M2 Pro
+    validations:
+      required: true
+  - type: input
+    id: memory
+    attributes:
+      label: Memory (RAM)
+      description: Apple menu > About This Mac.
+      placeholder: 32 GB
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Paste the lines around the error. A job writes `outputs/<job id>/job.log`. The local LLM writes `outputs/llm.log`.
+        The launcher apps write `outputs/app.log`. Started from a terminal, the app writes its log to the terminal.
+      render: shell
+  - type: textarea
+    id: more
+    attributes:
+      label: More information
+      description: Screenshots, the job settings, or anything else that can help.

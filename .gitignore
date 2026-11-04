@@ -1,10 +1,26 @@
+# app data: jobs, chats, logs and the session token
 outputs/
-.venv/
+config.toml
+# environments, caches and build output
+.venv
 __pycache__/
 *.pyc
 .ruff_cache/
-.DS_Store
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+# the launcher apps that scripts/build_apps.sh builds
 Workstation.app/
 Workstation Chat.app/
-config.toml
-.pytest_cache/
+# secrets
+.env
+.env.*
+# editors and macOS
+.DS_Store
+.idea/
+.vscode/
+*.swp

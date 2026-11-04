@@ -4,7 +4,25 @@ version = "0.1.0"
 description = "A local app for open image, voice, music and video models on Apple Silicon (MLX)."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "0xbyt4" }]
 requires-python = ">=3.12"
+keywords = ["mlx", "apple-silicon", "macos", "local-ai", "image-generation", "text-to-speech", "music-generation", "video-generation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: MacOS X",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia",
+    # the app runs from a checkout and is not a package: this classifier makes PyPI refuse an upload
+    "Private :: Do Not Upload",
+]
+
+[project.urls]
+Homepage = "https://github.com/0xbyt4/mlx-media-workstation"
+Issues = "https://github.com/0xbyt4/mlx-media-workstation/issues"
+Security = "https://github.com/0xbyt4/mlx-media-workstation/security/policy"
 
 [tool.ruff]
 line-length = 88

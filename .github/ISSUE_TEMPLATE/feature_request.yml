@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest a new feature or a change to an existing one.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What do you want to do that the app does not let you do now?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How should the app solve it? For a new model, give its repository, licence and expected peak memory.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other solutions or workarounds that you tried.
+  - type: input
+    id: mac
+    attributes:
+      label: Your Mac
+      description: The chip and memory, if the request is about speed or memory.
+      placeholder: M1, 16 GB
