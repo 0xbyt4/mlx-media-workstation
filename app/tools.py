@@ -247,7 +247,7 @@ TOOLS: list[dict[str, Any]] = [
         "id": "voice.drama3",
         "group": "Voice",
         "label": "Fish Drama 3",
-        "description": "Expressive speech and dialogue. About 2x real time. Takes are checked by speech recognition.",
+        "description": "Expressive speech and dialogue. About 2x real time. Takes are checked by speech recognition. Built with Fish Audio.",
         "fields": [
             field(
                 "text",

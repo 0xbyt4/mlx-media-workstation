@@ -484,7 +484,7 @@ model or its output.
 | Model | Licence | Commercial use | Source |
 |---|---|---|---|
 | MOSS-Image SFT | Apache-2.0 | Allowed. | [LICENSE](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT/blob/f972bd4b4b9e3852133cc5da954d87bc32cd8fb9/LICENSE) |
-| FLUX.3 Klein | FLUX Kommunity License v1.0 | Output generation only, for users with less than US$5M gross annual revenue (affiliates included). Other commercial use needs a licence from Black Forest Labs. Do not use the outputs to improve a competing model. This summary comes from the model card; the full licence text is gated. | [Model card](https://huggingface.co/black-forest-labs/flux-3-image-klein), [LICENSE.md](https://huggingface.co/black-forest-labs/flux-3-image-klein/blob/8454017f9ebaada30c998fccd9f67a80c7580f68/LICENSE.md) |
+| FLUX.3 Klein | FLUX Kommunity License v1.0 | Non-commercial use is allowed. Commercial use of the outputs is allowed only when your gross annual revenue (affiliates included) is less than US$5M. Then you must filter or review the outputs for unlawful content, and mark them as AI-made where the law requires it. Other commercial use needs a licence from Black Forest Labs. Do not use the outputs to improve a similar model. | [Model card](https://huggingface.co/black-forest-labs/flux-3-image-klein), [LICENSE.md](https://huggingface.co/black-forest-labs/flux-3-image-klein/blob/8454017f9ebaada30c998fccd9f67a80c7580f68/LICENSE.md) |
 | Fish Audio Drama 3 | Fish Audio Community License v1.0 | Allowed while your annual revenue is less than US$500,000. No hosted text-to-speech service. Do not imitate a real person's voice without consent, do not remove the watermark, and do not train other speech models on the output. A product that uses it shows "Built with Fish Audio". | [LICENSE](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit/blob/1ac1b2108b63c2ef5bade463a121569363e293ce/LICENSE) |
 | Qwen3-ASR 0.6B | Apache-2.0 | Allowed. | [Model card](https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit) |
 | ACE-Step 1.5 | MIT | Allowed. | [Model card](https://huggingface.co/ACE-Step/Ace-Step1.5) |
@@ -569,7 +569,8 @@ uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev
 .venv/bin/python -m pytest -q
 ```
 
-`.github/workflows/ci.yml` has the same checks for GitHub Actions on macOS. To send a change, read
+`.github/workflows/ci.yml` has the same checks for GitHub Actions on macOS. The workflow is off for now, so run the
+checks on your Mac before you send a change. To send a change, read
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 `scripts/make_icon.py` draws the app icons (`assets/AppIcon.icns` and `assets/icon.png`) from the colours in
