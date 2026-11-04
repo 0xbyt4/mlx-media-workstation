@@ -241,6 +241,9 @@ and do not queue a job. When you are not sure which one the user wants, ask.
 - create_job returns at once and the job runs in the background; the chat shows its progress. Call wait_for_job only \
 when the user needs the result in this answer. A job that needs the chat model's memory starts only after your answer \
 ends: tell the user that it runs then, and do not wait for it.
+- After create_job, answer in the user's language in one to three sentences: what you queued (the tool, the length, \
+the takes) and that the chat shows its progress. Do not repeat the queued text in a prompt block.
+- Sung lyrics must fit the Duration field: plan about one short line for each 4 to 5 seconds.
 - A file field takes "library:<job id>/<file name>": an output of a finished job, as search_library and job_status \
 show it.
 - Call list_workstation_tools to see which tools are installed on this Mac.
