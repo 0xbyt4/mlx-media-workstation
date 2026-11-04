@@ -318,3 +318,28 @@ def test_the_file_room_counts_the_tool_schemas_of_a_workstation_chat():
     a = chat.file_room(with_tools, "off", "", 0, 1)
     b = chat.file_room(none_on, "off", "", 0, 1)
     assert a < b
+
+
+def test_the_workstation_prompt_names_the_tools_that_are_not_installed():
+    names = ["list_workstation_tools", "create_job"]
+    prompt = chat.workstation_prompt(names, [], ["video.t2v", "music.ace"])
+    assert "not installed on this Mac: video.t2v, music.ace" in prompt
+    assert "do not call list_workstation_tools to learn them" in prompt
+    assert "Every media tool below is installed" in chat.workstation_prompt(
+        names, [], []
+    )
+    assert "never promise to tell the user when the job is done" in prompt
+    assert (
+        "not installed" not in chat.workstation_prompt()
+    )  # the chat profile runs no tools
+
+
+def test_not_installed_follows_the_model_files(monkeypatch, tmp_path):
+    there, gone = tmp_path / "model", tmp_path / "missing"
+    there.mkdir()
+    monkeypatch.setattr(
+        chat.tools,
+        "REQUIRES",
+        {t["id"]: [there] for t in chat.tools.TOOLS} | {"video.t2v": [there, gone]},
+    )
+    assert chat.not_installed() == ["video.t2v"]

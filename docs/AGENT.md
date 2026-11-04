@@ -68,6 +68,8 @@ A workstation chat in the full profile runs the same loop (`Turn`) with the Work
 - The prompt lists every field of each media tool and tells the model when to queue a job: when the user asks it
   to make something. When the request is unclear, or the user wants to edit the text first, it writes `prompt`
   blocks instead.
+- The prompt also names the media tools that are not installed (`not_installed()` in `app/chat.py`), so the model
+  does not need `list_workstation_tools` to learn them.
 - The registry needs no `[agent]` settings and no sandbox.
 - In the chat profile a workstation chat has no tools. It answers in one model request, without the loop.
 
