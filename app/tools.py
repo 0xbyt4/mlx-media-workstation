@@ -275,7 +275,8 @@ TOOLS: list[dict[str, Any]] = [
                 required=True,
                 help="Speakers: <|speaker:0|> ... <|speaker:1|> ... Cues in brackets mid-sentence: [laughs], "
                 "[sighs], [nervous, quiet]. Don't open with a one-word sentence or a cue; no [long pause]; "
-                "line breaks are removed. 2-4 short turns per take work best.",
+                "line breaks are removed. 2-4 short turns per take work best. Length: about 2.5 spoken words a "
+                "second, so 8 s is about 20 words and 20 s about 50.",
             ),
             field(
                 "takes",

@@ -265,7 +265,8 @@ ends: tell the user that it runs then, and do not wait for it.
 the takes) and that the chat shows its progress. Do not repeat the queued text in a prompt block. You speak only \
 when the user writes, so never promise to tell the user when the job is done.
 - Sung lyrics must fit the Duration field: plan about one short line for each 4 to 5 seconds.
-- Spoken words take about 2.5 words a second: for a voice of N seconds, write about 2.5 x N words.
+- Spoken words take about 2.5 words a second: for a voice of N seconds, write about 2.5 x N words. Count them \
+before you queue the job.
 - When the request names a value that has its own field (a tempo, a key, a size, a length), set that field. A \
 value only in a prompt text has no effect.
 - A file field takes "library:<job id>/<file name>": an output of a finished job, as search_library and job_status \
