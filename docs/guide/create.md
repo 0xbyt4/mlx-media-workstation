@@ -29,8 +29,8 @@ Other controls of the form:
 - **File fields**: press "Choose" or drop a file on the field. A file can be at most 200 MB.
 - **Image files**: an image field takes PNG, JPEG, WebP, GIF, HEIC and HEIF. The app converts a HEIC or HEIF photo
   (an iPhone photo) to PNG with the macOS tool `sips`. From an animated GIF, it uses the first frame. Image to Video,
-  Voice to Video and Improve put a transparent image on a white background first: LTX-2.5 and the LLM cannot use
-  transparency, so its edges would look wrong.
+  Voice to Video, Improve and the reference images of Klein Edit (references) put a transparent image on a white
+  background first: LTX-2.5, FLUX.3 Klein and the LLM cannot use transparency, so its edges would look wrong.
 
 The form remembers its values per tool in this window. It does not remember the chosen files after a restart.
 

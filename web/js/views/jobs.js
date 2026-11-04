@@ -5,7 +5,7 @@
 import {store} from '../store.js';
 import {
   h, icon, toolIcon, lsGet, lsSet, fmtAbout, fmtClock, fmtDuration, fmtGb, fmtLeft, fmtTime, fmtValue, toast,
-  inlineConfirm, emptyState, errorBox, menu, media, downloadLink, lightbox,
+  inlineConfirm, emptyState, errorBox, menu, media, downloadLink, lightbox, readablePrompt, thumbUrl,
 } from '../ui.js';
 
 const FILTERS = [['all', 'All'], ['active', 'Active'], ['done', 'Done'], ['failed', 'Failed or cancelled']];
@@ -14,6 +14,7 @@ const STATUS = {
   cancelled: ['Cancelled', 'idle'],
 };
 const KIND_ICON = {image: 'image', audio: 'voice', video: 'video'};
+const PAGE = 30; // finished jobs shown at first and added by "Show more": 2,000 cards took about 0.5 s to build
 
 // Kept across mounts: details the user opened or closed, and queued jobs that are being removed.
 const openDetails = new Set();
@@ -23,7 +24,8 @@ let s = null;
 
 function mount(root, ctx) {
   root.classList.add('v-jobs');
-  s = {root, ctx, cards: new Map(), offs: [], filter: FILTERS.some(([k]) => k === lsGet('ws.jobsFilter')) ? lsGet('ws.jobsFilter') : 'all'};
+  s = {root, ctx, cards: new Map(), offs: [], limit: PAGE,
+    filter: FILTERS.some(([k]) => k === lsGet('ws.jobsFilter')) ? lsGet('ws.jobsFilter') : 'all'};
   s.seg = h('div', {class: 'seg', role: 'group', 'aria-label': 'Show jobs'},
     FILTERS.map(([k]) => h('button', {type: 'button', 'data-filter': k, onclick: () => setFilter(k)})));
   s.sum = h('span', {class: 'jobs-sum', 'aria-live': 'polite'});
@@ -34,6 +36,9 @@ function mount(root, ctx) {
   s.queueList = h('div', {class: 'card q-list'});
   s.queueSec.body.append(s.queueList);
   s.finSec = section('Finished', 'h-fin');
+  s.moreBtn = h('button', {type: 'button', class: 'btn btn-sm', onclick: showMore});
+  s.more = h('div', {class: 'jobs-more', hidden: true}, s.moreBtn);
+  s.finSec.el.append(s.more);
   root.append(h('div', {class: 'jobs'},
     h('div', {class: 'jobs-head'}, s.seg, s.sum, s.live), s.empty, s.runSec.el, s.queueSec.el, s.finSec.el));
 
@@ -64,8 +69,22 @@ function section(title, id) {
 
 function setFilter(k) {
   s.filter = k;
+  s.limit = PAGE;
   lsSet('ws.jobsFilter', k);
   render();
+}
+
+// The next page of finished jobs: its cards fade in, and the focus goes to the first of them.
+function showMore() {
+  const first = s.finSec.body.querySelectorAll(':scope > .job').length;
+  s.limit += PAGE;
+  render();
+  const cards = [...s.finSec.body.querySelectorAll(':scope > .job')].slice(first);
+  for (const c of cards) {
+    c.classList.add('is-new');
+    c.addEventListener('animationend', () => c.classList.remove('is-new'), {once: true});
+  }
+  cards[0]?.querySelector('.job-actions button')?.focus();
 }
 
 // ---------- rendering ----------
@@ -118,7 +137,11 @@ function render() {
   }
   if (running.length) s.runSec.body.querySelector(':scope > .empty')?.remove();
   place(s.queueList, queued, seen);
-  place(s.finSec.body, shownFinished, seen);
+  const page = shownFinished.slice(0, s.limit);
+  place(s.finSec.body, page, seen);
+  const rest = shownFinished.length - page.length;
+  s.more.hidden = rest <= 0;
+  s.moreBtn.textContent = 'Show ' + Math.min(PAGE, rest) + ' more (' + rest + ' not shown)';
   const finEmpty = s.finSec.body.querySelector(':scope > .empty');
   if (!shownFinished.length && !finEmpty) {
     s.finSec.body.append(emptyState({icon: 'check', title: s.filter === 'failed' ? 'No failed or cancelled jobs' : 'No finished jobs',
@@ -188,7 +211,7 @@ function tool(job) {
 function promptOf(job) {
   const p = job.params || {};
   const text = ['prompt', 'text', 'caption'].map((k) => p[k]).find((v) => typeof v === 'string' && v.trim());
-  if (text) return text;
+  if (text) return readablePrompt(text);
   return job.tool === 'edit.mix' ? 'Video and music mix' : '';
 }
 
@@ -530,6 +553,7 @@ function buildFinished(job) {
   const outputs = (job.outputs || []).map((o) => media(o, {
     onOpen: (out) => openImage(job, out),
     actions: [sendButton(job, o), downloadLink(o)],
+    thumb: job.status === 'done' && (o.kind === 'image' || o.kind === 'video') ? thumbUrl(job.id, o.name) : null,
   })).filter(Boolean);
   const errSlot = h('div', {class: 'field-err', role: 'alert', hidden: true});
   const confirmSlot = h('div');

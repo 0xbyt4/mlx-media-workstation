@@ -6,7 +6,7 @@
 import {store} from '../store.js';
 import {
   h, icon, toolIcon, fmtBytes, fmtClock, fmtTime, fmtValue, toast, inlineConfirm, emptyState, errorBox, media,
-  lightbox,
+  lightbox, leave, readablePrompt, thumbUrl,
 } from '../ui.js';
 
 const KINDS = [['all', 'All'], ['image', 'Images'], ['video', 'Video'], ['audio', 'Audio']];
@@ -275,26 +275,34 @@ function buildCard(item) {
   const label = item.tool_label || t.label;
   let thumb;
   if (item.kind === 'image') {
-    thumb = h('img', {src: item.url, alt: '', loading: 'lazy', decoding: 'async'});
-    thumb.addEventListener('error', () => thumb.replaceWith(placeholder(item)), {once: true});
+    // a small JPEG, else the file itself; it fades in when it has loaded (motion.css), so it does not pop in
+    thumb = h('img', {src: thumbUrl(item.job, item.name), alt: '', loading: 'lazy', decoding: 'async', class: 'is-lazy'});
+    thumb.addEventListener('load', () => thumb.classList.add('is-loaded'), {once: true});
+    let full = false;
+    thumb.addEventListener('error', () => {
+      if (full) thumb.replaceWith(placeholder(item));
+      else thumb.src = item.url;
+      full = true;
+    });
   } else if (item.kind === 'video') {
-    // the source is set when the card comes near the screen; preload=metadata then shows the first frame
-    thumb = h('video', {muted: true, playsinline: true, preload: 'metadata', 'data-src': item.url + '#t=0.1',
-      'aria-hidden': 'true', tabindex: '-1'});
+    // loadVisible gives it a small JPEG as its poster when the card comes near the screen (nothing of the video
+    // loads), else the file itself, whose first frame preload=metadata then shows
+    thumb = h('video', {muted: true, playsinline: true, preload: 'none', 'data-thumb': thumbUrl(item.job, item.name),
+      'data-src': item.url + '#t=0.1', 'aria-hidden': 'true', tabindex: '-1'});
     thumb.addEventListener('error', () => thumb.replaceWith(placeholder(item)), {once: true});
     s.io.observe(thumb);
   } else {
     thumb = audioThumb(item, t);
   }
   const open = h('button', {type: 'button', class: 'lib-open', tabindex: '-1', 'data-key': k,
-    'aria-label': label + ', ' + item.kind + ', ' + item.name + (item.text ? ': ' + item.text.slice(0, 120) : ''),
+    'aria-label': label + ', ' + item.kind + ', ' + item.name + (item.text ? ': ' + readablePrompt(item.text).slice(0, 120) : ''),
     onclick: () => openKey(k)},
   h('span', {class: 'thumb k-' + item.kind}, thumb,
     h('span', {class: 'kind-tag', 'aria-hidden': 'true'}, item.kind),
     item.kind === 'video' && item.duration ? h('span', {class: 'lib-dur num', 'aria-hidden': 'true'}, fmtClock(item.duration)) : null,
     item.kind === 'audio' ? h('span', {class: 'lib-prog', 'aria-hidden': 'true'}, h('i')) : null),
   h('span', {class: 'lib-meta'}, h('b', null, label),
-    h('span', {class: 'lib-text'}, item.text || item.note || item.name),
+    h('span', {class: 'lib-text'}, readablePrompt(item.text) || item.note || item.name),
     h('small', null, metaLine(item))));
   const el = h('div', {class: 'lib-card', role: 'listitem', 'data-key': k}, open);
   if (item.kind === 'audio') {
@@ -329,10 +337,21 @@ function loadVisible(entries) {
     if (!e.isIntersecting) continue;
     const v = e.target;
     s.io.unobserve(v);
-    if (v.dataset.src) {
-      v.src = v.dataset.src;
-      delete v.dataset.src;
+    const {thumb, src} = v.dataset;
+    delete v.dataset.thumb;
+    delete v.dataset.src;
+    const full = () => {
+      v.preload = 'metadata';
+      v.src = src;
+    };
+    if (!thumb) {
+      if (src) full();
+      continue;
     }
+    const poster = new Image(); // a poster that fails gives the video no error event: try it first
+    poster.onload = () => (v.poster = thumb);
+    poster.onerror = full;
+    poster.src = thumb;
   }
 }
 
@@ -523,7 +542,7 @@ function openDrawer(item) {
     h('div', {class: 'lib-drawer-body'},
       preview ? h('div', {class: 'lib-preview k-' + item.kind}, preview) : null,
       h('div', {class: 'lib-actions'}, useBtn, sendRow),
-      tk ? h('div', {class: 'lib-prompt-wrap'}, h('span', {class: 'eyebrow'}, TEXT_LABEL[tk]), h('div', {class: 'lib-prompt'}, params[tk])) : null,
+      tk ? h('div', {class: 'lib-prompt-wrap'}, h('span', {class: 'eyebrow'}, TEXT_LABEL[tk]), h('div', {class: 'lib-prompt'}, readablePrompt(params[tk]))) : null,
       item.note ? h('p', {class: 'help'}, item.note) : null,
       h('dl', {class: 'kv'}, rows.map(([a, b]) => [h('dt', null, a), h('dd', null, b)])),
       h('div', {class: 'lib-file'}, h('span', {class: 'eyebrow'}, 'File'), h('code', {class: 'lib-path'}, item.path)),
@@ -564,7 +583,10 @@ function closeDrawer(restoreFocus, keepRoute) {
   const {item, back, drawer} = s.open;
   for (const m of drawer.querySelectorAll('video, audio')) m.pause();
   s.open = null;
-  s.drawerSlot.replaceChildren();
+  drawer.removeEventListener('keydown', drawerKey);
+  // another output opens at once: no leave animation; else the drawer slides out and the scrim fades
+  if (keepRoute) s.drawerSlot.replaceChildren();
+  else for (const el of [...s.drawerSlot.children]) leave(el);
   if (!keepRoute) s.ctx.router.replace('library');
   if (!restoreFocus) return;
   const card = s.cards.get(keyOf(item));

@@ -14,7 +14,8 @@ The Jobs screen has three parts:
 - **Running**: the job that runs now, with a progress bar, the stage, the elapsed time and the expected peak.
 - **Up next**: the queued jobs, in order. When earlier jobs of the same tools finished on this Mac, each row shows
   when it is expected to start.
-- **Finished**: the jobs that are done, failed or cancelled, newest first.
+- **Finished**: the jobs that are done, failed or cancelled, newest first. Jobs shows the newest 30. Press "Show 30
+  more" at the end of the list to see older jobs.
 
 The buttons at the top filter the list: All, Active, Done, or Failed or cancelled.
 
@@ -49,6 +50,10 @@ The app discards the part that is done and frees the memory.
 A finished job card shows:
 
 - The outputs: images, audio players, videos or text, with a note (for example the speech check of a voice take).
+  An image shows as a small copy. Click it to see the full image. A video shows its first frame and loads when you
+  press Play.
+- The prompt in plain words: "reference 1" for `<ref_image_0>`, and no `<|speaker:0|>` tags. A text with two
+  speakers shows "Speaker 0:" and "Speaker 1:". "Use these settings" and "All settings" keep the text as it was sent.
 - "Send to": puts an output into a file field of another tool. See [Create](create.md#use-outputs-in-other-tools).
 - "Use these settings": opens the tool in Create with the job's settings. Add the files again.
 - "All settings": the job's settings.
@@ -81,7 +86,8 @@ The Library shows every output of the jobs that are done. Failed and cancelled j
 2. Type in the search field. The search looks in prompts, scripts, descriptions, tool names and file names.
 3. Optional: pick a type (All, Images, Video or Audio), a tool, or the sort order (Newest first or Oldest first).
 
-An audio card has a play button. Use the arrow keys to move between the cards.
+An audio card has a play button. Use the arrow keys to move between the cards. An image or video card shows a small
+copy of the image or of the video's first frame. The preview shows the full file.
 
 ### Open an output
 

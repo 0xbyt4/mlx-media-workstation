@@ -1,6 +1,8 @@
 """The Library endpoints on a temp outputs folder: listing, Show in Finder and deleting one output."""
 
 import json
+import os
+import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -384,3 +386,113 @@ def test_delete_output_from_another_site_is_refused(
     )
     assert r.status_code == 403
     assert (state / job_id / "image.png").exists()
+
+
+# Thumbnails
+
+needs_ffmpeg = pytest.mark.skipif(
+    not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
+    reason="ffmpeg is not installed",
+)
+
+
+def ffmpeg(*args: str) -> None:
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *args], check=True)
+
+
+def size_of(path: Path) -> tuple[int, int]:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=True,
+    ).stdout  # fmt: skip
+    w, h = out.strip().split(",")[:2]
+    return int(w), int(h)
+
+
+@needs_ffmpeg
+def test_thumbnails_of_an_image_and_a_video_are_made_once(
+    client: TestClient, make_job: Job, state: Path
+) -> None:
+    job_id = "20261101-090000-aaaa"
+    done_job(
+        make_job,
+        state,
+        job_id,
+        "2026-11-01T09:00:00",
+        **{"image.png": "image", "video.mp4": "video"},
+    )
+    folder = state / job_id
+    ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=s=768x1344",
+        "-frames:v",
+        "1",
+        str(folder / "image.png"),
+    )
+    ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=s=1024x576:d=1",
+        "-pix_fmt",
+        "yuv420p",
+        str(folder / "video.mp4"),
+    )
+    r = client.get(f"/api/library/thumbs/{job_id}/image.png")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    thumb = folder / ".thumbs" / "image.png.jpg"
+    assert r.content == thumb.read_bytes() and size_of(thumb) == (366, 640)
+    made = thumb.stat().st_mtime_ns
+    assert client.get(f"/api/library/thumbs/{job_id}/image.png").status_code == 200
+    assert thumb.stat().st_mtime_ns == made  # kept, not made again
+    r = client.get(f"/api/library/thumbs/{job_id}/video.mp4")
+    assert r.status_code == 200 and size_of(folder / ".thumbs" / "video.mp4.jpg") == (
+        640,
+        360,
+    )
+    # the folder is never an output, and deleting the output deletes its thumbnail
+    assert [o["name"] for o in server.outputs(folder, {})] == ["image.png", "video.mp4"]
+    r = client.delete(
+        f"/api/library/{job_id}/image.png", headers={"Origin": "http://127.0.0.1:7870"}
+    )
+    assert r.status_code == 200 and not thumb.exists()
+
+
+@needs_ffmpeg
+def test_a_thumbnail_is_made_again_for_a_newer_output(
+    client: TestClient, make_job: Job, state: Path
+) -> None:
+    job_id = "20261101-090000-aaaa"
+    done_job(make_job, state, job_id, "2026-11-01T09:00:00", **{"image.png": "image"})
+    src = state / job_id / "image.png"
+    ffmpeg("-f", "lavfi", "-i", "testsrc=s=64x48", "-frames:v", "1", str(src))
+    assert client.get(f"/api/library/thumbs/{job_id}/image.png").status_code == 200
+    thumb = state / job_id / ".thumbs" / "image.png.jpg"
+    assert size_of(thumb) == (64, 48)  # a small image is not made larger
+    os.utime(thumb, ns=(0, 0))
+    assert client.get(f"/api/library/thumbs/{job_id}/image.png").status_code == 200
+    assert thumb.stat().st_mtime_ns > 0
+
+
+def test_thumbnails_only_for_listed_image_and_video_outputs(
+    client: TestClient, make_job: Job, state: Path
+) -> None:
+    job_id = "20261101-090000-aaaa"
+    done_job(
+        make_job,
+        state,
+        job_id,
+        "2026-11-01T09:00:00",
+        **{"music.wav": "audio", "broken.png": "image"},
+    )
+    get = lambda name: client.get(f"/api/library/thumbs/{job_id}/{name}").status_code
+    assert get("music.wav") == 404  # audio has no thumbnail
+    assert (
+        get("broken.png") == 404
+    )  # ffmpeg cannot read it: the page shows the output itself
+    assert get("in_image_0.png") == 400  # an input
+    assert get("other.png") == 404
+    assert client.get(f"/api/library/thumbs/nope/{'x.png'}").status_code == 404
+    assert not (state / job_id / ".thumbs" / "broken.png.jpg").exists()

@@ -125,7 +125,7 @@ def refusal(name: str) -> str:
     if hint:
         return f"this type cannot be read; {hint}."
     return (
-        "this type cannot be attached. Attach images (PNG, JPEG, WebP), text or code files, PDF, Word, RTF, "
+        "this type cannot be attached. Attach images (PNG, JPEG, WebP, HEIC), text or code files, PDF, Word, RTF, "
         "OpenDocument text, Excel (xlsx), OpenDocument spreadsheets (ods) or audio (WAV, MP3, M4A, AAC, FLAC, OGG, "
         "AIFF)."
     )

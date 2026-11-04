@@ -8,9 +8,11 @@
 // Tools menu turns tools on or off, grants a folder and revokes chat-wide approvals.
 
 import {store} from '../store.js';
-import {h, icon, toolIcon, grow, fmtBytes, fmtLeft, fmtTime, timeAgo, toast, inlineConfirm, errorBox, lightbox, lsGet, lsSet, menu, closeMenu, media, downloadLink} from '../ui.js';
+import {h, icon, toolIcon, grow, fmtBytes, fmtLeft, fmtTime, timeAgo, toast, inlineConfirm, errorBox, lightbox, lsGet, lsSet, menu, closeMenu, media, downloadLink, leave, stayOpen, readablePrompt} from '../ui.js';
 
-const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif'];
+// iPhone photos: the server stores them as JPEG; a browser that does not know the type gives only the name
+const HEIF_SUFFIXES = ['.heic', '.heif'];
 const MAX_IMAGES = 4; // per message (app/chat.py MAX_IMAGES)
 const MAX_IMAGE = 20 * 1024 * 1024;
 // Other files: the model gets their text, or an audio file's transcript (app/attachments.py KINDS and limits).
@@ -203,7 +205,7 @@ function update(params) {
 }
 
 function onKey(e) {
-  if (e.key === 'Escape' && s.els.chat.classList.contains('show-convos')) {
+  if (e.key === 'Escape' && convosOpen()) {
     e.preventDefault();
     showConvos(false);
   }
@@ -259,13 +261,16 @@ function build() {
   els.toggle = h('button', {
     type: 'button', class: 'btn btn-ghost btn-icon conv-toggle', 'aria-label': 'Show conversations',
     'aria-controls': 'chat-convos', 'aria-expanded': 'false',
-    onclick: () => showConvos(!els.chat.classList.contains('show-convos')),
+    onclick: () => showConvos(!convosOpen()),
   }, icon('menu'));
   els.title = h('h2', {id: 'chat-title'});
   els.modeChip = h('span', {class: 'chip mode-chip'});
   els.chip = h('span', {class: 'model-chip', role: 'status'});
   els.unload = h('button', {type: 'button', class: 'btn btn-ghost btn-sm', hidden: true, onclick: unload}, 'Unload');
   els.msgs = h('div', {class: 'msgs', role: 'region', 'aria-labelledby': 'chat-title', tabindex: '0', onscroll: onMsgsScroll});
+  // shown while the user reads back during an answer (updateJump)
+  els.jump = h('button', {type: 'button', class: 'btn btn-sm jump-latest', hidden: true, onclick: jumpToLatest},
+    icon('chev-down', 'ic-sm'), 'Jump to latest');
   els.status = h('div', {class: 'sr-only', role: 'status', 'aria-live': 'polite'});
 
   els.notices = h('div', {class: 'chat-notices'});
@@ -280,7 +285,7 @@ function build() {
   els.input.addEventListener('keydown', onInputKey);
   els.input.addEventListener('paste', onPaste);
   els.file = h('input', {
-    type: 'file', accept: [...IMAGE_TYPES, ...Object.values(FILE_KINDS).flat()].join(','), multiple: true, hidden: true, tabindex: '-1',
+    type: 'file', accept: [...IMAGE_TYPES, ...HEIF_SUFFIXES, ...Object.values(FILE_KINDS).flat()].join(','), multiple: true, hidden: true, tabindex: '-1',
     onchange: () => {
       addFiles([...els.file.files]);
       els.file.value = '';
@@ -323,11 +328,12 @@ function build() {
   els.thread = h('section', {class: 'thread', 'aria-label': 'Conversation'},
     h('div', {class: 'thread-head'}, els.toggle, h('div', {class: 'thread-title'}, els.title, els.modeChip), els.chip, els.unload),
     els.msgs,
-    h('div', {class: 'composer-wrap'}, els.toolsPop, els.notices, els.note, composer),
+    h('div', {class: 'composer-wrap'}, els.jump, els.toolsPop, els.notices, els.note, composer),
     els.status);
   dropTarget(els.thread);
 
-  els.chat = h('div', {class: 'chat'}, els.convos, els.thread);
+  // the narrow slide-over covers the thread with a scrim; a click on it closes the list
+  els.chat = h('div', {class: 'chat'}, els.convos, h('div', {class: 'convos-scrim', onclick: () => showConvos(false)}), els.thread);
   s.root.append(els.chat);
   grow(els.input);
 }
@@ -341,12 +347,23 @@ function renderAll(toEnd = true) {
   renderComposer();
 }
 
+// The list is a slide-over at narrow widths (show-convos); it slides out before it goes.
+function convosOpen() {
+  return s.els.chat.classList.contains('show-convos') && !s.els.convos.classList.contains('is-leaving');
+}
+
 function showConvos(open) {
   const els = s.els;
-  els.chat.classList.toggle('show-convos', open);
+  const hadFocus = els.convos.contains(document.activeElement);
+  if (open) {
+    stayOpen(els.convos);
+    els.chat.classList.add('show-convos');
+  } else if (convosOpen() && getComputedStyle(els.convos).position === 'absolute') {
+    leave(els.convos, () => els.chat.classList.remove('show-convos'));
+  } else els.chat.classList.remove('show-convos');
   els.toggle.setAttribute('aria-expanded', String(open));
   if (open) els.search.focus();
-  else if (els.convos.contains(document.activeElement)) els.toggle.focus();
+  else if (hadFocus) els.toggle.focus();
 }
 
 // ---------- model state ----------
@@ -1013,6 +1030,7 @@ function paintAnswer(live) {
   if (m.content && !m.finish) addCaret(live.bubble);
   live.state.replaceChildren(...liveStatus(live));
   if (stick) scrollToEnd();
+  else updateJump();
 }
 
 function liveStatus(live) {
@@ -1213,6 +1231,7 @@ function paintAgent(live) {
     }
   }
   if (stick) scrollToEnd();
+  else updateJump();
 }
 
 // A live tool call: the approval card while it waits for the user, else its card.
@@ -1361,7 +1380,8 @@ function diffBlock(text) {
 // wrote show under the card. seg (live) keeps the open state across repaints.
 function toolBlock(t, seg) {
   const st = t.status ? STATUS[t.status] || ['idle', t.status] : ['run', 'Running'];
-  const sum = t.describe ? visible(t.describe) : argsLine(t.arguments);
+  // the line reads Klein Edit and Drama tags as words; the arguments below stay as the model sent them
+  const sum = readablePrompt(t.describe ? visible(t.describe) : argsLine(t.arguments));
   const risk = t.risk === null || t.risk === undefined ? null : {...RISK[t.risk], label: riskLabel(t.name, t.risk, t.network)};
   const shell = t.name === 'run_shell' && t.status === 'ok' && t.content ? shellResult(t) : null;
   const body = h('div', {class: 'tool-body'},
@@ -1525,6 +1545,7 @@ async function openTools() {
   let id = memo.activeId;
   me.tools = {state: null, busy: false, error: '', folderError: ''};
   me.els.toolsBtn.setAttribute('aria-expanded', 'true');
+  stayOpen(me.els.toolsPop); // opened again while it left
   me.els.toolsPop.hidden = false;
   renderTools();
   try {
@@ -1548,8 +1569,11 @@ async function openTools() {
 function closeTools(focusBack) {
   if (!s || !s.tools) return;
   s.tools = null;
-  s.els.toolsPop.hidden = true;
-  s.els.toolsPop.replaceChildren();
+  const pop = s.els.toolsPop;
+  leave(pop, () => {
+    pop.hidden = true;
+    pop.replaceChildren();
+  });
   s.els.toolsBtn.setAttribute('aria-expanded', 'false');
   if (s.toolsOutside) document.removeEventListener('mousedown', s.toolsOutside, true);
   s.toolsOutside = null;
@@ -1715,7 +1739,10 @@ function renderThread(toEnd) {
     paintLive(s.live);
   }
   if (stick) scrollToEnd();
-  else s.msgsTop = box.scrollTop = top;
+  else {
+    s.msgsTop = box.scrollTop = top;
+    updateJump();
+  }
 }
 
 function emptyChat() {
@@ -1855,6 +1882,22 @@ function scrollToEnd() {
   s.scrolledUp = false;
   b.scrollTop = b.scrollHeight;
   s.msgsTop = b.scrollTop;
+  updateJump();
+}
+
+// "Jump to latest" shows when the user reads back while an answer streams, and stays until they reach the end.
+function updateJump() {
+  const b = s.els.msgs;
+  const away = s.scrolledUp && b.scrollHeight - b.scrollTop - b.clientHeight >= 80;
+  const show = away && (!!s.live || !s.els.jump.hidden);
+  if (show === !s.els.jump.hidden) return;
+  if (!show && s.els.jump.contains(document.activeElement)) s.els.msgs.focus({preventScroll: true});
+  s.els.jump.hidden = !show;
+}
+
+function jumpToLatest() {
+  scrollToEnd();
+  s.els.msgs.focus({preventScroll: true});
 }
 
 // A scroll toward the start marks that the user reads back; reaching the end again clears it. Content that grows
@@ -1865,6 +1908,7 @@ function onMsgsScroll() {
   if (b.scrollHeight - b.scrollTop - b.clientHeight < 2) s.scrolledUp = false;
   else if (b.scrollTop < s.msgsTop) s.scrolledUp = true;
   s.msgsTop = b.scrollTop;
+  updateJump();
 }
 
 // ---------- composer ----------
@@ -1968,7 +2012,7 @@ function dropTarget(el) {
 // What the attach button takes, for its tooltip and label.
 function attachHelp() {
   const audio = s.ctx.store.profile() !== 'chat' ? ', audio (WAV, MP3, M4A, AAC, FLAC, OGG, AIFF; 200 MB)' : '';
-  return 'Attach up to ' + MAX_FILES + ' files: images (PNG, JPEG, WebP; up to ' + MAX_IMAGES + ', 20 MB each), text '
+  return 'Attach up to ' + MAX_FILES + ' files: images (PNG, JPEG, WebP, HEIC; up to ' + MAX_IMAGES + ', 20 MB each), text '
     + 'and code files, PDF, Word, RTF, OpenDocument or Excel (50 MB)' + audio + '. You can also drop or paste them.';
 }
 
@@ -1983,8 +2027,8 @@ function typeOf(name) {
 
 // The kind of a chosen file (image, text, html, pdf, word, sheet, audio), or why it cannot be attached.
 function kindOf(f) {
-  if (IMAGE_TYPES.includes(f.type)) return {kind: 'image'};
   const suffix = suffixOf(f.name || '');
+  if (IMAGE_TYPES.includes(f.type) || HEIF_SUFFIXES.includes(suffix)) return {kind: 'image'};
   const kind = Object.keys(FILE_KINDS).find((k) => FILE_KINDS[k].includes(suffix));
   if (kind === 'audio' && s.ctx.store.profile() === 'chat') {
     return {error: 'audio needs the Transcribe media tool, which the chat profile does not have.'};
@@ -2023,7 +2067,8 @@ function renderAttach() {
   memo.attach.forEach((a, i) => {
     const meta = a.kind === 'image' ? fmtBytes(a.size) : typeOf(a.name) + ' · ' + fmtBytes(a.size);
     box.append(h('div', {class: 'file-chip' + (a.error ? ' bad' : ''), role: 'listitem'},
-      a.url ? h('span', {class: 'file-thumb'}, h('img', {src: a.url, alt: ''})) : fileThumb(a.kind),
+      // a browser that cannot show HEIC gets the plain file icon
+      a.url ? h('span', {class: 'file-thumb'}, h('img', {src: a.url, alt: '', onerror: (e) => e.target.replaceWith(icon('file', 'ic-sm'))})) : fileThumb(a.kind),
       h('span', {class: 'file-info'},
         h('span', {class: 'file-name', title: a.name}, a.name),
         h('span', {class: 'file-meta'}, meta),

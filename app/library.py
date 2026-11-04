@@ -2,10 +2,12 @@
 
 Only files listed in a finished job's `outputs` are reachable here: never inputs (in_* files), never other names.
 Writes pass the server's same-origin check. Media facts (size, duration) come from the file header (PNG, WAV) or from
-ffprobe, once per file version, and stay in memory, so the list stays fast for thousands of outputs.
+ffprobe, once per file version, and stay in memory, so the list stays fast for thousands of outputs. A thumbnail (a
+small JPEG of an image or of a video's first frame) is made once with ffmpeg and kept in the job's folder.
 """
 
 import json
+import os
 import re
 import subprocess
 import threading
@@ -14,13 +16,21 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+from app import tools
 
 router = APIRouter(prefix="/api/library")
 
 TEXT_KEYS = ("prompt", "text", "caption")  # the job's main text, in this order
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
 PROBE_WORKERS = 8
+THUMB_SIDE = 640  # pixels of a thumbnail's long side: Jobs shows outputs about 220 to 450 CSS pixels wide
+# the thumbnails' folder in a job's folder: it goes with the job, and it is never an output (no media suffix)
+THUMBS = ".thumbs"
+# ffmpeg runs for thumbnails at a time: a page of job cards asks for many at once
+thumb_slots = threading.BoundedSemaphore(2)
 
 probed: dict[
     str, tuple[int, int, dict[str, Any]]
@@ -240,12 +250,56 @@ def reveal(ref: FileRef) -> dict[str, str]:
     return {"status": "shown"}
 
 
+def make_thumb(src: Path, dst: Path, kind: str) -> None:
+    """Write the thumbnail of an image or video output to dst. An image with alpha is laid on white (a JPEG has no
+    alpha); a video gives its frame at 0.1 s, as the Library's video cards do. Raises ValueError."""
+    dst.parent.mkdir(exist_ok=True)
+    tmp = dst.with_name(f".{dst.name}.tmp.jpg")
+    vf = f"scale='min({THUMB_SIDE},iw)':'min({THUMB_SIDE},ih)':force_original_aspect_ratio=decrease"
+    seek = ["-ss", "0.1"] if kind == "video" else []
+    filters = tools.image_filter(src, vf) if kind == "image" else ["-vf", vf]
+    r = tools.run_media(
+        ["ffmpeg", "-v", "error", "-y", *seek, *tools.GUARD, "-i", str(src), *filters,
+         "-frames:v", "1", "-q:v", "4", "-update", "1", str(tmp)],
+        tools.READ_SECONDS,
+    )  # fmt: skip
+    if r.returncode != 0 or not tmp.is_file():
+        tmp.unlink(missing_ok=True)
+        raise ValueError(tools.ffmpeg_error(r.stderr) or "ffmpeg made no thumbnail")
+    os.replace(tmp, dst)
+
+
+@router.get("/thumbs/{job_id}/{name}")
+def get_thumb(job_id: str, name: str) -> FileResponse:
+    """A small JPEG of an image or video output (at most THUMB_SIDE pixels on its long side), kept as
+    <job>/.thumbs/<name>.jpg and made again when the output is newer. HTTP 404 when ffmpeg cannot make it: the page
+    then shows the output itself."""
+    srv = server()
+    with srv.lock:
+        _, path = output_path(job_id, name)
+    kind = srv.KINDS.get(path.suffix.lower())
+    if kind not in ("image", "video"):
+        raise HTTPException(404, "Only images and videos have a thumbnail")
+    thumb = path.parent / THUMBS / f"{name}.jpg"
+    with thumb_slots:
+        try:
+            if (
+                not thumb.is_file()
+                or thumb.stat().st_mtime_ns < path.stat().st_mtime_ns
+            ):
+                make_thumb(path, thumb, kind)
+        except (OSError, ValueError):
+            raise HTTPException(404, "No thumbnail for this output") from None
+    return FileResponse(thumb, media_type="image/jpeg")
+
+
 @router.delete("/{job_id}/{name}")
 def delete_output(job_id: str, name: str) -> dict[str, str]:
     srv = server()
     with srv.lock:
         job, path = output_path(job_id, name)
         path.unlink()
+        (path.parent / THUMBS / f"{name}.jpg").unlink(missing_ok=True)
         job["outputs"] = [o for o in job["outputs"] if o.get("name") != name]
         srv.save(job)
     with probed_lock:

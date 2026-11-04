@@ -65,6 +65,10 @@ Input files:
 - An image field (`"accept": "image/*"`) takes PNG, JPEG, WebP, GIF, HEIC and HEIF. The job converts a HEIC or HEIF
   file to PNG with `/usr/bin/sips` (it finds one by its content, also under another name). It uses the first frame of
   a GIF. `video.i2v`, `video.a2v` and prompt help put an image with alpha on white (`tools.image_filter`).
+  A photo with an EXIF orientation comes out upright: ffmpeg turns the frame before the filters, and `sips` keeps
+  the orientation tag in the PNG or JPEG it writes.
+  `image.klein_edit` does the same for each reference with alpha: it writes `in_<field>_<n>_white.png` into the job
+  folder (`tools.on_white`), which is never listed as an output.
 - A browser upload of another type is kept as `in_<field>_<n>.bin`; ffmpeg finds its format by its content.
 - The job's ffmpeg and ffprobe calls open each input with `-protocol_whitelist file` and a list of audio, video and
   image demuxers (`tools.GUARD`), so a playlist or concat list cannot make them read other files or the network.
@@ -192,7 +196,13 @@ running. HTTP 500 when Finder cannot show the file.
 
 `DELETE /api/library/{job}/{name}` deletes one output file and removes it from the job's `outputs`. It returns
 `{"status": "deleted"}`. HTTP 400 for an input file, HTTP 409 while the job is queued or running, HTTP 404 for any
-other name. The job stays in the job list, also when it has no outputs left.
+other name. The job stays in the job list, also when it has no outputs left. It also deletes the output's thumbnail.
+
+`GET /api/library/thumbs/{job}/{name}` returns a JPEG thumbnail of an image or video output: at most 640 pixels on its
+long side (`library.THUMB_SIDE`), the first frame at 0.1 s of a video, an image with alpha on white. ffmpeg makes it
+once and the server keeps it as `<job>/.thumbs/<name>.jpg`. It makes it again when the output file is newer. At most 2
+thumbnails are made at a time. The same rules as `reveal` apply to `{name}` (HTTP 400, 404, 409). HTTP 404 also for an
+audio or text output, and when ffmpeg cannot make the thumbnail: Jobs and Library then show the output itself.
 
 ## System
 
@@ -503,8 +513,9 @@ Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images and files 
   as it came (`file_N.<suffix>`, a download under its own name) and the text that the model got of it (`text_N.txt`,
   `text/plain`). Both have `Content-Security-Policy: sandbox`. A symlink gives HTTP 404.
 - `POST /api/chats/{id}/messages` takes `multipart/form-data`: `text`, `effort` (a thinking level: `off`, `low`,
-  `medium`, `high`, `xhigh` or `max`; see [Thinking levels](#thinking-levels)), up to 4 `images` (PNG, JPEG or
-  WebP, 20 MB each), other `files` (see [Attached files](#attached-files)), or `regenerate=true` to answer the last
+  `medium`, `high`, `xhigh` or `max`; see [Thinking levels](#thinking-levels)), up to 4 `images` (PNG, JPEG,
+  WebP, HEIC or HEIF, 20 MB each; the chat stores a HEIC or HEIF image as `img_N.jpg`, converted with
+  `/usr/bin/sips`, which keeps the EXIF orientation; mlx-vlm and the page turn the image upright by it), other `files` (see [Attached files](#attached-files)), or `regenerate=true` to answer the last
   user message again. The older field `thinking` still
   works: `true` is the level `high`, any other value is `off`; `effort` wins when both are sent. Without both, the
   chat's last level applies, or `[app] chat_effort` for a chat that has none. The chat saves the level it used as

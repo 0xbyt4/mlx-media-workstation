@@ -63,13 +63,15 @@ The model reads images itself. Of a document it reads the text, and of an audio 
 
 | You attach | Types | Max size |
 |---|---|---|
-| Images | PNG, JPEG, WebP | 20 MB |
+| Images | PNG, JPEG, WebP, HEIC, HEIF | 20 MB |
 | Text and code | TXT, Markdown, CSV, TSV, JSON, XML, YAML, logs, subtitles and source code | 50 MB |
 | Documents | PDF, Word (DOC, DOCX), RTF, OpenDocument text (ODT), HTML | 50 MB |
 | Spreadsheets | Excel (XLSX), OpenDocument (ODS) | 50 MB |
 | Audio | WAV, MP3, M4A, AAC, FLAC, OGG, AIFF | 200 MB |
 
 - A message takes up to 6 files. Up to 4 of them can be images.
+- The app converts a HEIC or HEIF photo (an iPhone photo) to JPEG with the macOS tool `sips`. The model and the chat
+  get the JPEG.
 - Each file shows as a chip with its state: "Reading...", "Transcribing...", "Read in full", "Transcribed", "Cut to
   fit" or "Failed" with the reason.
 - The model sees a part of a long file only. The chip then says what the model got, for example "the first 29,850 of
@@ -117,6 +119,8 @@ The thought shows in a block above the answer, folded. Click "Thinking" to open 
   text so far.
 - **Regenerate**: under the last answer. It answers the last message again.
 - **Copy**: under an answer, and on each code block. You can also select any text in the window and press Cmd-C.
+- **Jump to latest**: when you scroll up while the model answers, the chat stops following the answer. Press "Jump
+  to latest" over the message box to go back to the end. Scroll to the end to follow the answer again.
 
 An answer can take at most 10 minutes. At the limit it stops and shows a note. The time that the answer waits for
 memory does not count.

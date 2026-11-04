@@ -158,6 +158,11 @@
   color: var(--text-3);
   white-space: nowrap;
 }
+.v-jobs .jobs-more {
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+}
 .v-jobs .outputs {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 220px));
