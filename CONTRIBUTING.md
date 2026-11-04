@@ -37,7 +37,7 @@ Run all three checks before you open a pull request:
 .venv/bin/python -m pytest -q
 ```
 
-The GitHub workflow in `.github/workflows/ci.yml` is turned off. The checks run only on your Mac, so a pull request
+The GitHub workflow in `.github/workflows/ci.yml` runs only when the owner starts it by hand. The checks run only on your Mac, so a pull request
 must say that they passed.
 
 ## Tests

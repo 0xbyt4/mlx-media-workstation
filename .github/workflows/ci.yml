@@ -1,9 +1,8 @@
 name: CI
 
+# Manual only: start it from the Actions tab (Run workflow). Pushes and pull requests do not run it.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
