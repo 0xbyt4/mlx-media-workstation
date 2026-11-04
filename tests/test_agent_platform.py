@@ -300,6 +300,40 @@ def test_tool_call_runs_the_real_tool_under_its_own_rules(client, ws):
     )
 
 
+def test_a_tool_name_inside_the_arguments_of_tool_call_still_runs_that_tool(client, ws):
+    """Seen in the eval: {"arguments": {"query": ..., "name": "search_library"}}, with no name of its own."""
+    cid = agent_chat(client)
+    ws.jobs["a"] = {"id": "a", "status": "done", "tool": "image.klein"}
+    flat = {
+        "name": "tool_call",
+        "arguments": {"arguments": {"limit": 1, "name": "list_jobs"}},
+    }
+    evs = send(client, cid, script([flat], "RESULT"))
+    tc = next(e for e in evs if e["event"] == "tool_call")
+    assert tc["name"] == "list_jobs" and tc["arguments"] == {"limit": 1}
+    assert result_of(evs)["status"] == "ok"
+
+
+def test_tool_call_without_a_tool_name_shows_the_right_form(client):
+    cid = agent_chat(client)
+    for arguments in (
+        {"arguments": {"query": "rainy city song"}},
+        {"arguments": {"name": "no_such_tool"}},
+    ):
+        evs = send(
+            client,
+            cid,
+            script([{"name": "tool_call", "arguments": arguments}], "RESULT"),
+        )
+        res = result_of(evs)
+        assert res["status"] == "error"
+        assert (
+            'tool_call needs "name", the tool to run, next to "arguments"'
+            in res["content"]
+        )
+        assert "There is no tool ''" not in res["content"]
+
+
 def test_the_repeat_rule_sees_through_tool_call(client):
     cid = agent_chat(client)
     evs = send(

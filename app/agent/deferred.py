@@ -30,6 +30,10 @@ from app.agent.registry import Context, Tool, ToolError
 
 SEARCH, DESCRIBE, CALL = "tool_search", "tool_describe", "tool_call"
 BRIDGE = (SEARCH, DESCRIBE, CALL)
+NO_NAME = (
+    'tool_call needs "name", the tool to run, next to "arguments": '
+    '{"name": "<tool name>", "arguments": {<that tool\'s arguments>}}'
+)
 MAX_MATCHES = 8  # tools in one tool_search or tool_describe result
 OFFLINE = " Needs the network: this Mac had no network when this chat started."
 # the group of each built-in tool in the listing of deferred tools; a provider's tool sets Tool.group, or takes the

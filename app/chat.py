@@ -1722,6 +1722,14 @@ class Turn:
             if not isinstance(inner, dict):
                 call = {**call, "error": "tool_call: arguments must be a JSON object"}
                 inner = {}
+            if not name and isinstance(inner.get("name"), str):
+                # the model put the tool's name inside "arguments", next to that tool's own arguments
+                named = inner["name"].strip()
+                if self.reg.get(named) is not None and named not in deferred.BRIDGE:
+                    name = named
+                    inner = {k: v for k, v in inner.items() if k != "name"}
+            if not name and not call.get("error"):
+                call = {**call, "error": deferred.NO_NAME}
             args = inner
             call = {**call, "name": name, "arguments": args}
         tool = self.reg.get(name)
