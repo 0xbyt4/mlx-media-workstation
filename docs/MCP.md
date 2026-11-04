@@ -104,7 +104,8 @@ file in one of these forms:
   `outputs` folder, only the parts below that folder count.
 - The app checks the file as it checks an upload: at most 200 MB, the count of the field, and a media type that the
   field accepts (`image/*` takes `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.heic` and `.heif`; `audio/*` takes
-  `.wav`, `.mp3`, `.flac`, `.m4a`, `.aac`, `.ogg`, `.opus`, `.aiff` and `.aif`; `video/*` takes `.mp4` and `.mov`).
+  `.wav`, `.mp3`, `.flac`, `.m4a`, `.aac`, `.ogg`, `.opus`, `.aiff` and `.aif`; `video/*` takes `.mp4` and `.mov`),
+  or a suffix that the field names (the subtitle file of `edit.subtitle` takes `.srt` and `.vtt`).
 - The app copies the file into the job's folder. The job does not use your original file after that.
 
 ### Results
@@ -123,8 +124,9 @@ file in one of these forms:
 The app keeps all its rules for a job from MCP. The MCP server only sends the request.
 
 - One model job runs at a time. A job from MCP goes to the end of its lane, as a job from the Create screen does.
-- A tool that loads no model (`edit.mix`) runs in the light lane, next to the model job. It does not wait for the
-  model jobs, and it does not take memory from the chat model. One light job runs at a time.
+- A tool that loads no model (`edit.mix`, `edit.concat`, `edit.subtitle`) runs in the light lane, next to the model
+  job. It does not wait for the model jobs, and it does not take memory from the chat model. One light job runs at a
+  time.
 - `system_status` and `list_jobs` mark such a job with `light lane: loads no model, runs beside the model jobs`. A
   queued light job shows `place N in the light lane`. When a light job runs next to a model job, `system_status`
   shows `Running jobs:` with both.

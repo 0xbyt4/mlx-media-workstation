@@ -92,8 +92,9 @@ most 10). `transcribe_audio` takes one in `audio`. A reference has one of these 
   the field, and the name `in_<field>_<n><suffix>`. Only the suffix of the file's name is kept.
 - The agent path also checks the type: the suffix must be a media type that the field accepts (`image/*` takes
   `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.heic` and `.heif`; `audio/*` takes `.wav`, `.mp3`, `.flac`, `.m4a`,
-  `.aac`, `.ogg`, `.opus`, `.aiff` and `.aif`; `video/*` takes `.mp4` and `.mov`). A browser upload of another type is
-  kept as `.bin`; the agent's is refused.
+  `.aac`, `.ogg`, `.opus`, `.aiff` and `.aif`; `video/*` takes `.mp4` and `.mov`), or a suffix that the field names
+  (the subtitle file of `edit.subtitle` takes `.srt` and `.vtt`). A browser upload of another type is kept as `.bin`;
+  the agent's is refused.
 - The approval card lists the input files with the other fields. The risk stays R2: the job uses this Mac for
   minutes.
 - The job stores the chat that queued it (`"chat"` in `job.json`).
@@ -107,7 +108,8 @@ job that does not fit (a video, for example) waits for the lease, so it starts o
 - The wait does not wait for such a job, or for a job behind one in the queue. It returns at once, and the model
   tells the user that the job runs after the answer. The answer does not give its lease up to such a job: the model
   would then wait for the whole job before its next step.
-- A light job (`edit.mix`) needs no memory and does not wait for the model jobs, so the wait waits for it.
+- A light job (`edit.mix`, `edit.concat`, `edit.subtitle`) needs no memory and does not wait for the model jobs, so
+  the wait waits for it.
 - A wait takes at most 300 s. It ends early when the job ends or the user presses Stop.
 - The wait counts against the answer's 10 minutes. It stops 60 s before the answer's time ends, so the model can
   still answer. With less time left it does not wait and says so.

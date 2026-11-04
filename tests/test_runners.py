@@ -253,6 +253,9 @@ class FakeAsr:
 @pytest.fixture
 def asr(monkeypatch: pytest.MonkeyPatch) -> FakeAsr:
     model = FakeAsr(["Hello  there.", "", "How are\nyou?"], "English")
+    monkeypatch.syspath_prepend(
+        str(RUNNERS)
+    )  # the runner imports subtitles.py from its own folder
     stub(
         monkeypatch,
         {
@@ -314,6 +317,172 @@ def test_transcribe_with_a_given_language(
     load("transcribe").main()
     assert {c["language"] for c in asr.calls} == {"German"}
     assert (tmp_path / "transcript.txt").read_text().startswith("Language: German\n")
+
+
+class FakeAligner:
+    """Stands in for Qwen3-ForcedAligner: one item for each word without its punctuation, 0.5 s each."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[tuple[str, str]] = []
+        self.aligner_processor = SimpleNamespace(
+            tokenize_space_lang=lambda text: [
+                w for w in ("".join(ch for ch in text if ch.isalnum()),) if w
+            ]
+        )
+
+    def generate(self, part: Any, text: str, language: str) -> list[Any]:
+        self.calls.append((text, language))
+        if self.fail:
+            raise RuntimeError("out of memory")
+        units = [
+            u
+            for u in (
+                self.aligner_processor.tokenize_space_lang(w)[:1] for w in text.split()
+            )
+            if u
+        ]
+        return [
+            SimpleNamespace(text=u[0], start_time=i * 0.5, end_time=i * 0.5 + 0.4)
+            for i, u in enumerate(units)
+        ]
+
+
+@pytest.fixture
+def sub_asr(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Qwen3-ASR (and an aligner) for a job with subtitles: two parts, the chunk sizes the runner asked for."""
+    model = FakeAsr(["Hello there. How are you?", "Fine - thanks."], "English")
+    seen: dict[str, Any] = {"asr": model, "chunks": [], "loaded": []}
+
+    def chunks(audio: Any, sr: int, chunk_duration: float, **kw: Any) -> list[Any]:
+        seen["chunks"].append((chunk_duration, kw))
+        return [("a", 0.0), ("b", 4.0)]
+
+    def load_model(name: str) -> Any:
+        seen["loaded"].append(name)
+        return seen.get("aligner") if "Aligner" in name else model
+
+    monkeypatch.syspath_prepend(str(RUNNERS))
+    stub(
+        monkeypatch,
+        {
+            "mlx.core": {
+                "set_cache_limit": lambda n: None,
+                "clear_cache": lambda: None,
+            },
+            "numpy": {"array": list},
+            "mlx_audio.stt.utils": {
+                "load_model": load_model,
+                "load_audio": lambda path, sr: [0.0] * 70,  # 7 s
+            },
+            "mlx_audio.stt.models.qwen3_asr.qwen3_asr": {
+                "split_audio_into_chunks": chunks
+            },
+        },
+    )
+    return seen
+
+
+def run_transcribe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **job: Any
+) -> ModuleType:
+    spec = tmp_path / "job.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "audio": "s.wav",
+                "language": None,
+                "out": str(tmp_path),
+                "subtitles": True,
+            }
+            | job
+        )
+    )
+    monkeypatch.setattr(sys, "argv", ["transcribe.py", str(spec)])
+    runner = load("transcribe")
+    # the speech in each part: from 1 s after its start to 3 s after it (numpy is not here)
+    monkeypatch.setattr(runner, "speech_span", lambda part, sr: (1.0, 3.0))
+    runner.main()
+    return runner
+
+
+def test_transcribe_subtitles_from_short_parts(
+    sub_asr: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_transcribe(tmp_path, monkeypatch)
+    assert sub_asr["chunks"] == [(6.0, {"search_expand_sec": 2.0})]
+    assert sub_asr["loaded"] == ["mlx-community/Qwen3-ASR-0.6B-8bit"]
+    # each part's words share 1-3 s after its start by their length; a cue ends after a sentence
+    assert (tmp_path / "transcript.srt").read_text() == (
+        "1\n00:00:01,000 --> 00:00:02,000\nHello there.\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nHow are you?\n\n"
+        "3\n00:00:05,000 --> 00:00:07,000\nFine - thanks.\n\n"
+    )
+    assert (
+        (tmp_path / "transcript.vtt")
+        .read_text()
+        .startswith("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello there.\n\n")
+    )
+    notes = json.loads((tmp_path / "notes.json").read_text())
+    assert (
+        notes["transcript.srt"]
+        == notes["transcript.vtt"]
+        == ("3 subtitles, times from short parts, about +-1 s")
+    )
+    assert (tmp_path / "transcript.txt").read_text().splitlines()[2:] == [
+        "[0:00-0:04] Hello there. How are you?",
+        "[0:04-0:07] Fine - thanks.",
+    ]
+
+
+def test_transcribe_subtitles_with_the_aligner(
+    sub_asr: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sub_asr["aligner"] = FakeAligner()
+    run_transcribe(
+        tmp_path, monkeypatch, aligner="mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
+    )
+    # 30 s parts: the aligner gives the times; "-" is not aligned and goes with the word before it
+    assert sub_asr["chunks"] == [(30.0, {})]
+    assert sub_asr["aligner"].calls == [
+        ("Hello there. How are you?", "English"),
+        ("Fine - thanks.", "English"),
+    ]
+    assert (tmp_path / "transcript.srt").read_text() == (
+        "1\n00:00:00,000 --> 00:00:01,000\nHello there.\n\n"
+        "2\n00:00:01,000 --> 00:00:02,400\nHow are you?\n\n"
+        "3\n00:00:04,000 --> 00:00:05,000\nFine - thanks.\n\n"
+    )
+    notes = json.loads((tmp_path / "notes.json").read_text())
+    assert notes["transcript.srt"] == "3 subtitles, word times from the aligner"
+
+
+def test_transcribe_keeps_the_spread_times_when_the_aligner_fails(
+    sub_asr: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sub_asr["aligner"] = FakeAligner(fail=True)
+    run_transcribe(
+        tmp_path, monkeypatch, aligner="mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
+    )
+    assert "aligner: RuntimeError: out of memory" in capsys.readouterr().out
+    assert (
+        (tmp_path / "transcript.srt")
+        .read_text()
+        .startswith("1\n00:00:01,000 --> 00:00:02,000\nHello there.\n\n")
+    )
+
+
+def test_transcribe_without_subtitles_writes_no_srt(
+    sub_asr: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_transcribe(tmp_path, monkeypatch, subtitles=False, aligner="x/Aligner")
+    assert sub_asr["chunks"] == [(30.0, {})]
+    assert sub_asr["loaded"] == ["mlx-community/Qwen3-ASR-0.6B-8bit"]
+    assert not (tmp_path / "transcript.srt").exists()
+    assert list(json.loads((tmp_path / "notes.json").read_text())) == ["transcript.txt"]
 
 
 # Mix level

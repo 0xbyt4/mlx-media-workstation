@@ -445,16 +445,34 @@ function makeCheckbox(f) {
 
 // ---------- file fields: drop zone, chosen files, previews ----------
 
+// The accept list of a file field: media kinds ("video/*,image/*") and file name suffixes (".srt,.vtt").
+function acceptList(f) {
+  return (f.accept || '').split(',').map((a) => a.trim().toLowerCase()).filter(Boolean);
+}
+
+// The one media kind a field takes, or null (several kinds, or suffixes).
 function acceptKind(f) {
-  const a = f.accept || '';
-  return a.startsWith('image/') ? 'image' : a.startsWith('audio/') ? 'audio' : a.startsWith('video/') ? 'video' : null;
+  const kinds = acceptList(f).map((a) => a.split('/')[0]);
+  const kind = kinds.length === 1 ? kinds[0] : null;
+  return ['image', 'audio', 'video'].includes(kind) ? kind : null;
 }
 
 // Some browsers give a HEIC photo no type: its name says it is an image (the job converts it).
 function accepts(f, file) {
-  const kind = acceptKind(f);
+  const list = acceptList(f);
   const type = file.type || (/\.hei[cf]$/i.test(file.name) ? 'image/heic' : '');
-  return !kind || type.startsWith(kind + '/');
+  const name = file.name.toLowerCase();
+  return !list.length || list.some((a) => (a.startsWith('.') ? name.endsWith(a) : type.startsWith(a.split('/')[0] + '/')));
+}
+
+// What a field takes, for the message about a file it does not take.
+function acceptWords(f) {
+  const words = {image: 'an image', audio: 'an audio file', video: 'a video'};
+  const list = acceptList(f);
+  const suffixes = list.filter((a) => a.startsWith('.'));
+  const kinds = list.filter((a) => !a.startsWith('.')).map((a) => words[a.split('/')[0]] || 'a ' + a + ' file');
+  if (suffixes.length) kinds.push('a ' + suffixes.join(' or ') + ' file');
+  return kinds.join(' or ') || 'a file';
 }
 
 function makeFileControl(tool, f) {
@@ -519,7 +537,7 @@ function makeFileControl(tool, f) {
     let err = null;
     for (const file of list) {
       if (!accepts(f, file)) {
-        err = file.name + ' is not ' + (noun === 'image' ? 'an image' : noun === 'audio file' ? 'an audio file' : 'a video') + '.';
+        err = file.name + ' is not ' + acceptWords(f) + '.';
         continue;
       }
       err = ctl.addFile(file) || err;
@@ -570,6 +588,7 @@ function makeFileControl(tool, f) {
   ctl.validate = () => {
     const n = files.length;
     if (f.required && n === 0) return multiple ? 'Choose at least one file.' : 'Choose a file.';
+    if (multiple && f.min && n > 0 && n < f.min) return 'Choose at least ' + f.min + ' files.';
     if (multiple && f.max && n > f.max) return 'Choose at most ' + f.max + ' files.';
     return null;
   };
@@ -1112,7 +1131,7 @@ function renderSetup() {
   if (!none) return;
   s.els.setup.append(h('div', {class: 'banner banner-info'}, icon('info'),
     h('div', {class: 'banner-body'}, h('strong', null, 'No model is ready yet'),
-      h('span', null, 'Workstation does not ship the models. Pick the ones that fit this Mac: it downloads the weights and shows the commands for the runtimes. Mix needs no model and works now.'),
+      h('span', null, 'Workstation does not ship the models. Pick the ones that fit this Mac: it downloads the weights and shows the commands for the runtimes. The Edit tools (Mix, Join clips, Add Subtitles) need no model and work now.'),
       h('div', {class: 'banner-actions'}, h('button', {type: 'button', class: 'btn btn-primary btn-sm', onclick: () => s.ctx.router.go('models', {setup: '1'})}, 'Set up models')))));
 }
 

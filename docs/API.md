@@ -43,6 +43,8 @@ added to it.
 
 - `group` is one of `Image`, `Voice`, `Music`, `Video`, `Edit`, in that order in the tool list.
 - Field `type` is one of `text`, `textarea`, `number`, `select`, `checkbox`, `file` (one file), `files` (several).
+- `accept` of a file field lists media kinds (`video/*,image/*`) or file name suffixes (`.srt,.vtt`). A `files`
+  field can have `min` and `max` file counts.
 - `advanced: true` fields go in a collapsed "Advanced" section.
 - `step` may be given for numbers (for example 0.05). A `null` default means an empty input.
 - `assist: true` marks a text field that has an "Improve" button (see Prompt help below).
@@ -77,6 +79,19 @@ Input files:
   tags BT.709 primaries and transfer, the BT.601 matrix and limited range, and moves the index (moov) to the front.
   When it fails, it keeps the file as it was and the job does not fail. The `video.extend` splice writes the same tags
   (`tools.LTX_COLOURS`).
+- `edit.concat` (Join clips) takes 2-10 videos and images in its `clips` field, in upload order. It checks at submit
+  that each clip has a picture, that `still_seconds` gives one length (0.5-60 s) or one for each image, and that a
+  crossfade is at most half the shortest clip. Each image becomes `in_clips_<n>_still.png` at the video's size (on
+  white when it has alpha). The output `joined.mp4` is H.264 (CRF 16) with `tools.LTX_COLOURS` and AAC (stereo,
+  48 kHz), with the index first. With `loudness` on, a first pass measures the joined sound and the job's command
+  sets it to -14 LUFS (`loudnorm`, linear when it can), as `edit.mix` does; `app/runners/mix_level.py` then adds the
+  measured level to the note.
+- `edit.subtitle` (Add Subtitles) takes a video and a `.srt` or `.vtt` file (UTF-8, or UTF-16 with a byte order
+  mark, at most 5 MB). The server reads the subtitle file at submit (`app/runners/subtitles.py`) and refuses a cue it
+  cannot read with its block number. The plan writes a clean SRT (`in_subtitles_clean.srt`): only `<i>`, `<b>` and
+  `<u>` tags, no cue that starts after the video's end. ffmpeg reads it with the `srt` demuxer only. The output
+  `subtitled.mp4` has the video's picture and sound (copied when an MP4 can hold them, else H.264 or AAC) and a
+  `mov_text` track with the `language` tag (an ISO 639-2 code; `und` = not set).
 
 An optional `client` part with the value `mcp` marks a job from the MCP server ([MCP.md](MCP.md)). The job gets the
 checks of an agent's job (see docs/AGENT.md, "Input files": a file must have a media type that its field accepts) and
@@ -111,7 +126,7 @@ checks of an agent's job (see docs/AGENT.md, "Input files": a file must have a m
 ```
 
 - `lane` is the job's lane in the queue (see "The two lanes" below): `"light"` for a tool that loads no model
-  (`edit.mix`), else `"model"`.
+  (`edit.mix`, `edit.concat`, `edit.subtitle`), else `"model"`.
 - `position` is the place of a queued job in its lane (1 = next in that lane), 0 otherwise.
 - `progress` is set only while a job runs, otherwise `null`. It comes from the model's own output (app/progress.py).
   `stage` is a short label, `fraction` is the share of the whole job done (0-1), and `eta_s` is the seconds left.
@@ -127,7 +142,8 @@ checks of an agent's job (see docs/AGENT.md, "Input files": a file must have a m
   `[name @ 0x...]` prefixes removed). When a model fails, it is `The model process exited with code N. See the log.`
 - Only one model job runs at a time (each model needs most of the memory of a 32-48 GB Mac). One light job can run
   at the same time.
-- `kind: "text"` is a `.txt` output: the transcript of a `voice.transcribe` job.
+- `kind: "text"` is a `.txt`, `.srt` or `.vtt` output: the transcript of a `voice.transcribe` job. With
+  `subtitles` on, the job also writes `transcript.srt` and `transcript.vtt`.
 - A job that an agent chat queued has `"chat": "<chat id>"` in its `job.json`; a job from the MCP server has
   `"chat": "mcp"`. `GET /api/jobs` lists the job like any other job, without this key.
 
@@ -156,8 +172,8 @@ The queue has two lanes. Each lane has its own worker and runs its jobs one at a
 - The model lane runs every tool that loads a model. Before each job, the worker claims the memory (`llm.claim`):
   the chat model unloads when the job does not fit next to it. After the job, the worker releases the memory.
 - The light lane runs the tools that load no model: the tools whose peak (`models.tool_peak`) is 0. Today this is
-  only `edit.mix` (ffmpeg, about 0.1 GB). `voice.transcribe` loads Qwen3-ASR (about 3 GB), so it is in the model
-  lane.
+  `edit.mix`, `edit.concat` and `edit.subtitle` (ffmpeg; a mix about 0.1 GB, a join of 704x1280 clips about 1 GB).
+  `voice.transcribe` loads Qwen3-ASR (about 3 GB), so it is in the model lane.
 - A light job does not claim memory. It does not change the chat model's state or the held peak of the running model
   job. So a mix starts at once, also while a video job of several minutes runs.
 - The light lane runs one job at a time. So at most one ffmpeg job runs next to a model job, and the model job keeps

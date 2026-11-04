@@ -85,7 +85,7 @@ chat window on it. It does not start a second app, so the LLM loads only once.
 7. Press Generate, or press Cmd-Return.
 8. Open Jobs (Cmd-2) to follow the progress. The finished image shows on the job card and in the Library.
 
-The Mix tool needs no model. You can use it before you install anything.
+The Edit tools (Mix, Join clips and Add Subtitles) need no model. You can use them before you install anything.
 
 ## The sections
 

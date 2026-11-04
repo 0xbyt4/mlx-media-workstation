@@ -15,8 +15,9 @@ start.
 
 The queue has two lanes, each with its own worker. The model lane runs the jobs that load a model, one at a time, with
 the memory claim (llm.claim and llm.release). The light lane runs the jobs whose tool loads no model (models.tool_peak
-is 0: edit.mix, plain ffmpeg), one at a time beside the model lane, without a claim: such a job needs about 0.1 GB
-and a few seconds, so it does not wait for a model job of several minutes. A job's "position" is its place in its lane.
+is 0: the edit tools, plain ffmpeg), one at a time beside the model lane, without a claim: such a job needs about 1 GB
+at most and a few seconds, so it does not wait for a model job of several minutes. A job's "position" is its place in
+its lane.
 
 The queue runs in `order` (a number saved in job.json; POST /api/jobs/{id}/move changes it). Jobs from before that
 key have none and sort first, by `created`. While a job is queued or running, app/macos.py keeps the Mac awake, and a
@@ -101,6 +102,8 @@ KINDS = {
     ".mp4": "video",
     ".mov": "video",
     ".txt": "text",
+    ".srt": "text",
+    ".vtt": "text",
 }
 INPUT_NAMES = {
     "start.png",
@@ -227,7 +230,7 @@ def queue_key(job: dict[str, Any]) -> tuple[float, str, str]:
 
 
 def lane_of(job: dict[str, Any]) -> str:
-    """The job's lane: "light" when its tool loads no model (edit.mix), else "model"."""
+    """The job's lane: "light" when its tool loads no model (the edit tools), else "model"."""
     return "light" if models.tool_peak(job["tool"]) == 0.0 else "model"
 
 
@@ -929,11 +932,14 @@ class Workstation:
             f = uploads.get(name)
             if f is None:
                 raise ValueError(f"{tool['label']} has no file field {name!r}.")
-            # stricter than a browser upload: the suffix must be a media type that the field accepts
+            # stricter than a browser upload: the suffix must be a media type (or a suffix, ".srt") the field accepts
             accepts = {a.strip().split("/")[0] for a in f.get("accept", "").split(",")}
             for inp in given:
-                kind = KINDS.get(Path(inp.name).suffix.lower())
-                if kind is None or (accepts - {""} and kind not in accepts):
+                suffix = Path(inp.name).suffix.lower()
+                kind = KINDS.get(suffix)
+                if kind is None or (
+                    accepts - {""} and kind not in accepts and suffix not in accepts
+                ):
                     wanted = " or ".join(sorted(accepts - {""})) or "media"
                     raise ValueError(
                         f"{f['label']} takes {wanted} files; {inp.name} is not one."

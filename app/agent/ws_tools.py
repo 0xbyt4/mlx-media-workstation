@@ -85,7 +85,8 @@ def _field_line(f: dict[str, Any], label: bool = False) -> str:
     elif f["type"] in UPLOADS:
         bits.append(_accepts(f))
         if f["type"] == "files":
-            bits.append(f"up to {f.get('max', MAX_INPUTS)}")
+            most = f.get("max", MAX_INPUTS)
+            bits.append(f"{f['min']} to {most}" if f.get("min") else f"up to {most}")
     if f.get("required"):
         bits.append("required")
     if f.get("default") not in (None, ""):

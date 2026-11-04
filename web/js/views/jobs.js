@@ -224,7 +224,7 @@ function promptOf(job) {
   const p = job.params || {};
   const text = ['prompt', 'text', 'caption'].map((k) => p[k]).find((v) => typeof v === 'string' && v.trim());
   if (text) return readablePrompt(text);
-  return job.tool === 'edit.mix' ? 'Video and music mix' : '';
+  return {'edit.mix': 'Video and music mix', 'edit.concat': 'Joined clips', 'edit.subtitle': 'Video with subtitles'}[job.tool] || '';
 }
 
 function paramChips(p) {

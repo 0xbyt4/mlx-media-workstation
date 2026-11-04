@@ -645,11 +645,11 @@ def test_the_chat_model_reload_waits_for_an_empty_queue(
 
 
 def test_only_the_tools_without_a_model_take_the_light_lane() -> None:
-    """edit.mix is plain ffmpeg. Every other tool loads a model, voice.transcribe too (Qwen3-ASR, about 3 GB)."""
+    """The edit tools are plain ffmpeg. Every other tool loads a model, voice.transcribe too (Qwen3-ASR, about 3 GB)."""
     light = {
         t["id"] for t in tools.TOOLS if server.lane_of({"tool": t["id"]}) == "light"
     }
-    assert light == {"edit.mix"}
+    assert light == {"edit.mix", "edit.concat", "edit.subtitle"}
     assert not light & set(tools.REQUIRES)  # no model files to find
 
 

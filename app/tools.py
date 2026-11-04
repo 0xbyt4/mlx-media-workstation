@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import PATHS
+from app.runners import subtitles
 
 APP = Path(__file__).resolve().parent
 MFLUX = PATHS.mflux_bin
@@ -141,6 +142,55 @@ MIX_COPY_CODECS = (
     "vp9",
     "mpeg4",
 )  # an MP4 holds these as they are; others (ProRes) are encoded again
+# Join: the sizes it offers ("first" = the first clip's), the still images' length (s) and the longest side it takes
+CONCAT_SIZES = [
+    ("first", "Same as the first clip"),
+    *VIDEO_SIZES,
+    ("1080x1920", "9:16 HD (1080x1920)"),
+    ("1920x1080", "16:9 HD (1920x1080)"),
+]
+STILL_MIN, STILL_MAX = 0.5, 60.0
+CONCAT_MAX_SIDE = 4096
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif")
+# Add Subtitles: a sound track an MP4 holds as it is; others (PCM) are encoded as AAC
+SUB_COPY_AUDIO = ("aac", "mp3", "alac", "ac3", "eac3", "opus", "flac")
+# the subtitle track's language: ISO 639-2 codes (an MP4 stores three letters) for the languages that Transcribe knows
+SUB_LANGUAGES = [
+    ("und", "Not set"),
+    ("ara", "Arabic"),
+    ("yue", "Cantonese"),
+    ("zho", "Chinese"),
+    ("ces", "Czech"),
+    ("dan", "Danish"),
+    ("nld", "Dutch"),
+    ("eng", "English"),
+    ("fil", "Filipino"),
+    ("fin", "Finnish"),
+    ("fra", "French"),
+    ("deu", "German"),
+    ("ell", "Greek"),
+    ("hin", "Hindi"),
+    ("hun", "Hungarian"),
+    ("ind", "Indonesian"),
+    ("ita", "Italian"),
+    ("jpn", "Japanese"),
+    ("kor", "Korean"),
+    ("mkd", "Macedonian"),
+    ("msa", "Malay"),
+    ("fas", "Persian"),
+    ("pol", "Polish"),
+    ("por", "Portuguese"),
+    ("ron", "Romanian"),
+    ("rus", "Russian"),
+    ("spa", "Spanish"),
+    ("swe", "Swedish"),
+    ("tha", "Thai"),
+    ("tur", "Turkish"),
+    ("vie", "Vietnamese"),
+]
+# subtitles from Transcribe with word times: Qwen3-ForcedAligner by its Hugging Face name. None (the default) until
+# the owner adds the model to the model list: the runner then times the words from short parts of the audio
+SUB_ALIGNER: str | None = None
 
 
 def opts(pairs: list[tuple[str, str]]) -> list[dict[str, str]]:
@@ -365,6 +415,13 @@ TOOLS: list[dict[str, Any]] = [
                     [("auto", "Detect (per 30 s part)")]
                     + [(n, n) for n in ASR_LANGUAGES]
                 ),
+            ),
+            field(
+                "subtitles",
+                "Subtitles (SRT and VTT)",
+                "checkbox",
+                default=False,
+                help="Also writes transcript.srt and transcript.vtt; a line can be about 1 s early or late.",
             ),
         ],
     },
@@ -669,6 +726,108 @@ TOOLS: list[dict[str, Any]] = [
                 step=0.5,
                 advanced=True,
                 help="Skip the start of the music track.",
+            ),
+        ],
+    },
+    {
+        "id": "edit.concat",
+        "group": "Edit",
+        "label": "Join clips",
+        "description": "Joins 2-10 videos and still images into one H.264 video with cuts or crossfades: one size "
+        "and frame rate, silence for a clip without sound, sound at about -14 LUFS. Loads no model; seconds.",
+        "fields": [
+            field(
+                "clips",
+                "Videos and still images",
+                "files",
+                accept="video/*,image/*",
+                min=2,
+                max=10,
+                required=True,
+                help="Joined in upload order. The frame rate is the first video's.",
+            ),
+            field(
+                "transition",
+                "Transition",
+                "select",
+                default="cut",
+                options=opts([("cut", "Cut"), ("crossfade", "Crossfade")]),
+            ),
+            field(
+                "fade",
+                "Crossfade length (s)",
+                "number",
+                default=0.5,
+                min=0.1,
+                max=3,
+                step=0.1,
+                help="Only with Crossfade; at most half the shortest clip.",
+            ),
+            field(
+                "still_seconds",
+                "Still image length (s)",
+                "text",
+                default="3",
+                help=f"One number, or one per still in upload order (3, 2.5, 4). {STILL_MIN:g}-{STILL_MAX:g} s.",
+            ),
+            field(
+                "size",
+                "Size",
+                "select",
+                default="first",
+                options=opts(CONCAT_SIZES),
+            ),
+            field(
+                "fit",
+                "Fit",
+                "select",
+                default="pad",
+                options=opts(
+                    [
+                        ("pad", "Whole picture, black bars"),
+                        ("crop", "Fill the frame, cut the edges"),
+                    ]
+                ),
+                advanced=True,
+            ),
+            field(
+                "loudness",
+                "Even loudness",
+                "checkbox",
+                default=True,
+                advanced=True,
+                help="Off: the sound keeps its level.",
+            ),
+        ],
+    },
+    {
+        "id": "edit.subtitle",
+        "group": "Edit",
+        "label": "Add Subtitles",
+        "description": "Adds an SRT or WebVTT file to a video as a subtitle track that the player turns on or "
+        "off. Picture and sound are copied. Loads no model; seconds.",
+        "fields": [
+            field(
+                "video",
+                "Video",
+                "file",
+                accept="video/*",
+                required=True,
+            ),
+            field(
+                "subtitles",
+                "Subtitle file",
+                "file",
+                accept=".srt,.vtt",
+                required=True,
+                help="UTF-8. Transcribe writes one with Subtitles on.",
+            ),
+            field(
+                "language",
+                "Language",
+                "select",
+                default="und",
+                options=opts(SUB_LANGUAGES),
             ),
         ],
     },
@@ -1041,6 +1200,122 @@ def finish_video(path: Path) -> list[str]:
     return [sys.executable, str(APP / "runners" / "tag_video.py"), str(path)]
 
 
+@dataclass
+class Clip:
+    """One clip of a join: a video, or a still image shown for `seconds`."""
+
+    path: Path
+    still: bool
+    seconds: float
+
+
+def video_shape(path: Path) -> tuple[int, int, str]:
+    """The upright size of the first picture stream (a phone clip's rotation turned) and its frame rate as ffprobe
+    gives it ("30000/1001"; "0/0" for a still)."""
+    out = probe(
+        path,
+        "-select_streams",
+        "V:0",
+        "-show_entries",
+        "stream=width,height,avg_frame_rate:stream_side_data=rotation",
+    )
+    try:
+        w, h, rate, *rest = out.split("\n")[0].split(",")
+        turned = bool(rest and rest[0].strip() and abs(int(float(rest[0]))) % 180 == 90)
+        return (int(h), int(w), rate) if turned else (int(w), int(h), rate)
+    except ValueError:
+        raise ValueError("The file has no picture.") from None
+
+
+def frame_rate(rate: str) -> float:
+    """ffprobe's "30000/1001" as a number (0 when it is missing)."""
+    num_, _, den = rate.partition("/")
+    try:
+        return float(num_) / float(den or 1)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def still_seconds(text: str, stills: int) -> list[float]:
+    """The length of each still image: one number for all, or one for each. Raises ValueError (shown to the user)."""
+    parts = [p for p in re.split(r"[,;\s]+", text.strip()) if p]
+    try:
+        values = [float(p) for p in parts]
+    except ValueError:
+        raise ValueError(
+            "Still image length: give numbers of seconds, such as 3 or 3, 2.5, 4."
+        ) from None
+    if not values:
+        values = [3.0]
+    if len(values) == 1:
+        values = values * stills
+    if len(values) != stills:
+        raise ValueError(
+            f"Still image length: give one number, or one for each of the {stills} still images "
+            f"({len(values)} given)."
+        )
+    for v in values:
+        if not STILL_MIN <= v <= STILL_MAX:
+            raise ValueError(
+                f"Still image length: {v:g} s is out of range ({STILL_MIN:g}-{STILL_MAX:g} s)."
+            )
+    return values
+
+
+def concat_clips(params: dict[str, Any], files: dict[str, list[Path]]) -> list[Clip]:
+    """The clips of a join with their lengths, checked: 2 or more, each a readable video or image, and a crossfade at
+    most half the shortest clip. Raises ValueError (shown to the user)."""
+    paths = files.get("clips", [])
+    if len(paths) < 2:
+        raise ValueError("Add at least 2 clips (videos or still images).")
+    stills = [p.suffix.lower() in IMAGE_SUFFIXES for p in paths]
+    lengths = iter(still_seconds(str(params.get("still_seconds") or ""), sum(stills)))
+    clips = []
+    for i, (path, still) in enumerate(zip(paths, stills, strict=True), 1):
+        # a HEIC photo is read after macOS's sips has converted it (readable_image)
+        heif = path.suffix.lower() in (".heic", ".heif")
+        if not heif and stream_codec(path, "V") is None:
+            raise ValueError(f"Clip {i} has no picture, or it could not be read.")
+        if still:
+            clips.append(Clip(path, True, next(lengths)))
+            continue
+        clips.append(Clip(path, False, media_seconds(path)))
+    if str(params.get("transition")) == "crossfade":
+        fade = num(params, "fade", 0.5) or 0.5
+        short = min(clips, key=lambda c: c.seconds)
+        if fade > short.seconds / 2:
+            raise ValueError(
+                f"The crossfade ({fade:g} s) must be at most half the shortest clip (clip "
+                f"{clips.index(short) + 1} is {short.seconds:.1f} s)."
+            )
+    return clips
+
+
+def concat_size(
+    params: dict[str, Any], clips: list[Clip], folder: Path
+) -> tuple[int, int]:
+    """The joined video's size: the chosen one, or the first clip's upright size made even."""
+    if str(params.get("size") or "first") != "first":
+        return size(params)
+    first = clips[0]
+    src = readable_image(first.path, folder) if first.still else first.path
+    w, h, _ = video_shape(src)
+    if max(w, h) > CONCAT_MAX_SIDE:
+        raise ValueError(
+            f"The first clip is {w}x{h}; choose a size (at most {CONCAT_MAX_SIDE} on each side)."
+        )
+    return max(2, w - w % 2), max(2, h - h % 2)
+
+
+def subtitle_cues(path: Path) -> list[subtitles.Cue]:
+    """The cues of an uploaded subtitle file. Raises ValueError (shown to the user)."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        raise ValueError("The subtitle file could not be read.") from None
+    return subtitles.parse(subtitles.decode(data))
+
+
 def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) -> None:
     """Checks that need more than the field rules, run when a job is submitted. Raises ValueError (shown to the user)."""
     missing = [p for p in REQUIRES.get(tool, []) if not p.exists()]
@@ -1089,6 +1364,13 @@ def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) ->
             raise ValueError("The video file has no picture, or it could not be read.")
         if files.get("music") and stream_codec(files["music"][0], "a") is None:
             raise ValueError("The music file has no sound, or it could not be read.")
+    if tool == "edit.concat":
+        concat_clips(params, files)
+    if tool == "edit.subtitle":
+        if files.get("video") and stream_codec(files["video"][0], "V") is None:
+            raise ValueError("The video file has no picture, or it could not be read.")
+        if files.get("subtitles"):
+            subtitle_cues(files["subtitles"][0])
 
 
 def plan(
@@ -1244,11 +1526,22 @@ def plan(
         )
         spec = out / "transcribe_job.json"
         language = str(params.get("language") or "auto")
+        subs = str(params.get("subtitles", "false")).lower() == "true"
+        # the aligner only when it is in the Hugging Face cache: the job runs offline
+        aligner = (
+            SUB_ALIGNER
+            if subs
+            and SUB_ALIGNER
+            and (HF_HUB / f"models--{SUB_ALIGNER.replace('/', '--')}").is_dir()
+            else None
+        )
         spec.write_text(
             json.dumps(
                 {
                     "audio": str(speech),
                     "language": None if language == "auto" else language,
+                    "subtitles": subs,
+                    "aligner": aligner,
                     "out": str(out),
                 }
             )
@@ -1652,7 +1945,182 @@ def plan(
             str(out / "mixed.mp4"),
         ]
         return Plan([cmd, measure], {})
+    if tool == "edit.concat":
+        return plan_concat(params, files, out)
+    if tool == "edit.subtitle":
+        return plan_subtitle(params, files, out)
     raise ValueError(f"Unknown tool {tool!r}")
+
+
+def plan_concat(
+    params: dict[str, Any], files: dict[str, list[Path]], out: Path
+) -> Plan:
+    """edit.concat: each clip scaled (and padded or cropped) to one size and frame rate, with a stereo 48 kHz track
+    (silence for a clip without sound), then joined with cuts (concat) or crossfades (xfade and acrossfade). The
+    sound gets a two-pass loudness step as in edit.mix."""
+    clips = concat_clips(params, files)
+    w, h = concat_size(params, clips, out)
+    rates = [video_shape(c.path)[2] for c in clips if not c.still][:1]
+    rate = rates[0] if rates and 1 <= frame_rate(rates[0]) <= 120 else "24"
+    fps = frame_rate(rate)
+    crossfade = str(params.get("transition")) == "crossfade"
+    fade = (num(params, "fade", 0.5) or 0.5) if crossfade else 0.0
+    # BT.601 matrix, limited range for the video: the colours that LTX_COLOURS names (as in the LTX videos)
+    colour = ":out_color_matrix=bt601:out_range=tv"
+    if str(params.get("fit") or "pad") == "crop":
+        shape = f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos{{}},crop={w}:{h}"
+    else:
+        shape = (
+            f"scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos{{}},"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black"
+        )
+    inputs: list[str] = []
+    video: list[str] = []
+    sound: list[str] = []
+    silent: list[int] = []
+    lengths: list[float] = []
+    for i, clip in enumerate(clips):
+        # whole frames, so the crossfade offsets and the sound match the picture
+        seconds = max(1, round(clip.seconds * fps)) / fps
+        lengths.append(seconds)
+        if clip.still:
+            # the image as one frame of the video's size (an image with alpha laid on white), then looped
+            src = readable_image(clip.path, out)
+            still = out / f"in_clips_{i}_still.png"
+            prep(
+                ["ffmpeg", "-v", "error", "-y", *GUARD, "-i", str(src), *image_filter(src, shape.format("")),
+                 "-frames:v", "1", "-update", "1", str(still)]
+            )  # fmt: skip
+            inputs += [*GUARD, "-loop", "1", "-framerate", rate, "-t", f"{seconds:.6f}", "-i", str(still)]  # fmt: skip
+        else:
+            inputs += [*GUARD, "-i", str(clip.path)]
+        video.append(
+            f"[{i}:V:0]setpts=PTS-STARTPTS,fps={rate},{shape.format(colour)},setsar=1,"
+            f"format=yuv420p,tpad=stop_mode=clone:stop_duration={seconds:.6f},trim=end={seconds:.6f},"
+            f"setpts=PTS-STARTPTS[v{i}]"
+        )
+        if not clip.still and has_audio(clip.path):
+            source = f"[{i}:a:0]asetpts=PTS-STARTPTS,aresample=48000,"
+        else:
+            source = "anullsrc=r=48000:cl=stereo,"
+            silent.append(i + 1)
+        sound.append(
+            f"{source}aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,apad,"
+            f"atrim=end={seconds:.6f}[a{i}]"
+        )
+    n = len(clips)
+    if crossfade:
+        at = lengths[0]
+        for i in range(1, n):
+            at -= fade
+            v_in, a_in = ("v0", "a0") if i == 1 else (f"x{i - 1}", f"y{i - 1}")
+            v_out, a_out = ("v", "a") if i == n - 1 else (f"x{i}", f"y{i}")
+            video.append(
+                f"[{v_in}][v{i}]xfade=transition=fade:duration={fade:.3f}:offset={at:.6f}[{v_out}]"
+            )
+            sound.append(
+                f"[{a_in}][a{i}]acrossfade=d={fade:.3f}:c1=tri:c2=tri[{a_out}]"
+            )
+            at += lengths[i]
+        graph = ";".join(video + sound)
+        audio_graph = ";".join(sound)
+    else:
+        pairs = "".join(f"[v{i}][a{i}]" for i in range(n))
+        graph = ";".join([*video, *sound, f"{pairs}concat=n={n}:v=1:a=1[v][a]"])
+        sounds = "".join(f"[a{i}]" for i in range(n))
+        audio_graph = ";".join([*sound, f"{sounds}concat=n={n}:v=0:a=1[a]"])
+    total = sum(lengths) - fade * (n - 1)
+    note = f"{n} clips, " + (f"crossfades of {fade:g} s" if crossfade else "cuts")
+    note += f", {w}x{h} at {fps:.3g} fps, {total:.1f} s"
+    if silent:
+        note += f"; silence for clip {', '.join(map(str, silent))}"
+    finish = "[a]anull[out]"
+    measure = []
+    if len(silent) == n:
+        note += "; no sound"
+    elif str(params.get("loudness", "true")).lower() == "true":
+        # two-pass loudness: the first pass measures the joined sound now (its own graph, without the picture)
+        stats = loudnorm_stats(
+            ["ffmpeg", "-hide_banner", "-nostats", *inputs, "-filter_complex",
+             f"{audio_graph};[a]{MIX_LOUDNORM}:print_format=json[out]", "-map", "[out]", "-f", "null", "-"]
+        )  # fmt: skip
+        try:
+            level = float(stats["input_i"])
+        except (KeyError, ValueError):
+            level = float("-inf")
+        if level <= -70:
+            note += "; the sound is silent: left as it is"
+        elif -14 - level > MIX_MAX_GAIN:
+            note += f"; the sound is very quiet ({level:.1f} LUFS): left as it is"
+        else:
+            finish = (
+                f"[a]{MIX_LOUDNORM}:measured_I={stats['input_i']}:measured_TP={stats['input_tp']}:"
+                f"measured_LRA={stats['input_lra']}:measured_thresh={stats['input_thresh']}:"
+                f"offset={stats['target_offset']}:linear=true,aresample=48000[out]"
+            )
+            measure = [[sys.executable, str(APP / "runners" / "mix_level.py"), str(out / "joined.mp4")]]  # fmt: skip
+    cmd = [
+        "ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", f"{graph};{finish}",
+        "-map", "[v]", "-map", "[out]", "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p",
+        "-bsf:v", LTX_COLOURS, "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-t", f"{total:.6f}",
+        "-movflags", "+faststart", str(out / "joined.mp4"),
+    ]  # fmt: skip
+    (out / "notes.json").write_text(json.dumps({"joined.mp4": note}))
+    return Plan([cmd, *measure], {})
+
+
+def plan_subtitle(
+    params: dict[str, Any], files: dict[str, list[Path]], out: Path
+) -> Plan:
+    """edit.subtitle: the video's picture and sound copied (encoded again only when an MP4 cannot hold them) with
+    the subtitle file as a mov_text track. The file is read here and written again as a clean SRT (UTF-8, tags other
+    than <i>, <b> and <u> removed, cues past the video's end left out)."""
+    video, sub = files.get("video", [None])[0], files.get("subtitles", [None])[0]
+    if video is None or sub is None:
+        raise ValueError("Add a video and a subtitle file.")
+    length = media_seconds(video)
+    cues = subtitle_cues(sub)
+    kept = [c for c in cues if c.start < length]
+    if not kept:
+        raise ValueError(
+            f"Every subtitle starts after the video ends ({length:.1f} s). Check that the file is for this video."
+        )
+    for c in kept:
+        c.end = min(c.end, length)
+    clean = out / "in_subtitles_clean.srt"
+    clean.write_text(subtitles.srt(kept))
+    codec = stream_codec(video, "V")
+    if codec in MIX_COPY_CODECS:
+        picture = ["-c:v", "copy", *(["-tag:v", "hvc1"] if codec == "hevc" else [])]
+    else:
+        picture = ["-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p"]
+    sound = stream_codec(video, "a")
+    audio = (
+        []
+        if sound is None
+        else ["-c:a", "copy"]
+        if sound in SUB_COPY_AUDIO
+        else ["-c:a", "aac", "-b:a", "192k"]
+    )
+    language = str(params.get("language") or "und")
+    if language not in {v for v, _ in SUB_LANGUAGES}:
+        raise ValueError(f"Unknown subtitle language {language!r}.")
+    cmd = [
+        "ffmpeg", "-v", "error", "-y", *GUARD, "-i", str(video),
+        "-protocol_whitelist", "file", "-format_whitelist", "srt", "-f", "srt", "-i", str(clean),
+        "-map", "0:V:0", "-map", "0:a?", "-map", "1:0", *picture, *audio,
+        "-c:s", "mov_text", "-metadata:s:s:0", f"language={language}",
+        "-movflags", "+faststart", str(out / "subtitled.mp4"),
+    ]  # fmt: skip
+    note = f"{len(kept)} subtitles"
+    if language != "und":
+        note += f", language {dict(SUB_LANGUAGES)[language]}"
+    if len(kept) < len(cues):
+        note += f"; {len(cues) - len(kept)} after the video's end left out"
+    if codec not in MIX_COPY_CODECS:
+        note += f"; picture ({codec}) encoded again as H.264"
+    (out / "notes.json").write_text(json.dumps({"subtitled.mp4": note}))
+    return Plan([cmd], {})
 
 
 if __name__ == "__main__":
