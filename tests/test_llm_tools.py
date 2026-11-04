@@ -499,6 +499,7 @@ def test_a_background_load_yields_to_a_job_that_holds_the_memory(monkeypatch):
     monkeypatch.setattr(llm, "job_peak", 35.0)  # a big job claimed the memory first
     assert llm.start(background=True) is None
     assert llm.worker is None and llm.status()["state"] == "off"
+    assert llm.reload_after_job  # the reload waits for the end of that job
 
 
 def test_a_job_that_claims_during_a_background_start_gets_the_memory(monkeypatch):
@@ -517,6 +518,7 @@ def test_a_job_that_claims_during_a_background_start_gets_the_memory(monkeypatch
     assert llm.start(background=True) is None
     assert llm.worker is None
     assert wait_for(lambda: not made[0].alive())  # the new process was stopped
+    assert llm.reload_after_job
 
 
 def test_a_background_load_does_not_count_as_use(monkeypatch):

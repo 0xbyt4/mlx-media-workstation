@@ -326,11 +326,14 @@ def start(
     during the load: the load goes on in the worker, so the next request finds the model ready. background: a load
     that no request asked for (preload); it starts no worker while a media job holds memory that the model does not
     fit next to, and it does not count as use for the idle time."""
-    global worker, last_used
+    global worker, last_used, reload_after_job
     with start_lock:
         with lock:
             w = worker
-            if background and (w is not None or (job_peak and not fits_with(job_peak))):
+            if background and job_peak and not fits_with(job_peak):
+                reload_after_job = not closed  # try again after that job
+                return None
+            if background and w is not None:
                 return None
         if w is None or not w.alive():
             check_installed()
@@ -344,6 +347,8 @@ def start(
             with lock:
                 # a media job that claimed the memory during this background start: give it the memory
                 blocked = background and bool(job_peak) and not fits_with(job_peak)
+                if blocked and not closed:
+                    reload_after_job = True  # try again after that job
                 if not closed and not blocked:
                     worker = w
                     if not background:
