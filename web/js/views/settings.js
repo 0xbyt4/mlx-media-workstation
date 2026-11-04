@@ -5,6 +5,7 @@
 // job switches and the paths Chat does not use.
 
 import {h, icon, toast, confirm, errorBox, getTheme, setTheme, onTheme} from '../ui.js';
+import {memorySection} from './settings/memory.js';
 
 const THEMES = [['system', 'System', 'monitor'], ['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']];
 const README = [
@@ -122,6 +123,7 @@ function build() {
     localLlm(),
     jobs(),
     agent(),
+    memorySection(s.ctx),
     modelPaths(),
     about(),
   ].filter(Boolean));

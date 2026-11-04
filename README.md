@@ -158,6 +158,7 @@ The [user guide](docs/guide/README.md) explains each screen step by step:
 - [Jobs and Library](docs/guide/jobs-and-library.md)
 - [Chat](docs/guide/chat.md)
 - [Agent mode](docs/guide/agent-mode.md)
+- [Chat memory](docs/guide/memory.md)
 - [Models](docs/guide/models.md)
 - [Settings](docs/guide/settings.md)
 - [Troubleshooting](docs/guide/troubleshooting.md)
@@ -224,6 +225,9 @@ In Agent and Workstation mode, a call that sends data off the Mac, queues a job,
 approval card first. A Workstation chat has only the Workstation tools: no web, file, Python or shell tools. The Tools
 menu of the chat turns tools on or off and, in Agent mode, grants the folder. Python and shell are off until you turn
 them on. [docs/AGENT.md](docs/AGENT.md) has each tool, its risk level and the limits of the sandbox.
+
+Agent and Workstation chats can keep short facts across chats (memory) and search your earlier chats. A memory write
+asks you first. See [Chat memory](docs/guide/memory.md).
 
 ### Chat only
 

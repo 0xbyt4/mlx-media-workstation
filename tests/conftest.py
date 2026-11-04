@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config, llm, macos, server, tools
+from app import chat_search, config, llm, macos, memory, server, tools
 
 MODELS = Path("/models")
 
@@ -39,6 +39,15 @@ def llm_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "llm-cache.safetensors"
     monkeypatch.setattr(llm, "CACHE", path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def memory_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The memory stores, their settings and the chat search index in the test's own folder (app/memory.py)."""
+    folder = tmp_path / "memory"
+    monkeypatch.setattr(memory, "FOLDER", folder)
+    monkeypatch.setattr(chat_search, "DB", folder / "chats.sqlite3")
+    return folder
 
 
 @pytest.fixture(autouse=True)

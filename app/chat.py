@@ -38,7 +38,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from app import attachments, config, effort, llm, tools
+from app import attachments, config, effort, llm, memory, tools
 from app.agent import (
     Action,
     Context,
@@ -1533,6 +1533,8 @@ def agent_answer(chat_id: str, level: str, run: Live) -> None:
         # one lease for every step: a queued media job does not unload the model between them
         with llm.session(lambda: run.stop, TURN_SECONDS):
             reply = turn.answer()
+        # an answer that says "saved to memory" while no memory call ran gets a note
+        reply = memory.check_claim(chat_id, reply, turn.new)
         # the last step's model stats (speed, tokens), under the totals of the answer
         reply["stats"] = {**reply.get("stats", {}), **turn.stats()}
         ev = {

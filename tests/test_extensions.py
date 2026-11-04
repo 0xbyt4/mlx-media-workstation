@@ -83,5 +83,6 @@ def test_a_section_over_its_budget_is_left_out_with_its_tools() -> None:
     assert extensions.tokens("x" * 300) == 100
 
 
-def test_the_app_loads_no_providers_yet() -> None:
-    assert providers.load() == []
+def test_the_app_s_providers_have_unique_names() -> None:
+    names = [p.name for p in providers.load()]
+    assert len(names) == len(set(names))

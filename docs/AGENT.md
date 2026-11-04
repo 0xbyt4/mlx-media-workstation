@@ -44,6 +44,8 @@ the tool's result, so it can answer the user.
 | `fetch_url` | R2 | Reads one public web page as text, in parts of 10,000 characters. Sends the URL off this Mac. |
 | `run_python` | R3 | Runs Python code in the sandbox. Present only when the sandbox works on this Mac. |
 | `run_shell` | R3 | Runs a shell command (zsh) in the sandbox. Present only when the sandbox works on this Mac. |
+| `memory` | R3, or R0 when "Ask before saving" is off | Adds, replaces or removes one entry of the memory stores. See [Memory and chat search](#memory-and-chat-search). |
+| `search_chats` | R0 | Finds words in the earlier chats and returns each chat's title, date and short snippets. Its result is untrusted. |
 
 The Workstation tools exist only in the full profile. The chat profile has no Workstation, so its registry has none
 of them.
@@ -245,13 +247,100 @@ on its long side into the chat's folder (`view_<hex>.png`), where the sandbox ca
 the copy's name. The next model requests get it as an image part of that tool message. Only the newest 2 tool images
 go to the model, so the context stays small.
 
+## Memory and chat search
+
+The memory provider (`app/memory.py`, loaded by `app/agent/providers.py`) gives a chat two tools and one prompt
+section. It follows the design of Hermes Agent: two small stores with a character cap, a snapshot that does not
+change during a chat, and a search over past chats with SQLite FTS5. Nothing runs in the background.
+
+### The stores
+
+The stores are in `outputs/memory/memory.json`. Each store is a list of short entries.
+
+| Store | Holds | Cap |
+|---|---|---|
+| `user` | Who the user is and what they prefer. | 800 characters |
+| `notes` | Facts about the setup and lessons from earlier chats. | 1,250 characters |
+
+An entry counts its length plus 3 characters (its `- ` mark and its line break). An entry has at most 300
+characters. With these caps the section of two full stores stays under its budget of 800 tokens (characters / 3).
+
+### The memory section
+
+The section shows both stores, each with a usage header such as `Notes (store notes, 61% full: 763/1,250
+characters)`. A chat takes it at its first turn and saves it in its folder (`outputs/chats/<id>/memory.txt`). Each
+later turn uses the saved text, also after a restart. So the prompt's start does not change and the prompt cache
+holds. A change made during a chat shows from the next chat. The tool result of a write says so.
+
+A chat has the section and the `memory` tool (a core tool) when all of these are true:
+
+- Settings > Chat memory has "Memory" on.
+- The chat is not temporary (`"temporary": true` in `chat.json`).
+- The chat is an Agent or a Workstation chat, or a General chat with "Memory in General chats" on (off by default).
+
+### The `memory` tool
+
+Arguments: `action` (`add`, `replace` or `remove`), `store` (`user` or `notes`), `text` (the new entry, for `add`
+and `replace`) and `old` (a part of the entry that only that entry has, for `replace` and `remove`).
+
+1. The tool checks the change before it asks. A refused change goes back to the model without an approval card.
+2. With "Ask before saving" on (the default), the tool is R3: each call shows an approval card. The card shows the
+   change as `+` and `-` lines and the store's usage before and after it.
+3. The write happens only when the store is still the one the card showed. Else the call fails and nothing is saved.
+4. With "Ask before saving" off, the tool is R0 and runs without a card. In a tainted chat it refuses the write: a web
+   page or a file could tell the model what to save. A chat keeps the risk level of its first turn. When a chat
+   started with "Ask before saving" off and the setting is on now, a write without a card is refused.
+
+The tool refuses these changes with a message that the model can act on:
+
+- A full store. The message gives the characters that are missing and the entries, so the model can merge or remove
+  entries first. Nothing is compacted without a call.
+- An exact duplicate, an empty entry, an entry over 300 characters, or an `old` part that no entry or more than one
+  entry has.
+- Hidden or control characters (the same set as the approval card escapes).
+- Text that looks like a secret: API keys (OpenAI, Anthropic, GitHub, GitLab, AWS, Google, Slack, Hugging Face),
+  private keys, JSON web tokens, 64-digit hex keys, bearer tokens, `password: ...` and similar, a URL with a password
+  or with a `token=` or `key=` query, and long random strings with digits, small and capital letters.
+- Text that reads like orders to a model or holds chat markup: "ignore the previous instructions", "system prompt",
+  "you are now", "new instructions", tags such as `<tool_call>` or `</system>`, "do not tell the user", a request to
+  send data to a URL, `curl` or `wget`, and some Turkish forms of these.
+
+The checks match patterns. They do not catch every secret or every injection. The approval card is the main
+control.
+
+### "Saved" without a call
+
+A model of this size can say "I saved that to memory" without a `memory` call. After an answer, the chat loop calls
+`memory.check_claim()`. When the answer's text says that it saved or will remember something (English and Turkish
+phrases) and no `memory` call returned `ok` in the answer, the answer gets a note: "This answer says that it saved
+something to memory, but no memory call ran. Nothing was saved." The model is not asked again.
+
+### `search_chats`
+
+`search_chats` is a deferred tool: the model finds it with the tool search. Arguments: `query` (1 to 200
+characters) and `limit` (1 to 10 chats, 5 by default).
+
+- The index is `outputs/memory/chats.sqlite3` (`app/chat_search.py`, the `sqlite3` module of Python with FTS5). It
+  holds each chat's title and the text of its user and assistant messages. It does not hold the reasoning, the tool
+  results or the app's notes.
+- Before each search the index reads the chats whose `chat.json` changed (size and modification time) and drops the
+  deleted chats. Settings > Chat memory can build it again.
+- A temporary chat is never indexed. The search never returns the chat it runs in.
+- Case and accents do not matter. The index and the query fold the same way: lower case, accents removed, and the
+  Turkish `İ`, `I` and `ı` read as `i`. So `istanbul` finds `İSTANBUL'da`, and `sikayet` finds `şikâyet`.
+- Each query word also matches the words that start with it (`kedi` finds `kedimi`). All words must match. When no
+  chat has them all, any word may match.
+- The result gives each chat's title, date and at most 2 snippets of about 160 characters. It says that the text is
+  data from past chats. The result taints the chat: past chats can quote web pages and files.
+- When this Python's SQLite has no FTS5, the tool is not offered and Settings shows "Not available".
+
 ## Taint
 
 Taint is a flag per chat. It is stored in `chat.json` with the grants.
 
 - These tools set it when they run: `search_library`, `transcribe_audio`, `list_files`, `read_file`,
-  `search_files`, `copy_to_workspace`, `media_info`, `view_image`, `web_search`, `fetch_url`, `run_python` and
-  `run_shell`. Their results can hold text from outside the app (an image can hold written text too).
+  `search_files`, `copy_to_workspace`, `media_info`, `view_image`, `web_search`, `fetch_url`, `run_python`,
+  `run_shell` and `search_chats`. Their results can hold text from outside the app (an image can hold written text too).
 - A message with an attached file that is not an image (a document, a text file, an audio file) sets it when the
   message is saved, before the model reads the file. This applies to agent chats and to workstation chats, also in the chat
   profile: the same chat can open later in the full profile, with tools. The file's text (or the audio's transcript) comes from outside
@@ -514,6 +603,8 @@ registry per media flag, so at most one per profile: with the media tools (the f
    and sends `tool_choice: "none"`, so the worker bans the call marker token. The answer then ends with the model's
    summary and the step-limit note. The saved final message keeps that user message as `nudge`, so the next turn's
    prompt still starts with the text that the cache holds.
+10. After the answer ends, `memory.check_claim()` adds a note when the answer says that it saved something to
+    memory and no `memory` call ran (see ["Saved" without a call](#saved-without-a-call)).
 
 The worker bans emoji in every request with a logits processor (`ByteBan` and `NoEmoji` in `app/llm_worker.py`).
 The prompt rule alone did not stop them, also not in code. The banned set is built once from the tokenizer's

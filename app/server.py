@@ -56,6 +56,7 @@ from app import (
     library,
     llm,
     macos,
+    memory_api,
     models,
     models_api,
     progress,
@@ -1336,4 +1337,5 @@ app.include_router(models_api.router)
 app.include_router(chat.router)
 app.include_router(settings_api.router)
 app.include_router(library.router)
+app.include_router(memory_api.router)
 app.mount("/", StaticFiles(directory=WEB, html=True), name="web")
