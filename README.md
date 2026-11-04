@@ -196,6 +196,10 @@ The sidebar has six sections. Cmd-1 to Cmd-6 open them.
 |---|---|
 | ![An Agent chat with an approval card](docs/images/agent.png) | ![The Settings screen](docs/images/settings.png) |
 
+| A whole story in the Library | Mix result |
+|---|---|
+| ![The Library with the images, videos, voice takes, music and transcripts of one Workstation chat](docs/images/library-story.png) | ![The Jobs screen with a finished Mix job and its measured loudness note](docs/images/mix.png) |
+
 ### Chat and agent mode
 
 You can attach up to 6 files to a message: up to 4 images (PNG, JPEG, WebP), text and code files, PDF, Word, RTF,
@@ -213,6 +217,8 @@ A new chat has one of three modes. The mode is fixed after the first message.
 - **General**: a plain assistant.
 - **Agent**: the model can call tools. It can search the web, read web pages, read and write files in a folder that
   you grant, look at images, run Python and shell commands in a sandbox, search the Library and queue jobs.
+
+![A Workstation chat that queued an Image to Video job, with the finished video in the chat](docs/images/chat-jobs.png)
 
 In Agent and Workstation mode, a call that sends data off the Mac, queues a job, writes a file or runs code shows an
 approval card first. A Workstation chat has only the Workstation tools: no web, file, Python or shell tools. The Tools
@@ -596,7 +602,7 @@ uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev
 
 `.github/workflows/ci.yml` has the same checks for GitHub Actions on macOS. The workflow is off for now, so run the
 checks on your Mac before you send a change. To send a change, read
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](CONTRIBUTING.md). Everyone in the project follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 `scripts/make_icon.py` draws the app icons (`assets/AppIcon.icns` and `assets/icon.png`) from the colours in
 `web/css/tokens.css`.
