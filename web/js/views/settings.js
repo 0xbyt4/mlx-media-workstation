@@ -115,8 +115,16 @@ function section(id, title, intro, ...body) {
 
 function build() {
   s.appCtl = {};
-  s.body.replaceChildren(...[profile(), chatOnly() ? null : promptHelp(), localLlm(), jobs(), agent(), modelPaths(),
-    about()].filter(Boolean));
+  // one section a line: wave 8 modules (Skills, MCP servers, Memory) each add their own line
+  s.body.replaceChildren(...[
+    profile(),
+    chatOnly() ? null : promptHelp(),
+    localLlm(),
+    jobs(),
+    agent(),
+    modelPaths(),
+    about(),
+  ].filter(Boolean));
   renderNotice();
   renderLlm();
 }
