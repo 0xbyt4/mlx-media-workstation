@@ -413,7 +413,7 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
         in prompt
     )
     assert (
-        "A media job's outputs stay in the Library: no tool copies them into the folder."
+        "A file that a media job made stays in the Library: give the user its Library reference."
         in prompt
     )
     assert "You reach the internet only through" in prompt

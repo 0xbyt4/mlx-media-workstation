@@ -420,8 +420,8 @@ def agent_prompt(lay: "Layout") -> str:
     )
     if "create_job" in names:
         files += (
-            " A media job's outputs stay in the Library: no tool copies them into the folder. Give the user their "
-            "Library references."
+            " Save a text result, such as a transcript, with write_file. A file that a media job made stays in the "
+            "Library: give the user its Library reference."
         )
     off_line = (
         f"\n- These tools are off in this chat: {', '.join(lay.off)}. Never call them. When the task needs one, tell "
