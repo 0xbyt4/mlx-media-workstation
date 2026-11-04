@@ -22,6 +22,7 @@ The design is in `docs/DESIGN.md` and `docs/design/mock.html`. The endpoints are
 | `js/router.js` | Hash routes, the sections of each profile and the Cmd-1 to Cmd-6 shortcuts. |
 | `js/handoff.js` | "Send to", "Use in" and "Use these settings" between views. |
 | `js/views/<view>.js` | One view: `create`, `jobs`, `chat`, `library`, `models`, `settings`. |
+| `js/views/settings/<name>.js` | One section of the Settings view, in its own module: `memory` (Chat memory). |
 
 ## Ownership rules
 

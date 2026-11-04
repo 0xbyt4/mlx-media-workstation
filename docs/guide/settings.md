@@ -16,6 +16,7 @@ Some changes apply at once. Others apply after a restart, because the app reads 
 | Local LLM | `[app] chat_effort` | At once |
 | Jobs | `[app] notify`, `keep_awake`, `llm_idle_minutes` | At once |
 | Agent | `[agent]` | After a restart |
+| Chat memory | none (`outputs/memory/settings.json`) | At once |
 | Model paths | `[paths]` | After a restart |
 
 If you edit `config.toml` by hand, restart the app. When the file has an error, Settings shows "config.toml cannot
@@ -95,6 +96,19 @@ Press Save, then restart the app.
 
 The path must be absolute ("~" is allowed) and the file must exist. No other user may be able to change the file or
 the folders above it.
+
+## Chat memory
+
+The memory switches, the entries of the two memory stores and the chat search index. See
+[Chat memory](memory.md).
+
+| Setting | Default | What it does |
+|---|---|---|
+| Memory | on | Agent and Workstation chats see the saved entries and can save new ones. Off: no chat sees or changes the memory, and chat search is off. |
+| Ask before saving | on | Each change the model wants to make shows on an approval card first. |
+| Memory in General chats | off | General chats see the memory too. |
+
+A change applies at once. A chat keeps the memory it started with.
 
 ## Model paths
 

@@ -85,3 +85,8 @@ def test_a_section_over_its_budget_is_left_out_with_its_tools() -> None:
 
 def test_the_app_providers_load_without_problems() -> None:
     assert collect(providers.load(), {}).problems == []
+
+
+def test_the_app_s_providers_have_unique_names() -> None:
+    names = [p.name for p in providers.load()]
+    assert len(names) == len(set(names))

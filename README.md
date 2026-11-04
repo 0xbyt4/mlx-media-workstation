@@ -159,6 +159,7 @@ The [user guide](docs/guide/README.md) explains each screen step by step:
 - [Jobs and Library](docs/guide/jobs-and-library.md)
 - [Chat](docs/guide/chat.md)
 - [Agent mode](docs/guide/agent-mode.md)
+- [Chat memory](docs/guide/memory.md)
 - [Models](docs/guide/models.md)
 - [Settings](docs/guide/settings.md)
 - [Troubleshooting](docs/guide/troubleshooting.md)
@@ -229,6 +230,8 @@ them on. [docs/AGENT.md](docs/AGENT.md) has each tool, its risk level and the li
 A chat fixes its instructions and the tools it shows the model at the first message, so the model does not read the
 whole chat again before each answer. The model sees a few core tools in full and looks up the others by name. A later
 change in the Tools menu reaches the model as a short note.
+Agent and Workstation chats can keep short facts across chats (memory) and search your earlier chats. A memory write
+asks you first. See [Chat memory](docs/guide/memory.md).
 
 ### Chat only
 

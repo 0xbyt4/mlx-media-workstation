@@ -151,6 +151,14 @@ def reg(monkeypatch, ws, box, shell, net):
 
 
 @pytest.fixture(autouse=True)
+def no_providers(monkeypatch):
+    """These tests check the mode's own tools: the providers (host tools, memory, MCP, skills) have their own tests,
+    and test_agent_platform.py checks the app's providers in a chat."""
+    monkeypatch.setattr(chat.providers, "load", list)
+    monkeypatch.setattr(chat, "provided", {})
+
+
+@pytest.fixture(autouse=True)
 def online(monkeypatch):
     """Every chat starts online unless a test says otherwise: the real check reads this Mac's routing table."""
     monkeypatch.setattr(chat, "online_check", lambda: True)

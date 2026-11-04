@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from app import chat, llm_worker
+from app import chat, chat_search, llm_worker
 from app.agent import (
     Context,
     Limits,
@@ -103,6 +103,11 @@ class FakeProvider:
 
     def section(self, chat):
         return self._section
+
+
+real_load = (
+    chat.providers.load
+)  # the app's own providers, before the fixture below replaces them
 
 
 @pytest.fixture(autouse=True)
@@ -385,6 +390,25 @@ def test_the_tools_menu_says_where_each_tool_is_loaded(client):
 
 
 # ---------- providers ----------
+
+
+def test_the_app_providers_reach_an_agent_chat_but_host_tools_skip_a_workstation_chat(
+    client, monkeypatch
+):
+    monkeypatch.setattr(chat.providers, "load", real_load)
+    cid = agent_chat(client)
+    send(client, cid, "hi")
+    p = saved(client, cid)["prompt"]
+    assert p["problems"] == []
+    assert "memory" in p["tools"]  # a core tool of the memory provider
+    if chat_search.available():  # this Python's SQLite has FTS5
+        assert "search_chats" in p["deferred"]
+    assert "speak" in p["deferred"] and "tool_search" in p["tools"]
+    assert "Memory" in p["tokens"]["sections"] and "\n\nMemory:\n" in p["system"]
+    ws_chat = client.post("/api/chats", json={"mode": "workstation"}).json()["id"]
+    send(client, ws_chat, "hi")
+    w = saved(client, ws_chat)["prompt"]
+    assert not {"speak", "spotlight_search", "run_shortcut"} & set(w["providers"])
 
 
 def test_providers_are_asked_once_and_frozen_per_chat(client, monkeypatch, tmp_path):

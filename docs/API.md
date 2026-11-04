@@ -877,7 +877,9 @@ Events. The message stream of an agent chat has these events besides `waiting`, 
 - `{"event": "plan", "id", "items": [{"step", "status"}]}` after an `update_plan` call that ran, before its
   `tool_result`. `status` is `pending`, `in_progress` or `done`. Each event has the whole plan: the page replaces the
   checklist of the answer and shows no card for such a call.
-- `done` as above, plus `note` (why the answer ended early, or `""`). `finish` can also be `steps` (the step limit:
+- `done` as above, plus `note` (why the answer ended early, or `""`). When the answer says that it saved something
+  to memory and no `memory` call returned `ok` in the answer, `note` gets the text of `memory.NOTE_CLAIM` (see
+  [Memory](#memory)). `finish` can also be `steps` (the step limit:
   `content` is then the model's summary from the last step, which could not call tools), `repeat` (the same call a
   third time, or a step whose text repeated one block again and again) or `timeout` (the time limit). `stats` adds `steps`, `tool_calls` and `generation_tokens` over all
   steps; `seconds` is the whole answer.
@@ -1034,6 +1036,48 @@ name programs that the app runs.
   when `config.toml` is not valid TOML or sets the key in a form this endpoint cannot edit (for example an inline
   table); the file is then not changed.
 - Settings hold no secrets.
+
+### Memory
+
+Settings > Chat memory uses these endpoints (`app/memory_api.py`). [AGENT.md](AGENT.md#memory-and-chat-search) has
+the rules of the stores and of `search_chats`. Each change needs the `Origin` header of the app's own page (HTTP 403
+without it): the memory goes into the system prompt of later chats.
+
+`GET /api/memory`:
+
+```json
+{
+  "settings": {"enabled": true, "ask": true, "general": false},
+  "version": "3f2a9c0d1e4b5a67",
+  "max_entry": 300,
+  "stores": [
+    {"id": "user", "label": "User profile", "entries": ["Prefers short answers"], "used": 24, "cap": 800},
+    {"id": "notes", "label": "Notes", "entries": [], "used": 0, "cap": 1250}
+  ],
+  "search": {"available": true, "chats": 12, "messages": 140}
+}
+```
+
+- `settings`: `enabled` (memory and chat search on), `ask` (each memory write shows an approval card) and `general`
+  (General chats have memory too). They are in `outputs/memory/settings.json` and apply at once.
+- `version` is a hash of both stores. A store write sends it back.
+- `used` counts each entry's length plus 3 (its line mark and line break). `cap` is the store's limit.
+- `search`: `available` is false when the SQLite of this Python has no FTS5. `chats` and `messages` count the index
+  after it was brought up to date. `messages` includes one row for each chat's title.
+
+`PUT /api/memory/settings` takes some of `{"enabled", "ask", "general"}` (`true` or `false`) and returns the same
+object as `GET /api/memory`.
+
+`PUT /api/memory/stores/{store}` takes `{"entries": ["..."], "version": "..."}` and replaces the store's entries
+(`store` is `user` or `notes`). Each entry is checked as a `memory` call checks it. An exact duplicate is dropped.
+It returns the same object as `GET /api/memory`.
+
+- HTTP 400: an entry is refused (the message starts with "Entry N:"), or the entries are over the store's cap.
+- HTTP 404: an unknown store.
+- HTTP 409: the stores changed after the page read them (the agent saved an entry meanwhile). Read them again.
+
+`POST /api/memory/clear` deletes every entry of both stores. `POST /api/memory/index` deletes the chat search index
+and builds it again from `outputs/chats` (HTTP 503 without FTS5). Both return the same object as `GET /api/memory`.
 
 ## UI behaviour
 

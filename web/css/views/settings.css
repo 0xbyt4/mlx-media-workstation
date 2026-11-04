@@ -247,3 +247,43 @@
 .v-settings .input[aria-invalid="true"] {
   border-color: var(--err);
 }
+
+/* chat memory (views/settings/memory.js) */
+.v-settings .mem-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.v-settings .mem-list {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0;
+  padding: 0;
+  list-style: none;
+}
+.v-settings .mem-entry {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0 4px 10px;
+  border-left: 2px solid var(--border);
+  font-size: var(--fs-sm);
+}
+.v-settings .mem-entry.is-edit {
+  flex-wrap: wrap;
+}
+.v-settings .mem-entry.is-edit .input {
+  flex: 1 1 240px;
+}
+.v-settings .mem-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.v-settings .mem-btns {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}

@@ -98,7 +98,8 @@ def ok(stdout: bytes = b"") -> Ran:
 
 
 def test_the_provider_gives_the_host_tools_all_deferred_and_no_section() -> None:
-    got = collect(providers.load(), {})
+    assert any(isinstance(p, host_tools.HostTools) for p in providers.load())
+    got = collect([host_tools.HostTools()], {})
     programs = {
         "spotlight_search": MDFIND,
         "speak": SAY,

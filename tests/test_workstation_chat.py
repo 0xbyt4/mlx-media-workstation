@@ -77,6 +77,14 @@ def fake_llm(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_providers(monkeypatch):
+    """These tests check the mode's own tools: the providers (host tools, memory, MCP, skills) have their own tests,
+    and test_agent_platform.py checks the app's providers in a chat."""
+    monkeypatch.setattr(chat.providers, "load", list)
+    monkeypatch.setattr(chat, "provided", {})
+
+
+@pytest.fixture(autouse=True)
 def ws(monkeypatch) -> FakeWorkstation:
     port = FakeWorkstation()
     monkeypatch.setattr(chat, "port", port)
