@@ -405,10 +405,13 @@ def test_a_model_left_running_by_a_failed_write_is_stopped(
     while (job["status"] != "failed" or server.procs) and time.time() < deadline:
         time.sleep(0.05)
     assert job["status"] == "failed" and not server.procs
-    assert not server.group_alive(started[0])  # the model's process group is gone
+    # the worker stops the group after it took the job out of procs (SIGTERM, then SIGKILL after KILL_AFTER for a
+    # child that a fork hid from the SIGTERM): look once it is done
     server.stopping.set()
     server.wake.set()
-    worker.join(5)
+    worker.join(server.KILL_AFTER + 10)
+    assert not worker.is_alive()
+    assert not server.group_alive(started[0])  # the model's process group is gone
 
 
 def test_worker_takes_the_new_first_job_after_a_move_during_its_claim(
