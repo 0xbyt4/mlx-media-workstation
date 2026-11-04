@@ -158,10 +158,28 @@ def test_an_image_with_alpha_is_laid_on_white(
     assert r == 255 and abs(g - 128) <= 2 and abs(b - 128) <= 2
 
 
-def test_an_opaque_image_keeps_the_simple_filter(tmp_path: Path) -> None:
-    src = tmp_path / "in_image_0.jpg"
-    ffmpeg("-f", "lavfi", "-i", "testsrc=s=64x48", "-frames:v", "1", str(src))
+@pytest.mark.parametrize(
+    "name", ["in_image_0.jpg", "in_image_0.jpeg", "in_image_0.png"]
+)
+def test_an_opaque_photo_keeps_the_simple_filter(tmp_path: Path, name: str) -> None:
+    """A photo-sized file: ffmpeg opens a .jpg over 2 KB with image2 (by its name), not jpeg_pipe."""
+    src = tmp_path / name
+    ffmpeg("-f", "lavfi", "-i", "testsrc2=s=1024x768", "-frames:v", "1", str(src))
+    assert src.stat().st_size > 20_000
     assert tools.image_filter(src, "null") == ["-vf", "null"]
+    dst = tmp_path / "start.png"
+    tools.fit_image(src, dst, 704, 1280)
+    assert (stream(dst)["width"], stream(dst)["height"]) == (704, 1280)
+
+
+def test_the_error_names_the_refused_format() -> None:
+    err = (
+        "[image2 @ 0x7798c38000] Format not on whitelist 'png_pipe,jpeg_pipe'\n"
+        "/tmp/in_image_0.jpg: Invalid argument\n"
+    )
+    assert tools.ffmpeg_error(err) == (
+        "this file type is not supported (use a common image, audio or video file)"
+    )
 
 
 def test_alpha_is_read_from_the_pixel_format() -> None:

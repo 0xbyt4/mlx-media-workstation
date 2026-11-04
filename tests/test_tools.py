@@ -309,7 +309,10 @@ Error binding filtergraph inputs/outputs: Invalid argument
             HEIC_CAUSE,
         ),
         (MISSING, "Error opening input: No such file or directory"),
-        (NOT_WHITELISTED, "Format not on whitelist 'mp3,wav'"),
+        (
+            NOT_WHITELISTED,
+            "this file type is not supported (use a common image, audio or video file)",
+        ),
         (
             NO_STREAM,
             "Stream specifier ':a' in filtergraph description [0:a]anull[x] matches no streams.",

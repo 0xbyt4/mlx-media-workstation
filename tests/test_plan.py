@@ -22,7 +22,8 @@ GUARD = [
     "-protocol_whitelist",
     "file",
     "-format_whitelist",
-    tools.SPEECH_DEMUXERS + ",png_pipe,jpeg_pipe,webp_pipe,gif,apng,bmp_pipe,tiff_pipe",
+    tools.SPEECH_DEMUXERS
+    + ",image2,png_pipe,jpeg_pipe,webp_pipe,gif,apng,bmp_pipe,tiff_pipe",
 ]
 
 

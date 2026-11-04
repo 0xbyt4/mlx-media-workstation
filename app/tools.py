@@ -854,7 +854,9 @@ GUARD = [
     "-protocol_whitelist",
     "file",
     "-format_whitelist",
-    SPEECH_DEMUXERS + ",png_pipe,jpeg_pipe,webp_pipe,gif,apng,bmp_pipe,tiff_pipe",
+    # image2 reads a .jpg or .png by its name (the app names every input file, so no pattern can expand)
+    SPEECH_DEMUXERS
+    + ",image2,png_pipe,jpeg_pipe,webp_pipe,gif,apng,bmp_pipe,tiff_pipe",
 ]
 # time limits: one ffprobe or sips run (or a still for prompt help), and one ffmpeg step that prepares an input (an
 # extend encodes the whole clip)
@@ -871,7 +873,8 @@ FF_FOLLOW_UP = re.compile(
     r"Error opening (input|output) files?\b|Error opening input: |Could not write header|"
     r"Error binding filtergraph|Error initializing (bitstream )?filter|Error submitting a packet to the muxer|"
     r"Error muxing a packet|Task finished with error code|Terminating thread with return code|"
-    r"Last message repeated|Conversion failed|Nothing was written into output file"
+    r"Last message repeated|Conversion failed|Nothing was written into output file|"
+    r".+: Invalid argument$"
 )
 
 
@@ -881,7 +884,12 @@ def ffmpeg_error(text: str) -> str:
     lines = [FF_PREFIX.sub("", line).strip() for line in text.splitlines()]
     lines = [line for line in lines if line]
     causes = [line for line in lines if not FF_FOLLOW_UP.match(line)]
-    return (causes[-1] if causes else lines[0] if lines else "")[:300]
+    cause = causes[-1] if causes else lines[0] if lines else ""
+    if cause.startswith(("Format not on whitelist", "Protocol not on whitelist")):
+        return (
+            "this file type is not supported (use a common image, audio or video file)"
+        )
+    return cause[:300]
 
 
 def run_media(cmd: list[str], seconds: float) -> subprocess.CompletedProcess[str]:
