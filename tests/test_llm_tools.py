@@ -493,3 +493,34 @@ def test_no_reload_when_the_model_was_off_or_idle_long(monkeypatch):
     monkeypatch.setattr(llm, "last_used", time.time() - 11 * 60)  # past the idle time
     assert llm.reload_after_jobs() is False
     assert llm.status()["state"] == "off"
+
+
+def test_a_background_load_yields_to_a_job_that_holds_the_memory(monkeypatch):
+    monkeypatch.setattr(llm, "job_peak", 35.0)  # a big job claimed the memory first
+    assert llm.start(background=True) is None
+    assert llm.worker is None and llm.status()["state"] == "off"
+
+
+def test_a_job_that_claims_during_a_background_start_gets_the_memory(monkeypatch):
+    made = []
+    real = llm.Worker
+
+    def worker_then_claim():
+        w = real()
+        made.append(w)
+        llm.job_peak = (
+            35.0  # the claim lands between the process start and the assignment
+        )
+        return w
+
+    monkeypatch.setattr(llm, "Worker", worker_then_claim)
+    assert llm.start(background=True) is None
+    assert llm.worker is None
+    assert wait_for(lambda: not made[0].alive())  # the new process was stopped
+
+
+def test_a_background_load_does_not_count_as_use(monkeypatch):
+    monkeypatch.setattr(llm, "last_used", 123.0)
+    w = llm.start(background=True)
+    assert w is not None and w.ready.is_set()
+    assert llm.last_used == 123.0

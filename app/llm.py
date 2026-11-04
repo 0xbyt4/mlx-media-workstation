@@ -319,13 +319,19 @@ def check_installed() -> None:
         )
 
 
-def start(cancelled: threading.Event | None = None) -> Worker | None:
+def start(
+    cancelled: threading.Event | None = None, background: bool = False
+) -> Worker | None:
     """The running worker, started first if needed; waits until the model is loaded. None when cancelled is set
-    during the load: the load goes on in the worker, so the next request finds the model ready."""
+    during the load: the load goes on in the worker, so the next request finds the model ready. background: a load
+    that no request asked for (preload); it starts no worker while a media job holds memory that the model does not
+    fit next to, and it does not count as use for the idle time."""
     global worker, last_used
     with start_lock:
         with lock:
             w = worker
+            if background and (w is not None or (job_peak and not fits_with(job_peak))):
+                return None
         if w is None or not w.alive():
             check_installed()
             try:
@@ -336,13 +342,22 @@ def start(cancelled: threading.Event | None = None) -> Worker | None:
                     "Check qwen_python in Settings."
                 ) from e
             with lock:
-                if not closed:
+                # a media job that claimed the memory during this background start: give it the memory
+                blocked = background and bool(job_peak) and not fits_with(job_peak)
+                if not closed and not blocked:
                     worker = w
-                    # the idle watch counts from here: a model that loads is not idle (also after a Stop that
-                    # left it loading for the next request)
-                    last_used = time.time()
-            if worker is not w:  # the app closed while it started
-                w.stop(CLOSED)
+                    if not background:
+                        # the idle watch counts from here: a model that loads is not idle (also after a Stop that
+                        # left it loading for the next request)
+                        last_used = time.time()
+            if (
+                worker is not w
+            ):  # the app closed, or a job took the memory, while it started
+                w.stop(
+                    CLOSED if closed else "Unloaded to free the memory for a media job."
+                )
+                if background:
+                    return None
                 raise LLMError(CLOSED)
         deadline = time.monotonic() + LOAD_TIMEOUT
         while not w.ready.wait(0.25) and w.alive() and time.monotonic() < deadline:
@@ -651,7 +666,7 @@ def reload_after_jobs() -> bool:
 def preload() -> None:
     """Load the model without a request; a failure shows on the next request."""
     try:
-        start()
+        start(background=True)
     except LLMError:
         pass
 
