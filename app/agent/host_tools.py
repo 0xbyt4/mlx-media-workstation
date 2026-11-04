@@ -815,9 +815,11 @@ def build(exists: Callable[[str], bool] = available) -> list[Tool]:
 
 
 class HostTools:
-    """The provider (app/agent/extensions.py): every tool deferred, no prompt section."""
+    """The provider (app/agent/extensions.py): every tool deferred, no prompt section. Agent chats only: a
+    workstation chat has no granted folder, and its tools array stays the media tools alone."""
 
     name = "host"
+    modes = ("agent",)
 
     def tools(self) -> list[Tool]:
         return build()

@@ -609,7 +609,9 @@ def agent_of(chat: dict[str, Any]) -> dict[str, Any]:
     if isinstance(p, dict) and "providers" in p:
         extra = [str(n) for n in p["providers"] or []]
     else:  # before the first turn: the tools the providers would give now, so the Tools menu can turn them off
-        extra = [t.name for t in preview_tools()] if uses_tools(chat) else []
+        extra = (
+            [t.name for t in preview_tools(mode_of(chat))] if uses_tools(chat) else []
+        )
     if not isinstance(saved, dict):
         state = default_agent(mode_of(chat))
         state["tools"] += [
@@ -757,7 +759,8 @@ def freeze(chat: dict[str, Any]) -> tuple[dict[str, Any], list[Tool]]:
     """The prompt of a chat's first turn, as chat.json keeps it, and the providers' tools for it. The providers are
     asked here, once (app/agent/providers.py). Raises RuntimeError as registry() does."""
     found = extensions.collect(
-        providers.load(), {**chat, "messages": list(chat["messages"])}
+        providers.load(),
+        {**chat, "mode": mode_of(chat), "messages": list(chat["messages"])},
     )
     lay = layout(chat, found)
     system = system_text(lay)
@@ -808,16 +811,18 @@ def ensure_prompt(chat_id: str) -> dict[str, Any]:
         return chat["prompt"]
 
 
-def preview_tools() -> list[Tool]:
+def preview_tools(mode: str) -> list[Tool]:
     """The providers' tools that a first turn would freeze now. Only Provider.tools() is asked: core() and section()
     can start servers or write a snapshot, so they run once, at the freeze. A provider that raises or whose names
     clash is left out, as collect() does."""
     out: list[Tool] = []
     seen = set(deferred.BRIDGE)  # chat_tools() leaves out a name the app has
     for prov in providers.load():
+        if not extensions.serves(prov, mode):
+            continue
         try:
             tools = list(prov.tools())
-        except Exception:  # noqa: BLE001 - collect() at the freeze names the problem
+        except Exception:  # noqa: BLE001, S112 - collect() at the freeze names the problem
             continue
         names = {t.name for t in tools}
         if names & seen:
@@ -832,14 +837,14 @@ def provider_tools(chat: dict[str, Any]) -> list[Tool]:
     it, the tools it froze. Those are kept per chat while the app runs; after a restart the providers are asked
     again, and a tool that is gone is left out (a call to it gets "no such tool")."""
     if not frozen(chat):
-        return preview_tools()
+        return preview_tools(mode_of(chat))
     names = (chat.get("prompt") or {}).get("providers") or []
     if not names:
         return []
     with provided_lock:
         if chat["id"] in provided:
             return provided[chat["id"]]
-    found = extensions.collect(providers.load(), chat)
+    found = extensions.collect(providers.load(), {**chat, "mode": mode_of(chat)})
     keep = [t for t in found.tools if t.name in names]
     with provided_lock:
         provided[chat["id"]] = keep

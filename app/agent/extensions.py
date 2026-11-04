@@ -9,6 +9,7 @@ the model read the whole chat again. What changes later reaches the model as a m
 - core(chat): the names of the tools that go in the chat's tools array. The other tools are deferred: the model finds
   them with tool_search and runs them with tool_call.
 - section(chat): a short text for the system prompt (a catalog, a memory snapshot), or None. At most `budget` tokens.
+- modes (optional): the chat modes the provider serves ("agent", "workstation"); without it, every mode with tools.
 
 A provider must be quick and must not raise. When one raises, collect() leaves it out and says why in `problems`.
 """
@@ -57,12 +58,21 @@ class Collected:
     )  # "memory: <error>" for a provider left out
 
 
+def serves(provider: Provider, mode: str) -> bool:
+    """Whether a provider gives its tools and section to a chat of this mode (Provider.modes)."""
+    modes = getattr(provider, "modes", None)
+    return modes is None or mode in modes
+
+
 def collect(providers: Iterable[Provider], chat: dict[str, Any]) -> Collected:
-    """Ask each provider for its tools, core names and section. A provider that raises, or whose section is over its
-    budget, is left out (its tools too) and named in `problems`."""
+    """Ask each provider that serves the chat's mode for its tools, core names and section. A provider that raises,
+    or whose section is over its budget, is left out (its tools too) and named in `problems`."""
     out = Collected()
     seen: set[str] = set()
+    mode = chat.get("mode")
     for p in providers:
+        if mode is not None and not serves(p, mode):
+            continue
         try:
             tools = list(p.tools())
             names = {t.name for t in tools}
