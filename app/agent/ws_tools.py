@@ -274,7 +274,7 @@ def format_status(
         lines.append(job_line(job, str(chat_id), host))
     queue = status.get("queue") or []
     lines.append(
-        f"Queue ({len(queue)} jobs, in the order they run):"
+        f"Queue ({len(queue)} jobs; model jobs in the order they run, then light-lane jobs, which run beside them):"
         if queue
         else "Queue: empty."
     )

@@ -718,7 +718,10 @@ def test_in_app_system_status_through_the_fake_port(tmp_path: Path) -> None:
     # a job this chat queued shows as such
     reg.call("create_job", {"tool": "image.klein", "fields": {"prompt": "x"}}, ctx)
     r = reg.call("system_status", {}, ctx)
-    assert "Queue (1 jobs, in the order they run):" in r.content
+    assert (
+        "Queue (1 jobs; model jobs in the order they run, then light-lane jobs, which run beside them):"
+        in r.content
+    )
     assert "queued by this chat): queued; place 1 in the queue" in r.content
 
 

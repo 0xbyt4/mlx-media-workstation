@@ -480,7 +480,9 @@ def test_two_requests_for_one_new_thumbnail_both_get_it(tmp_path: Path) -> None:
     for t in threads:
         t.join(30)
     assert not errors and size_of(dst) == (640, 360)
-    assert [p.name for p in dst.parent.iterdir()] == ["image.png.jpg"]  # no temporary file left
+    assert [p.name for p in dst.parent.iterdir()] == [
+        "image.png.jpg"
+    ]  # no temporary file left
 
 
 @needs_ffmpeg

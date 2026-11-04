@@ -459,7 +459,7 @@ export function thumbUrl(job, name) {
 // A job output ({url, kind, name, note}) as real media. opts.onOpen(output) runs when an image is clicked;
 // opts.actions are nodes placed in the caption (Send to, Download); opts.thumb is the URL of a small JPEG of an image
 // or video (GET /api/library/thumbs): the image shows it (the file itself when it fails), the video shows it as its
-// poster and loads nothing before Play. Returns null for a URL off this origin.
+// poster when it loads, and reads only its metadata before Play. Returns null for a URL off this origin.
 export function media(output, opts = {}) {
   const url = safeFileUrl(output.url);
   if (!url) return null;
@@ -473,9 +473,15 @@ export function media(output, opts = {}) {
   } else if (output.kind === 'audio') {
     el = h('div', {class: 'media-audio'}, lazySrc(h('audio', {controls: true, preload: 'metadata', 'aria-label': name}), url));
   } else if (output.kind === 'video') {
-    const video = h('video', {controls: true, playsinline: true, preload: opts.thumb ? 'none' : 'metadata', 'aria-label': name});
+    // metadata only (the index at the front of the file): the player shows the length; the frames load on Play
+    const video = h('video', {controls: true, playsinline: true, preload: 'metadata', 'aria-label': name});
     el = whenNear(video, () => {
-      if (opts.thumb) video.poster = opts.thumb;
+      if (opts.thumb) {
+        // the poster only when the thumbnail exists, else the player shows its own first frame
+        const probe = new Image();
+        probe.onload = () => (video.poster = opts.thumb);
+        probe.src = opts.thumb;
+      }
       video.src = url;
     });
   } else if (output.kind === 'text') {

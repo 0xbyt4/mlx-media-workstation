@@ -874,7 +874,11 @@ def read_requests(jobs: queue.Queue, cancels: dict[str, threading.Event]) -> Non
         elif op == "generate":
             cancels[req["id"]] = threading.Event()
             jobs.put(req)
-        elif op in ("save", "restore", "forget"):  # in the queue: MLX runs on the main thread, in order
+        elif op in (
+            "save",
+            "restore",
+            "forget",
+        ):  # in the queue: MLX runs on the main thread, in order
             jobs.put(req)
         elif op == "shutdown":
             break
@@ -897,7 +901,9 @@ def main() -> None:
     threading.Thread(target=read_requests, args=(jobs, cancels), daemon=True).start()
     # every MLX call stays on this thread: mlx-vlm's generation stream is thread-local
     while (req := jobs.get()) is not None:
-        if req["op"] == "forget":  # a deleted chat: a later save must not write its tokens
+        if (
+            req["op"] == "forget"
+        ):  # a deleted chat: a later save must not write its tokens
             if req.get("chat") == engine.chat:
                 engine.chat, engine.state = None, engine.cache_state()
             continue
