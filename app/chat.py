@@ -114,7 +114,7 @@ MODES = ("workstation", "general", "agent")
 DEFAULT_MODE = "workstation"  # also the mode of a chat saved before modes existed
 # agent mode (docs/AGENT.md)
 # model requests in one answer; the last one cannot call tools (Turn.answer)
-MAX_STEPS = 12
+MAX_STEPS = 16
 TURN_SECONDS = 600.0  # one answer's wall clock, approvals included (as long as the memory lease, llm.SESSION_MAX)
 APPROVAL_SECONDS = 600.0  # an unanswered approval is denied after this (or when the answer's time ends)
 # characters of a tool result kept in chat.json (the model gets MAX_RESULT)
@@ -135,6 +135,8 @@ CORE = {
         "list_workstation_tools",
         "create_job",
         "job_status",
+        "wait_for_job",
+        "search_library",
         "list_files",
         "read_file",
         "write_file",
@@ -416,6 +418,11 @@ def agent_prompt(lay: "Layout") -> str:
         if folder
         else "No folder is granted to this chat. To read files, the user must grant one in this chat's Tools menu."
     )
+    if "create_job" in names:
+        files += (
+            " A media job's outputs stay in the Library: no tool copies them into the folder. Give the user their "
+            "Library references."
+        )
     off_line = (
         f"\n- These tools are off in this chat: {', '.join(lay.off)}. Never call them. When the task needs one, tell "
         "the user its name and ask them to turn it on in the Tools menu and start a new chat with it."
@@ -470,8 +477,9 @@ def more_tools(lay: "Layout") -> str:
     if not lines:
         return ""
     return (
-        "\nMore tools are not loaded, to keep this prompt short. Find one with tool_search, read its parameters with "
-        "tool_describe, and run it with tool_call or by its name:" + "".join(lines)
+        "\nMore tools are not loaded, to keep this prompt short. Call a tool listed below by its name. Use "
+        "tool_search only when no name below fits the task; tool_describe shows the parameters of a tool:"
+        + "".join(lines)
     )
 
 

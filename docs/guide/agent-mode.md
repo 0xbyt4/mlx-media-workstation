@@ -20,7 +20,7 @@ The full rules are in [AGENT.md](../AGENT.md). This page tells you how to use th
 The model uses a tool only when it needs one. Each call shows as a card in the answer. A long task can show a plan:
 a checklist at the top of the answer.
 
-An answer has at most 12 steps and 10 minutes. The time that it waits for memory does not count.
+An answer has at most 16 steps and 10 minutes. The time that it waits for memory does not count.
 
 ## The tools and their risk
 

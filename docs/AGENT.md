@@ -831,7 +831,7 @@ registry per media flag, so at most one per profile: with the media tools (the f
 7. Add a tool message with the result and go to the next step. A result over 12,000 characters is saved whole in the
    work folder first (see [Long results](#long-results)). For `update_plan`, also send the checked items to the page
    (a `plan` event) and keep them in the tool message.
-8. An answer has at most 12 steps (`MAX_STEPS`) and 10 minutes. The time a step waits for memory (a media job runs)
+8. An answer has at most 16 steps (`MAX_STEPS`) and 10 minutes. The time a step waits for memory (a media job runs)
    does not count against the 10 minutes, and Stop ends that wait.
 9. The last step cannot call tools. Its request keeps the same tool schemas, so the prompt's start does not change
    and the prompt cache holds. It adds a user message from the app (`NUDGE`: no more tools, give the final answer)
@@ -910,11 +910,11 @@ the real tool. The tool message answers the model's `tool_call` by its id. The `
 
 | Mode | Core tools |
 |---|---|
-| Agent | `update_plan`, `web_search`, `fetch_url`, `list_workstation_tools`, `create_job`, `job_status`, `list_files`, `read_file`, `write_file`, `edit_file`, `media_info`, `run_python` |
+| Agent | `update_plan`, `web_search`, `fetch_url`, `list_workstation_tools`, `create_job`, `job_status`, `wait_for_job`, `search_library`, `list_files`, `read_file`, `write_file`, `edit_file`, `media_info`, `run_python` |
 | Workstation | all its tools (9): a workstation chat has no deferred tools unless a provider adds some |
 | General | none: a general chat has no tools |
 
-The agent's deferred tools are `search_library`, `list_jobs`, `wait_for_job`, `cancel_job`, `transcribe_audio`,
+The agent's deferred tools are `list_jobs`, `cancel_job`, `transcribe_audio`,
 `system_status`, `search_files`, `copy_to_workspace`, `export_from_workspace`, `view_image`, `run_shell` and
 `read_result` (the last one is not in the listing: the note of a cut result names it).
 
@@ -928,6 +928,9 @@ tokenizer, and characters / 3):
 | Agent, offline, no folder | - | 8 tools, 2,222 tokens (2,597) |
 | Workstation | 9 tools, 4,921 tokens (5,368) | the same |
 | General | 78 tokens (105) | the same |
+
+The eval showed that the agent spent steps to find `wait_for_job` and `search_library`, so they became core
+after this measure: each agent row above is about 350 tokens (characters / 3) larger now.
 
 #### Notes for later changes
 

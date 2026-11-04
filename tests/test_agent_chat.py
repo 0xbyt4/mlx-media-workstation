@@ -299,8 +299,8 @@ def test_the_next_turn_sends_the_history_as_the_template_needs_it(client, reg):
     # tools need no folder (they also read the work folder and the Library); then the bridge to the deferred tools
     names = [t["function"]["name"] for t in seen["tools"]]
     assert names == [
-        "update_plan", "list_workstation_tools", "job_status", "create_job", "media_info", "web_search", "fetch_url",
-        "tool_search", "tool_describe", "tool_call",
+        "update_plan", "list_workstation_tools", "job_status", "search_library", "create_job", "wait_for_job",
+        "media_info", "web_search", "fetch_url", "tool_search", "tool_describe", "tool_call",
     ]  # fmt: skip
     system = sent[0]["content"]
     assert "untrusted data" in system and "emoji" in system
@@ -394,13 +394,13 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
     prompt = chat.system_prompt(saved(client, cid))
     # no folder: the file tools are on but deferred; the core tools that can run are in the array
     assert (
-        "You can call tools: update_plan, list_workstation_tools, job_status, create_job, media_info, web_search, "
-        "fetch_url.\n" in prompt
+        "You can call tools: update_plan, list_workstation_tools, job_status, search_library, create_job, "
+        "wait_for_job, media_info, web_search, fetch_url.\n" in prompt
     )
     # the listing of the deferred tools, one line per group
     assert "More tools are not loaded" in prompt
     assert (
-        "- Media jobs: search_library, list_jobs, wait_for_job, cancel_job, transcribe_audio, system_status\n"
+        "- Media jobs: list_jobs, cancel_job, transcribe_audio, system_status\n"
         in prompt
     )
     assert (
@@ -408,6 +408,14 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
         "copy_to_workspace, export_from_workspace\n" in prompt
     )
     assert "- Media files: view_image\n" in prompt and "read_result" not in prompt
+    assert (
+        "Call a tool listed below by its name. Use tool_search only when no name below fits"
+        in prompt
+    )
+    assert (
+        "A media job's outputs stay in the Library: no tool copies them into the folder."
+        in prompt
+    )
     assert "You reach the internet only through" in prompt
     assert (
         "These tools are off in this chat: run_python, run_shell. Never call them."
@@ -542,7 +550,7 @@ def test_approve_needs_the_app_s_origin(client):
 
 
 def test_max_steps(client, monkeypatch):
-    assert chat.MAX_STEPS == 12 and chat.TURN_SECONDS == 600.0
+    assert chat.MAX_STEPS == 16 and chat.TURN_SECONDS == 600.0
     monkeypatch.setattr(chat, "MAX_STEPS", 3)
     cid = agent_chat(client)
     steps = script(*[[call("job_status", job_id=f"j{i}")] for i in range(5)])

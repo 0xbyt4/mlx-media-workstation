@@ -914,7 +914,7 @@ call with `stopped`.
 Rules of the loop (`app/chat.py`, `Turn`):
 
 1. All steps run in one `llm.session()`, so a queued media job does not unload the model between steps.
-2. An answer has at most 12 steps and 10 minutes. The time a step waits for memory (a media job runs) does not count,
+2. An answer has at most 16 steps and 10 minutes. The time a step waits for memory (a media job runs) does not count,
    and the memory lease's limit counts from the moment it first holds the memory. Step 12 cannot call tools: it keeps
    the tool schemas (the prompt's start stays the same), gets a user message from the app that says so, and asks the
    worker with `tool_choice: "none"`, which bans the call marker. So the answer ends with a summary. A call that comes
