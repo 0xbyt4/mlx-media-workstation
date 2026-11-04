@@ -885,7 +885,7 @@ def ffmpeg_error(text: str) -> str:
     lines = [line for line in lines if line]
     causes = [line for line in lines if not FF_FOLLOW_UP.match(line)]
     cause = causes[-1] if causes else lines[0] if lines else ""
-    if cause.startswith(("Format not on whitelist", "Protocol not on whitelist")):
+    if cause.startswith("Format not on whitelist"):
         return (
             "this file type is not supported (use a common image, audio or video file)"
         )
