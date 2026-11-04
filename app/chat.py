@@ -38,7 +38,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from app import attachments, config, effort, llm, tools
+from app import attachments, config, effort, llm, skills, tools
 from app.agent import (
     Action,
     Context,
@@ -608,6 +608,7 @@ def summary(chat: dict[str, Any]) -> dict[str, Any]:
 def tokens(msg: dict[str, Any]) -> int:
     """A rough count (about 3 characters a token across languages), plus the images, attached files and tool calls."""
     text = msg.get("content", "") + msg.get("reasoning", "") + msg.get("nudge", "")
+    text += (msg.get("skill") or {}).get("content", "")  # a skill forced with /skill
     calls = msg.get("tool_calls")
     extra = len(json.dumps(calls, ensure_ascii=False)) // 3 if calls else 0
     files = msg.get("files") or []
@@ -731,10 +732,11 @@ def model_input(
     for msg in (m for turn in turns for m in turn):
         if msg["role"] == "user":
             parts: list[dict[str, Any]] = [{"type": "image"} for _ in msg["images"]]
-            text = msg["content"]
+            text = skills.user_text(msg)
             # each attached file's stored text in its block, before the user's text
             if msg.get("files"):
                 text = attachments.prompt(CHATS / chat["id"], msg["files"], text)
+            text = skills.with_skill(msg, text)  # a skill forced with /skill, first
             parts.append({"type": "text", "text": text})
             images += [str(CHATS / chat["id"] / name) for name in msg["images"]]
             messages.append({"role": "user", "content": parts})
@@ -1931,6 +1933,10 @@ def start_answer(
             if not chat["messages"]:
                 raise HTTPException(400, "Nothing to answer again.")
         else:
+            try:  # "/skill <name>" at the start: the skill's guide goes in with the message
+                skill = skills.forced(text, chat)
+            except skills.SkillError as e:
+                raise HTTPException(400, str(e)) from None
             n = sum(len(m.get("images", [])) for m in chat["messages"])
             names = []
             for i, (ext, data) in enumerate(files):
@@ -1938,12 +1944,17 @@ def start_answer(
                 (CHATS / chat_id / name).write_bytes(data)
                 names.append(name)
             message = {"role": "user", "content": text, "images": names, "time": now()}
+            if skill:
+                message["skill"] = skill
             if staged:
                 message["files"] = store_files(chat, staged, room)
                 # a file's text is untrusted content in the model's context, as a web page is (docs/AGENT.md)
                 # also in the chat profile: the same chat can open in the full profile later, with tools
                 if mode_of(chat) in ("agent", "workstation"):
                     chat["agent"] = {**agent_of(chat), "tainted": True}
+            # an imported skill's text is untrusted too; the app's own skills ship with it
+            if skill and skill["source"] != "app" and mode_of(chat) != "general":
+                chat["agent"] = {**agent_of(chat), "tainted": True}
             chat["messages"].append(message)
             if chat["title"] == "New chat" and (text or staged):
                 chat["title"] = (text.splitlines()[0] if text else staged[0].name)[:60]

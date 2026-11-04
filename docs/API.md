@@ -973,6 +973,55 @@ name programs that the app runs.
   table); the file is then not changed.
 - Settings hold no secrets.
 
+## Skills
+
+Settings > Skills uses these endpoints (`app/skills_api.py`). [AGENT.md](AGENT.md#skills) tells how the agent uses
+skills. Every change needs the `Origin` header of the app's own page (HTTP 403 without it). There is no install from
+the network.
+
+`GET /api/skills` returns every skill folder of every source:
+
+```json
+{
+  "skills": [
+    {"name": "subtitle-video", "source": "app", "path": "/Users/me/mlx-media-workstation/skills/subtitle-video",
+     "description": "Add subtitles to a video: ...", "license": "MIT", "compatibility": "Needs the Transcribe model ...",
+     "metadata": {"author": "mlx-media-workstation", "version": "1.0"}, "allowed_tools": ["transcribe_audio"],
+     "needs": ["transcribe_audio"], "manual": false, "files": [], "scripts": [], "enabled": true, "error": null,
+     "warnings": [], "tokens": 1284}
+  ],
+  "folder": null,
+  "user_dir": "/Users/me/mlx-media-workstation/outputs/skills",
+  "app_dir": "/Users/me/mlx-media-workstation/skills",
+  "budget": 600,
+  "catalog_tokens": 276
+}
+```
+
+- `source` is `"user"` (imported, in `outputs/skills/`), `"folder"` (the user's skills folder) or `"app"` (`skills/`
+  in the repository).
+- `error` is why a skill is not used (a broken `SKILL.md`, or another skill of the same name replaces it). A skill
+  with an error is never on.
+- `needs` lists the tools of `allowed-tools` (as this app names them) and `"network"` when `compatibility` asks for
+  the network. `manual` is `disable-model-invocation`. `tokens` is the size of the body.
+- `catalog_tokens` is the size of the skills list in a new chat's prompt, with every skill that is on.
+
+| Endpoint | Does |
+|---|---|
+| `GET /api/skills/{source}/{name}` | `{"name", "source", "text", "files"}`: the `SKILL.md` as it is on disk, also for a broken skill. HTTP 404 for an unknown skill. |
+| `PUT /api/skills/{source}/{name}` | Body `{"enabled": true}`. Turns the skill on or off for new chats. HTTP 400 for a broken skill. Returns the list. |
+| `PUT /api/skills/folder` | Body `{"folder": "/Users/me/.agents/skills"}` or `{"folder": null}`. Sets or clears the user's skills folder. HTTP 400 for a relative path, a missing folder, a folder directly under `/`, or the app's own skill folders. Returns the list. |
+| `POST /api/skills/import/check` | Body `{"path": "/Users/me/Downloads/my-skill.zip"}`: a skill folder or a `.zip`. Copies it to `outputs/skills/.staging/` and returns what the user must see (below). HTTP 400 when it cannot be imported. |
+| `POST /api/skills/import` | Body `{"token": "..."}` from the check. Moves the checked copy to `outputs/skills/<name>/` and turns it on. Returns `{"name"}` and the list. |
+| `DELETE /api/skills/user/{name}` | Deletes an imported skill. Other sources cannot be deleted here (HTTP 404). Returns the list. |
+
+The check returns `{"token", "name", "description", "license", "compatibility", "allowed_tools", "files": [{"path",
+"script"}], "scripts", "skipped", "findings": [{"file", "line", "why", "text"}], "warnings", "blocked", "text"}`.
+`findings` are the dangerous patterns of the scan, `skipped` the hidden and secret files that were left out, `text`
+the `SKILL.md`. `blocked` is true when an imported skill of the same name is there; the import is then refused. The
+check refuses a link, a path outside the skill (`..` or an absolute path in a `.zip`), more than 500 files or 20 MB,
+and a `SKILL.md` that breaks a rule. An unconfirmed check is removed after an hour.
+
 ## UI behaviour
 
 The page is split into ES modules; web/README.md describes the files, the view contract and the handoff between

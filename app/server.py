@@ -60,6 +60,7 @@ from app import (
     models_api,
     progress,
     settings_api,
+    skills_api,
     tools,
 )
 from app.agent import load_settings as load_agent_settings
@@ -1335,5 +1336,6 @@ chat.port = workstation
 app.include_router(models_api.router)
 app.include_router(chat.router)
 app.include_router(settings_api.router)
+app.include_router(skills_api.router)
 app.include_router(library.router)
 app.mount("/", StaticFiles(directory=WEB, html=True), name="web")

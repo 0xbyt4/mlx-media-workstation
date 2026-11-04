@@ -1,4 +1,5 @@
 """Read-only file tools (R1): list, read and search text files inside the one folder the user granted to the chat.
+An absolute path inside the folder of a skill that is on (app/skills.py) reads there instead, with the same rules.
 
 Containment: every path is resolved with realpath and must stay inside the granted folder's real path, so "..",
 absolute paths and symlinks cannot leave it. A file is opened with O_NOFOLLOW and its path is read back from the open
@@ -93,6 +94,20 @@ def _root(ctx: Context) -> str:
             "The granted folder has moved or changed. Grant it again in the Tools menu."
         )
     return real
+
+
+def read_root(ctx: Context, given: str) -> str:
+    """The folder a read tool reads `given` in: the folder of a skill that is on, for an absolute path inside it
+    (app/skills.py; read-only, as the read tools never write), else the granted folder (_root)."""
+    from app import skills  # imported here: app.skills imports this module
+
+    path = os.path.normpath(os.path.expanduser(given.strip()))
+    if os.path.isabs(path):
+        real = os.path.realpath(path)
+        for root in skills.read_roots():
+            if inside(path, root) or inside(real, root):
+                return root
+    return _root(ctx)
 
 
 def fd_path(fd: int) -> str:
@@ -226,7 +241,7 @@ def human(size: int) -> str:
 
 def build() -> list[Tool]:
     def list_files(args: dict[str, Any], ctx: Context) -> str:
-        root = _root(ctx)
+        root = read_root(ctx, args["path"])
         start = resolve(root, args["path"])
         if not os.path.isdir(start):
             raise ToolError(f"{args['path']}: not a folder.")
@@ -248,7 +263,7 @@ def build() -> list[Tool]:
         return "\n".join(lines)
 
     def read_file(args: dict[str, Any], ctx: Context) -> str:
-        root = _root(ctx)
+        root = read_root(ctx, args["path"])
         path = resolve(root, args["path"])
         if os.path.isdir(path):
             raise ToolError(f"{args['path']}: a folder; use list_files.")
@@ -283,7 +298,7 @@ def build() -> list[Tool]:
         return head + ":\n" + "\n".join(shown)
 
     def search_files(args: dict[str, Any], ctx: Context) -> str:
-        root = _root(ctx)
+        root = read_root(ctx, args["path"])
         start = resolve(root, args["path"])
         if not os.path.isdir(start):
             raise ToolError(f"{args['path']}: not a folder.")

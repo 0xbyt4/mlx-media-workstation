@@ -16,6 +16,7 @@ Some changes apply at once. Others apply after a restart, because the app reads 
 | Local LLM | `[app] chat_effort` | At once |
 | Jobs | `[app] notify`, `keep_awake`, `llm_idle_minutes` | At once |
 | Agent | `[agent]` | After a restart |
+| Skills | none (`outputs/skills.json`) | New chats |
 | Model paths | `[paths]` | After a restart |
 
 If you edit `config.toml` by hand, restart the app. When the file has an error, Settings shows "config.toml cannot
@@ -95,6 +96,11 @@ Press Save, then restart the app.
 
 The path must be absolute ("~" is allowed) and the file must exist. No other user may be able to change the file or
 the folders above it.
+
+## Skills
+
+The agent's skills: guides for a kind of task. Each skill has a switch. A change applies to new chats, without a
+restart. The section also sets your own skills folder and imports a skill folder or `.zip`. See [Skills](skills.md).
 
 ## Model paths
 

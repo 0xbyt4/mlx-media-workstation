@@ -14,6 +14,8 @@ service.
   pick a thinking level, and let it write prompts for the tools or queue the jobs itself.
 - **Agent mode**: the chat model can search the web, read files in a folder you grant, run code in a sandbox and
   queue jobs. Each risky call asks you first.
+- **Skills**: guides in the open Agent Skills format teach the agent a task (a short film, podcast clean-up,
+  subtitles). Import your own from a folder or a `.zip`, checked first.
 - **Jobs and Library**: a queue with live progress and time left, and a searchable library of every output.
 - **Models screen**: shows which models fit your Mac, and downloads the weights at pinned revisions.
 - **Chat only**: a smaller profile for a Mac that has only the local LLM.
@@ -158,6 +160,7 @@ The [user guide](docs/guide/README.md) explains each screen step by step:
 - [Jobs and Library](docs/guide/jobs-and-library.md)
 - [Chat](docs/guide/chat.md)
 - [Agent mode](docs/guide/agent-mode.md)
+- [Skills](docs/guide/skills.md)
 - [Models](docs/guide/models.md)
 - [Settings](docs/guide/settings.md)
 - [Troubleshooting](docs/guide/troubleshooting.md)
@@ -564,6 +567,8 @@ ends.
   the result files. The app reads these folders at start.
 - Each chat goes to `outputs/chats/<chat id>/`: `chat.json`, the images and files sent in it, and the text that the
   model read of each file.
+- Imported skills go to `outputs/skills/<name>/`. Their switches and your skills folder are in
+  `outputs/skills.json`.
 - The local LLM writes its log to `outputs/llm.log`. After a big job, `outputs/llm-cache.safetensors` can hold the
   LLM's saved prompt cache of one chat.
 - When you start the app from `Workstation.app` or `Workstation Chat.app`, it writes its log to `outputs/app.log`.
