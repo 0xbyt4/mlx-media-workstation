@@ -988,7 +988,8 @@ function agentStatus(live, spin) {
 }
 
 function stepChip(live) {
-  if (!live.step) return null;
+  // a workstation answer that calls no tool is a plain answer: its count shows from the second step on
+  if (!live.step || (live.step === 1 && chatMode() === 'workstation')) return null;
   return h('span', {class: 'step-n num'}, 'Step ' + live.step + ' of ' + live.maxSteps + (live.last ? ', no more tools' : ''));
 }
 
