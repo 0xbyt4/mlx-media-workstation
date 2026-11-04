@@ -22,11 +22,18 @@ calls, or {"text": ..., "calls": [...], "think": ..., "think_calls": [...]}: "th
 are written at its end, as Qwen sometimes does. A call is {"name": ..., "arguments": {...}}, written as the model
 writes it, or {"raw": "..."}: that text inside the call markers, to test calls that do not parse.
 
+The done stats also carry "prefix": a hash of the request's tools array and system message, so a test can check that
+the start of the prompt (what the template puts before the conversation) never changes inside a chat. The app's own
+user messages (they start with "[The app:") are not the user's: a script is picked from the user message before them.
+SLOW streams numbered ticks, so the chat's repetition guard never stops it.
+
 A request with "tool_choice": "none" is the agent's last step: its script item is picked from the user message before
 the app's note, and its calls are left out, as the worker's ban of the call marker would do ("FINAL" when it has no
 text).
 """
 
+import hashlib
+import itertools
 import json
 import queue
 import re
@@ -72,8 +79,23 @@ SCRIPTS = {
 LIMITS = ("thinking", "reasoning_effort", "thinking_budget", "max_tokens")
 PARAM = re.compile(r"<parameter=(.*?)>\n?(.*?)\n?</parameter>", re.DOTALL)
 STEPS = "STEPS:"
+APP_NOTE = (
+    "[The app:"  # the start of the app's own user messages (chat.NUDGE, chat.notice)
+)
 RUNTIME = "fake"  # the "runtime" tag of the fake's cache files
 kept = {"chat": None, "tokens": 0}  # the fake prompt cache
+
+
+def ticks():
+    """An endless stream of numbered ticks: a text that never repeats one block (the chat's repetition guard would
+    stop it)."""
+    return (f"tick {n} " for n in itertools.count())
+
+
+def prefix(req):
+    """A hash of what the chat template puts before the conversation: the tools array and the system message."""
+    head = {"tools": req.get("tools"), "system": req["messages"][0]}
+    return hashlib.sha256(json.dumps(head, sort_keys=True).encode()).hexdigest()
 
 
 def emit(ev):
@@ -102,10 +124,13 @@ def call_text(call):
 
 
 def scripted(messages, final=False):
-    """(the chunks, the reasoning) of this step of a STEPS: script, or None when the last user message has none."""
-    users = [i for i, m in enumerate(messages) if m["role"] == "user"]
-    if final:  # the last user message is the app's note
-        users = users[:-1]
+    """(the chunks, the reasoning) of this step of a STEPS: script, or None when the last user message has none. The
+    app's notes (user messages that start with APP_NOTE: the last step's nudge, a changed setting) are not the user's."""
+    users = [
+        i
+        for i, m in enumerate(messages)
+        if m["role"] == "user" and not text_of(m).startswith(APP_NOTE)
+    ]
     text = text_of(messages[users[-1]]) if users else ""
     if STEPS not in text:
         return None
@@ -116,7 +141,7 @@ def scripted(messages, final=False):
         tool = [m for m in messages if m["role"] == "tool"]
         return ["Result: ", text_of(tool[-1]) if tool else "none"], ""
     if step == "SLOW":
-        return iter(lambda: "tick ", None), ""
+        return ticks(), ""
     if isinstance(step, str):
         return [step], ""
     if isinstance(step, list):
@@ -246,7 +271,7 @@ def tool_answer(req, cancel):
     elif messages[-1]["role"] == "tool":
         chunks = ["Result: ", text_of(messages[-1])]
     elif "SLOW" in text:
-        chunks = iter(lambda: "tick ", None)
+        chunks = ticks()
     else:
         chunks = next((v for k, v in SCRIPTS.items() if k in text), ["Hello", " world"])
     cut = "CUT" in text and script is None
@@ -281,6 +306,7 @@ def tool_answer(req, cancel):
             "turns": len(messages),
             "images": len(req["images"]),
             "seen": seen,
+            "prefix": prefix(req),
             **use_cache(req, finish),
         },
     }
@@ -351,9 +377,7 @@ def main():
         if reasoning:
             emit({"id": rid, "event": "reasoning", "text": reasoning})
         parts, finish = [], "stop"
-        words = (
-            iter(lambda: "tick ", None) if "SLOW" in text else iter(["Hello", " world"])
-        )
+        words = ticks() if "SLOW" in text else iter(["Hello", " world"])
         for word in words:
             if cancel.is_set():
                 finish = "cancelled"
@@ -373,6 +397,7 @@ def main():
                     "turns": len(req["messages"]),
                     "images": len(req["images"]),
                     "seen": {k: req.get(k) for k in LIMITS},
+                    "prefix": prefix(req),
                     **use_cache(req, finish),
                 },
             }

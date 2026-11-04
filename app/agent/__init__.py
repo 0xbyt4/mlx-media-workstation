@@ -14,6 +14,10 @@ The chat loop uses this interface:
     tainted = taints(tool, tainted)                     # after the call ran
 
 Nothing here imports app.server: the server's functions come in through WorkstationPort (app/agent/ports.py).
+
+A chat's tools array holds its core tools only; app/agent/deferred.py has the bridge tools (tool_search, tool_describe,
+tool_call) that reach the others, and app/agent/spill.py saves a result over MAX_RESULT for read_result. The chat loop
+builds one registry per chat from these (app/chat.py chat_registry).
 """
 
 from pathlib import Path

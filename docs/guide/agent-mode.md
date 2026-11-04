@@ -61,6 +61,19 @@ The Tools menu lists each tool with a pill that names its risk. The pill sets wh
 
 The chat profile has no media tools, jobs, Library or Transcribe: it shows only the other tools.
 
+### Tools the model loads
+
+The model sees the full description of a few tools only: the ones it needs in most chats. Each tool costs room in
+the model's 32K context. The model knows the names of the other tools and looks one up when it needs it. The Tools
+menu does not change this: a tool that is on works either way.
+
+- The file tools load at the start when the chat has a folder. Without a folder the model looks them up after you
+  grant one.
+- When this Mac has no network at the first message, the web tools are not loaded. The model knows that they need
+  the network.
+- A result longer than 12,000 characters goes whole into the chat's work folder. The model reads the start and reads
+  on when it needs more. The card links the saved file.
+
 ## Answer an approval card
 
 A call that asks shows an approval card with the tool and its arguments. For "Read a web page", the card shows the

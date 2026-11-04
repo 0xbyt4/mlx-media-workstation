@@ -17,6 +17,13 @@ lease (Turn below). Each call is run, refused or shown to the user for approval 
 in chat.json with the answer, so the next turn's model sees them. The chat's tool settings, folder grant, chat-wide
 approvals and taint flag are in chat.json under "agent"; changing them and answering an approval needs a request from
 the app's own page (same_origin).
+
+A chat fixes its prompt at its first turn (freeze, chat.json "prompt"): the tools array, the system text with the
+providers' sections, the date and whether the Mac had a network. The Qwen3.8 template puts the tools before the system
+text, and the worker's prompt cache holds only while each prompt extends the one before, so neither may change in the
+middle of a chat. A later change (the Tools menu, the folder, an installed media tool) reaches the model as the app's
+note before its next step (notice). The tools array holds a few core tools per mode (CORE); the other tools are
+deferred and reached through tool_search, tool_describe and tool_call (app/agent/deferred.py), or by name.
 """
 
 import asyncio
@@ -24,11 +31,14 @@ import json
 import os
 import re
 import secrets
+import socket
 import stat
 import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -51,15 +61,20 @@ from app.agent import (
     WorkstationPort,
     build_registry,
     decide,
+    deferred,
+    extensions,
     file_tools,
     load_settings,
     plan_tool,
+    providers,
     safe_fs,
+    spill,
     taints,
     work_dir,
     ws_tools,
 )
-from app.agent.registry import MAX_RESULT, Cancelled, cap
+from app.agent.extensions import Section
+from app.agent.registry import MAX_RESULT, MAX_SCHEMA, Cancelled, cap
 from app.agent.sandbox import remove_tree
 from app.config import ROOT
 
@@ -106,6 +121,42 @@ MAX_FILES = 20  # files of one tool result linked on the page
 # the largest workspace file the page may fetch (run_python writes at most 50 MB a file)
 MAX_SERVED = 64 * 1024 * 1024
 OFF_BY_DEFAULT = ("run_python", "run_shell")  # see default_agent()
+# The tools in a chat's tools array, per mode, when they are on and can run (docs/AGENT.md, "Core and deferred
+# tools"). Every other tool of the chat is deferred: tool_search, tool_describe and tool_call reach it. A workstation
+# chat has few tools, so all of them are core.
+CORE = {
+    "agent": (
+        "update_plan",
+        "web_search",
+        "fetch_url",
+        "list_workstation_tools",
+        "create_job",
+        "job_status",
+        "list_files",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "media_info",
+        "run_python",
+    ),
+    "workstation": (
+        "list_workstation_tools",
+        "job_status",
+        "search_library",
+        "create_job",
+        "list_jobs",
+        "wait_for_job",
+        "cancel_job",
+        "transcribe_audio",
+        "system_status",
+    ),
+}
+READ_RESULT = spill.build()  # reads a long result that the loop saved (agent chats)
+ALWAYS_ON = (
+    *deferred.BRIDGE,
+    spill.NAME,
+)  # not in the Tools menu: on in every chat that has them
+PROMPT_VERSION = 1  # of chat["prompt"]
 # tools added after chats began to store their tool lists, before they stored "known" (see agent_of())
 ADDED_TOOLS = ("system_status",)
 SHORTENED = "[This older tool result was removed to save space.]"
@@ -124,6 +175,9 @@ NOTE_REPEAT = (
     "The agent stopped: it made the same tool call three times. "
     "Rephrase the request or change the tools."
 )
+NOTE_LOOP = "The agent stopped: it wrote the same text again and again. Send the message again, or rephrase it."
+# what replaces the repeats of a looped text in the saved answer (the first block stays)
+LOOP_MARK = "[The app removed {times} more copies of the text above: the model repeated itself.]"
 # the result of a call made a second time with the same arguments: it does not run again (Turn.call)
 REPEAT = (
     "Not run again: this identical call already ran in this answer, and its result is above. Use that result. "
@@ -158,6 +212,9 @@ LABELS = {
     "media_info": "Media facts",
     "view_image": "View an image",
     "run_shell": "Shell",
+    "tool_search": "Find a tool",
+    "tool_describe": "Tool details",
+    "read_result": "Read a long result",
 }
 # workspace files the page shows inline (images) or as text; anything else is a download
 INLINE_TYPES = {
@@ -236,10 +293,11 @@ def workstation_prompt(
     names: list[str] | None = None,
     off: list[str] | None = None,
     missing: list[str] | None = None,
+    more: str = "",
 ) -> str:
     """The workstation prompt. names: the Workstation tools the model can call (none in the chat profile); off: the
-    ones the user turned off in the Tools menu; missing: the media tools that are not installed. The text changes only
-    with those lists, so the prompt cache holds."""
+    ones the user turned off in the Tools menu; missing: the media tools that are not installed; more: the listing of
+    deferred tools (more_tools), when the chat has any. A chat keeps the text of its first turn (freeze)."""
     run = ""
     if names or off:
         installed_line = (
@@ -256,7 +314,7 @@ def workstation_prompt(
         )
         run = f"""
 
-You can run the app's media tools with these tool calls: {", ".join(names or []) or "none"}.{off_line}
+You can run the app's media tools with these tool calls: {", ".join(names or []) or "none"}.{off_line}{more}
 - When the user asks you to make something (an image, speech, a song, a video), queue it with create_job. Fill the \
 fields from the request; a field you leave out keeps its default. The user approves the job before it is queued.
 - When the request is unclear, or the user wants to read or change the text first, write prompt blocks (see below) \
@@ -326,26 +384,24 @@ Do not call run_python. Answer: "Python is off in this chat. Turn on run_python 
 message again. The output would be 45.\""""
 
 
-def agent_prompt(chat: dict[str, Any]) -> str:
-    """The general prompt plus the rules for tools. The tool schemas go to the chat template separately.
-
-    The text depends only on the chat's tool settings, its folder and the date, never on the turn: the worker keeps
-    a chat's prompt cache only while each prompt extends the one before."""
-    state = agent_of(chat)
-    folder = state["folder"]
-    try:
-        reg = registry()
-        names = offered(state, reg)
-        off = [n for n in reg.names() if n not in state["tools"]]
-        online = any(reg.tools[n].network for n in names)
-    except RuntimeError:  # the registry could not be built: the answer reports that
-        names, off, online = [], [], False
-    internet = (
-        "You reach the internet only through the web tools. A query or URL leaves this Mac: never put private text "
-        "in it."
-        if online
-        else "You have no internet access in this chat."
-    )
+def agent_prompt(lay: "Layout") -> str:
+    """The general prompt plus the rules for tools. The tool schemas go to the chat template separately. A chat keeps
+    the text of its first turn (freeze): later changes reach the model as a note at the end (notice)."""
+    names = [n for n in lay.array if n not in deferred.BRIDGE]
+    folder = lay.state["folder"]
+    web = [t for t in lay.tools if t.network and t.name in lay.state["tools"]]
+    if web and not lay.online:
+        internet = (
+            "This Mac had no network when this chat started. The web tools need it: use them only when the user "
+            "asks, and say that they can fail."
+        )
+    elif web:
+        internet = (
+            "You reach the internet only through the web tools. A query or URL leaves this Mac: never put private "
+            "text in it."
+        )
+    else:
+        internet = "You have no internet access in this chat."
     files = (
         f"The user granted this chat the folder {folder}. The file tools read and write only inside it; give paths "
         "relative to it."
@@ -353,9 +409,9 @@ def agent_prompt(chat: dict[str, Any]) -> str:
         else "No folder is granted to this chat. To read files, the user must grant one in this chat's Tools menu."
     )
     off_line = (
-        f"\n- These tools are off in this chat: {', '.join(off)}. Never call them. When the task needs one, tell the "
-        "user its name and ask them to turn it on in this chat's Tools menu."
-        if off
+        f"\n- These tools are off in this chat: {', '.join(lay.off)}. Never call them. When the task needs one, tell "
+        "the user its name and ask them to turn it on in this chat's Tools menu."
+        if lay.off
         else ""
     )
     plan = (
@@ -366,8 +422,8 @@ def agent_prompt(chat: dict[str, Any]) -> str:
     )
     return f"""{intro()}
 
-You can call tools: {", ".join(names) or "none"}.
-- Call only these tools.{off_line}
+You can call tools: {", ".join(names) or "none"}.{more_tools(lay)}
+- Call only the tools named in this prompt.{off_line}
 - Use a tool only when it helps to answer. Answer from your own knowledge when you can.
 - When you need a fact from a tool, call the tool. Never invent a tool result or say that you called a tool when you \
 did not.
@@ -386,20 +442,55 @@ results you have.
 {AGENT_EXAMPLES}"""
 
 
+def more_tools(lay: "Layout") -> str:
+    """The listing of a chat's deferred tools for its system text, one line per group, or "" when it has none. A
+    group whose tools need a folder (none granted) or the network (offline) says so."""
+    groups: dict[str, list[Tool]] = {}
+    by_name = {t.name: t for t in lay.tools}
+    for name in lay.deferred:
+        if name == spill.NAME:  # the note of a cut result names it
+            continue
+        groups.setdefault(deferred.group_of(by_name[name]), []).append(by_name[name])
+    lines = []
+    for group, members in groups.items():
+        need = ""
+        if not lay.state["folder"] and all(t.folder_needed() for t in members):
+            need = " (need a granted folder)"
+        elif not lay.online and all(t.network for t in members):
+            need = " (need the network)"
+        lines.append(f"\n- {group}{need}: {', '.join(t.name for t in members)}")
+    if not lines:
+        return ""
+    return (
+        "\nMore tools are not loaded, to keep this prompt short. Find one with tool_search, read its parameters with "
+        "tool_describe, and run it with tool_call or by its name:" + "".join(lines)
+    )
+
+
 def mode_of(chat: dict[str, Any]) -> str:
     return chat.get("mode", DEFAULT_MODE)
 
 
 def system_prompt(chat: dict[str, Any]) -> str:
-    """The system prompt for the chat's mode."""
-    mode = mode_of(chat)
-    if mode == "agent":
-        return agent_prompt(chat)
-    if mode == "workstation":
-        state, reg = agent_of(chat), workstation_registry()
-        off = [n for n in reg.names() if n not in state["tools"]]
-        return workstation_prompt(offered(state, reg), off, not_installed())
-    return general_prompt()
+    """The chat's system prompt: the text of its first turn (chat["prompt"]), or the text a first turn would freeze
+    now, without the providers' sections (they are asked only at the first turn)."""
+    if frozen(chat):
+        return chat["prompt"]["system"]
+    return system_text(layout(chat))
+
+
+def system_text(lay: "Layout") -> str:
+    """The system prompt of a layout: the text of its mode, then each provider's section in order."""
+    if lay.mode == "agent":
+        text = agent_prompt(lay)
+    elif lay.mode == "workstation":
+        names = [n for n in lay.array if n not in deferred.BRIDGE]
+        text = workstation_prompt(names, lay.off, lay.missing, more_tools(lay))
+    else:
+        text = general_prompt()
+    for sec in lay.sections:
+        text += f"\n\n{sec.title}:\n{sec.text}"
+    return text
 
 
 router = APIRouter(prefix="/api")
@@ -439,6 +530,9 @@ port: WorkstationPort | None = None  # the media tools; app/server.py sets it
 settings: Settings | None = None
 registries: dict[bool, Registry] = {}  # with media tools or without -> the registry
 registry_lock = threading.Lock()
+# chat id -> the providers' tools it froze (provider_tools), while the app runs
+provided: dict[str, list[Tool]] = {}
+provided_lock = threading.Lock()
 
 
 def registry() -> Registry:
@@ -503,18 +597,25 @@ def default_agent(mode: str = "agent") -> dict[str, Any]:
 def agent_of(chat: dict[str, Any]) -> dict[str, Any]:
     """The chat's agent state (a copy), with defaults for what is missing. "known" lists the tools that existed when
     the state was saved: a tool added to the app since then starts as a new chat would have it (on, except
-    OFF_BY_DEFAULT), while a tool the user turned off stays off."""
+    OFF_BY_DEFAULT), while a tool the user turned off stays off. The providers' tools that the chat froze count as
+    its tools too. A tool that starts on here changes no prompt: the model hears of it in a notice."""
     saved = chat.get("agent")
+    extra = [str(n) for n in (chat.get("prompt") or {}).get("providers") or []]
     if not isinstance(saved, dict):
-        return default_agent(mode_of(chat))
+        state = default_agent(mode_of(chat))
+        state["tools"] += [n for n in extra if n not in state["tools"]]
+        state["known"] += [n for n in extra if n not in state["known"]]
+        return state
     try:
         names = tools_for(mode_of(chat)).names()
     except RuntimeError:
         names = []
+    base = list(names)
+    names += [n for n in extra if n not in names]
     tools = [str(n) for n in saved.get("tools", [])]
     known = saved.get("known")
     if not isinstance(known, list):  # saved before "known"
-        known = [n for n in names if n not in ADDED_TOOLS]
+        known = [n for n in base if n not in ADDED_TOOLS]
     tools += [
         n
         for n in names
@@ -534,14 +635,273 @@ def grants_of(state: dict[str, Any]) -> Grants:
     return Grants(folder, frozenset(state["grants"]))
 
 
-def offered(state: dict[str, Any], reg: Registry) -> list[str]:
-    """The tools the model sees: the enabled ones; the file tools only while a folder is granted (they cannot run
-    without one, and each schema costs prompt tokens)."""
-    return [
-        n
-        for n in reg.names()
-        if n in state["tools"] and (state["folder"] or not reg.tools[n].folder_needed())
-    ]
+# ---------- the frozen prompt ----------
+
+
+def network_up() -> bool:
+    """Whether this Mac has a route to the internet. Connecting a UDP socket only asks the routing table: it sends no
+    packet. A Wi-Fi network without internet counts as online; a Mac with no network at all does not."""
+    # documentation addresses (RFC 5737, RFC 3849): only the route to them matters
+    for family, address in (
+        (socket.AF_INET, ("192.0.2.1", 9)),
+        (socket.AF_INET6, ("2001:db8::1", 9)),
+    ):
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as s:
+                s.connect(address)
+            return True
+        except OSError:
+            continue
+    return False
+
+
+online_check = network_up  # the check at a chat's first turn; tests replace it
+
+
+@dataclass
+class Layout:
+    """What a chat's prompt is made of: every tool the chat can reach, the names in its tools array (in order), its
+    deferred tools, the tools that are off, its tool state, whether it started online, the media tools that are not
+    installed (a workstation chat with tools) and the providers' sections."""
+
+    mode: str
+    tools: list[Tool]
+    array: list[str]
+    deferred: list[str]
+    off: list[str]
+    state: dict[str, Any]
+    online: bool
+    missing: list[str] | None
+    sections: list[Section] = field(default_factory=list)
+    providers: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+
+
+def chat_tools(mode: str, extra: list[Tool]) -> list[Tool]:
+    """Every tool a chat of this mode can reach: the mode's tools, read_result in an agent chat, then the providers'
+    tools (a name the app already has is left out). Raises RuntimeError as registry() does."""
+    tools = list(tools_for(mode).tools.values())
+    if mode == "agent":
+        tools.append(READ_RESULT)
+    names = {t.name for t in tools}
+    return tools + [t for t in extra if t.name not in names]
+
+
+def layout(
+    chat: dict[str, Any],
+    found: extensions.Collected | None = None,
+    online: bool | None = None,
+) -> Layout:
+    """The layout a first turn freezes: the core tools of the mode (CORE) and of the providers go in the tools
+    array when they are on and can run (a folder for the file tools, the network for the web tools); every other tool
+    that is on is deferred, and then the bridge tools join the array. found: what the providers gave (none: no
+    provider tools or sections). Raises RuntimeError as registry() does."""
+    mode = mode_of(chat)
+    found = found if found is not None else extensions.Collected()
+    tools_on = uses_tools(chat)
+    extra = found.tools if tools_on else []
+    own = {t.name for t in chat_tools(mode, [])} if tools_on else set()
+    given = [t.name for t in extra if t.name not in own]
+    clash = [t.name for t in extra if t.name in own]
+    tools = chat_tools(mode, extra) if tools_on else []
+    state = agent_of({**chat, "prompt": {"providers": given}})
+    if online is None:
+        online = online_check() if mode == "agent" else True
+    on = set(state["tools"]) | set(ALWAYS_ON)
+    core = set(CORE.get(mode, ())) | set(found.core)
+
+    def ready(t: Tool) -> bool:
+        return (state["folder"] or not t.folder_needed()) and (online or not t.network)
+
+    array = [t.name for t in tools if t.name in core and t.name in on and ready(t)]
+    later = [t.name for t in tools if t.name in on and t.name not in array]
+    # read_result alone needs no bridge: the note of a cut result names it
+    if any(n != spill.NAME for n in later):
+        array += deferred.BRIDGE
+    problems = list(found.problems)
+    problems += [f"{n}: the app has a tool of this name" for n in clash]
+    return Layout(
+        mode=mode,
+        tools=tools,
+        array=array,
+        deferred=later,
+        off=[t.name for t in tools if t.name not in on],
+        state=state,
+        online=online,
+        missing=not_installed() if mode == "workstation" and tools else None,
+        sections=found.sections,
+        providers=given,
+        problems=problems,
+    )
+
+
+def frozen(chat: dict[str, Any]) -> bool:
+    """Whether the chat's prompt is fixed: every chat after its first turn (a chat saved before this has none and gets
+    one at its next turn)."""
+    p = chat.get("prompt")
+    return isinstance(p, dict) and isinstance(p.get("system"), str)
+
+
+def freeze(chat: dict[str, Any]) -> tuple[dict[str, Any], list[Tool]]:
+    """The prompt of a chat's first turn, as chat.json keeps it, and the providers' tools for it. The providers are
+    asked here, once (app/agent/providers.py). Raises RuntimeError as registry() does."""
+    found = extensions.collect(
+        providers.load(), {**chat, "messages": list(chat["messages"])}
+    )
+    lay = layout(chat, found)
+    system = system_text(lay)
+    by_name = {t.name: t for t in lay.tools}
+    bridge = {
+        t.name: t for t in deferred.bridge(deferred.Catalog({}, frozenset(), frozenset))
+    }
+    schemas = [(by_name.get(n) or bridge[n]).schema() for n in lay.array]
+    state = {"tools": lay.state["tools"], "folder": lay.state["folder"]}
+    if lay.missing is not None:
+        state["missing"] = lay.missing
+    prompt = {
+        "version": PROMPT_VERSION,
+        "date": datetime.now().date().isoformat(),
+        "online": lay.online,
+        "system": system,
+        "tools": lay.array,
+        "schemas": schemas,
+        "deferred": lay.deferred,
+        "providers": lay.providers,
+        "state": state,
+        "tokens": {
+            "system": extensions.tokens(system),
+            "tools": extensions.tokens(json.dumps(schemas, ensure_ascii=False)),
+            "sections": {
+                sec.title: extensions.tokens(sec.text) for sec in lay.sections
+            },
+        },
+        "problems": lay.problems,
+    }
+    return prompt, [t for t in lay.tools if t.name in lay.providers]
+
+
+def ensure_prompt(chat_id: str) -> dict[str, Any]:
+    """The chat's frozen prompt, made and saved at its first turn. The providers are asked outside the chat lock."""
+    with lock:
+        chat = load(chat_id)
+    if frozen(chat):
+        return chat["prompt"]
+    prompt, extra = freeze(chat)
+    with lock:
+        chat = load(chat_id)
+        if not frozen(chat):
+            chat["prompt"] = prompt
+            save(chat)
+            with provided_lock:
+                provided[chat_id] = extra
+        return chat["prompt"]
+
+
+def provider_tools(chat: dict[str, Any]) -> list[Tool]:
+    """The providers' tools of a frozen chat. They are kept per chat while the app runs; after a restart the
+    providers are asked again, and a tool that is gone is left out (a call to it gets "no such tool")."""
+    names = (chat.get("prompt") or {}).get("providers") or []
+    if not names:
+        return []
+    with provided_lock:
+        if chat["id"] in provided:
+            return provided[chat["id"]]
+    found = extensions.collect(providers.load(), chat)
+    keep = [t for t in found.tools if t.name in names]
+    with provided_lock:
+        provided[chat["id"]] = keep
+    return keep
+
+
+def chat_registry(
+    chat: dict[str, Any], enabled: Callable[[], frozenset[str]] | None = None
+) -> tuple[Registry, deferred.Catalog]:
+    """The registry of one chat: the tools of its mode, read_result, the providers' tools it froze and, when its
+    tools array has them, the bridge tools over a catalog of all of them. enabled: the tools that are on now (default:
+    as saved). Raises RuntimeError as registry() does."""
+    tools = chat_tools(mode_of(chat), provider_tools(chat)) if uses_tools(chat) else []
+    p = chat.get("prompt") if frozen(chat) else None
+    array = p["tools"] if p else layout(chat).array
+    if enabled is None:
+        on = frozenset(agent_of(chat)["tools"])
+
+        def enabled() -> frozenset[str]:
+            return on
+
+    catalog = deferred.Catalog(
+        {t.name: t for t in tools},
+        frozenset(array),
+        enabled,
+        offline=not (p or {}).get("online", True),
+    )
+    if deferred.SEARCH in array:
+        tools += deferred.bridge(catalog)
+    reg = Registry(tools)
+    catalog.tools = dict(reg.tools)
+    return reg, catalog
+
+
+def chat_schemas(chat: dict[str, Any]) -> list[dict[str, Any]]:
+    """The schemas of the chat's tools array: the frozen ones, or the ones a first turn would freeze now."""
+    if frozen(chat):
+        return list(chat["prompt"].get("schemas") or [])
+    if not uses_tools(chat):
+        return []
+    lay = layout(chat)
+    reg, _ = chat_registry(chat)
+    return reg.schemas(lay.array)
+
+
+def told_state(chat: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """What the model was last told of the chat's tools, folder and installed media tools: the state of the newest
+    notice in the messages, else the state the prompt froze."""
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant" and isinstance(msg.get("told"), dict):
+            return msg["told"]
+    return dict((chat.get("prompt") or {}).get("state") or {})
+
+
+def notice(
+    told: dict[str, Any], now: dict[str, Any], names: list[str], array: list[str]
+) -> str:
+    """The app's note for the model when the tools that are on, the folder or the installed media tools changed since
+    it was last told, or "". It goes in as a user message at the end of the chat: the system text and the tools array
+    stay as the first turn froze them."""
+    parts = []
+    had, has = set(told.get("tools") or []), set(now["tools"])
+    on = [n for n in names if n in has and n not in had]
+    off = [n for n in names if n in had and n not in has]
+    if on:
+        hint = (
+            " Call them by name; tool_describe shows their parameters."
+            if set(on) - set(array)
+            else ""
+        )
+        parts.append(f"Now on: {', '.join(on)}.{hint}")
+    if off:
+        parts.append(
+            f"Now off: {', '.join(off)}. Do not call them; when the task needs one, ask the user to turn it on in "
+            "this chat's Tools menu."
+        )
+    if (told.get("folder") or None) != now["folder"]:
+        parts.append(
+            f"The user granted this chat the folder {now['folder']}. The file tools read and write only inside it; "
+            "give paths relative to it."
+            if now["folder"]
+            else "The user took back the folder: the file tools cannot run now."
+        )
+    if "missing" in told and "missing" in now:
+        added = [n for n in told["missing"] if n not in now["missing"]]
+        gone = [n for n in now["missing"] if n not in told["missing"]]
+        if added:
+            parts.append(f"Now installed: {', '.join(added)}.")
+        if gone:
+            parts.append(
+                f"No longer installed: {', '.join(gone)}; create_job refuses them."
+            )
+    return (
+        f"[The app: this chat's settings changed. {' '.join(parts)}]" if parts else ""
+    )
 
 
 def risk_text(tool: Tool) -> str:
@@ -608,6 +968,7 @@ def summary(chat: dict[str, Any]) -> dict[str, Any]:
 def tokens(msg: dict[str, Any]) -> int:
     """A rough count (about 3 characters a token across languages), plus the images, attached files and tool calls."""
     text = msg.get("content", "") + msg.get("reasoning", "") + msg.get("nudge", "")
+    text += msg.get("notice", "")
     calls = msg.get("tool_calls")
     extra = len(json.dumps(calls, ensure_ascii=False)) // 3 if calls else 0
     files = msg.get("files") or []
@@ -633,7 +994,8 @@ def model_input(
 
     An agent answer's last step gets the app's note that no tool can be called (NUDGE) as a user message: in the
     running step as a user message with "app": True (it starts no turn), in the saved chat as the "nudge" of the
-    message it produced. Both give the model the same text in the same place.
+    message it produced. Both give the model the same text in the same place. The app's note of a changed setting
+    (notice) takes the same way, as "notice", before the nudge.
     """
     system = system_prompt(chat)
     budget = CONTEXT_TOKENS - max_tokens - len(system) // 3
@@ -754,13 +1116,14 @@ def model_input(
                 }
             )
         else:
-            if msg.get("nudge"):
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": [{"type": "text", "text": msg["nudge"]}],
-                    }
-                )
+            for key in ("notice", "nudge"):  # the app's notes before this step
+                if msg.get(key):
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": msg[key]}],
+                        }
+                    )
             out = {
                 "role": "assistant",
                 "content": msg["content"],
@@ -823,8 +1186,7 @@ def file_room(
     budget = CONTEXT_TOKENS - effort.reserve(level) - len(system_prompt(chat)) // 3
     if uses_tools(chat):
         try:
-            reg = tools_for(mode_of(chat))
-            schemas = reg.schemas(offered(agent_of(chat), reg))
+            schemas = chat_schemas(chat)
             budget -= len(json.dumps(schemas, ensure_ascii=False)) // 3
         except RuntimeError:  # no tools: the answer reports that
             pass
@@ -979,6 +1341,7 @@ def answer(chat_id: str, level: str, run: Live) -> None:
         deadline = (
             time.monotonic() + TURN_SECONDS
         )  # a transcription before does not count
+        ensure_prompt(chat_id)
         with lock:
             chat = load(chat_id)
         window = chat.get("window")
@@ -1077,9 +1440,21 @@ class Turn:
         self.deadline = self.started + TURN_SECONDS
         self.timed_out = False  # the time limit cancelled the running step
         with lock:
-            self.reg = tools_for(mode_of(load(chat_id)))
+            chat = load(chat_id)
+        # the prompt the chat froze at its first turn (agent_answer makes it): every step sends the same tools array
+        # and system text
+        self.prompt: dict[str, Any] = chat["prompt"]
+        self.array: list[str] = list(self.prompt.get("tools") or [])
+        self.reg, self.catalog = chat_registry(
+            chat, lambda: frozenset(self.state()["tools"]) | set(ALWAYS_ON)
+        )
         # this answer's messages, saved when it ends
         self.new: list[dict[str, Any]] = []
+        # a malformed call got its extra step (one automatic retry per answer)
+        self.retried = False
+        # this step's streamed text by kind, and the loop found in it: (kind, length when found, block, times)
+        self.stream: dict[str, str] = {}
+        self.looped: tuple[str, int, int, int] | None = None
         # the calls that returned ok -> 1, or 2 after a repeat of it, for the repeat check (call); cleared after a
         # call that changes state ran
         self.seen: dict[str, int] = {}
@@ -1114,26 +1489,32 @@ class Turn:
 
     def answer(self) -> dict[str, Any]:
         """Run the steps; return the closing assistant message (the steps before it are in self.new)."""
-        for n in range(1, MAX_STEPS + 1):
+        schemas = list(self.prompt.get("schemas") or [])
+        limit, n = MAX_STEPS, 0
+        while n < limit:
+            n += 1
             if self.run.stop:
                 return self.end("cancelled")
             if self.late():
                 return self.end("timeout", self.note_timeout())
             with lock:
                 chat = load(self.chat_id)
-            state = agent_of(chat)
-            schemas = self.reg.schemas(offered(state, self.reg))
             # the last step keeps the schemas (the prompt's start stays the same) but cannot call a tool
-            last = n == MAX_STEPS and bool(schemas)
+            last = n == limit and bool(schemas)
             nudge = NUDGE.format(steps=MAX_STEPS) if last else ""
             history = {**chat, "messages": chat["messages"] + self.new}
-            if last:
-                note = {"role": "user", "content": nudge, "images": [], "app": True}
-                history["messages"].append(note)
+            told = told_state(chat, history["messages"])
+            current = self.current(chat, told)
+            names = [t for t in self.reg.names() if t not in ALWAYS_ON]
+            change = notice(told, current, names, self.array)
+            for text in (change, nudge):
+                if text:
+                    note = {"role": "user", "content": text, "images": [], "app": True}
+                    history["messages"].append(note)
             messages, images = model_input(history, self.max_tokens, schemas)
             keep_window(self.chat_id, chat.get("window"), history.get("window"))
             self.steps = n
-            self.emit({"event": "step", "n": n, "max": MAX_STEPS, "last": last})
+            self.emit({"event": "step", "n": n, "max": limit, "last": last})
             done = self.generate(messages, images, schemas, last)
             msg = {
                 "role": "assistant",
@@ -1142,8 +1523,12 @@ class Turn:
                 "stats": done["stats"],
                 "time": now(),
             }
+            if change:
+                msg.update(notice=change, told=current)
             if last:
                 msg["nudge"] = nudge
+            if self.looped:
+                return self.unloop(msg)
             calls = done.get("tool_calls") or []
             if not calls:
                 finish = "timeout" if self.timed_out else done["finish"]
@@ -1158,12 +1543,16 @@ class Turn:
                 return {**msg, "finish": finish}
             self.new.append({**msg, "finish": "tool_calls", "tool_calls": calls})
             # a call despite the ban: its result would never reach the model
-            if n == MAX_STEPS:
+            if n == limit:
                 self.skip(
                     calls,
                     f"Not run: this answer reached its limit of {MAX_STEPS} steps.",
                 )
                 return self.end("steps", NOTE_STEPS.format(steps=MAX_STEPS))
+            # one automatic retry: the step after a malformed call does not count against the limit
+            if not self.retried and any(c.get("error") for c in calls):
+                self.retried = True
+                limit += 1
             for i, call in enumerate(calls):
                 ended = self.call(call)
                 if ended:
@@ -1172,6 +1561,27 @@ class Turn:
                     )
                     return self.end(*ended)
         raise AssertionError("unreachable: the last step returns")
+
+    def current(self, chat: dict[str, Any], told: dict[str, Any]) -> dict[str, Any]:
+        """The chat's tools, folder and (when the prompt names them) missing media tools now, as notice() compares
+        them."""
+        state = agent_of(chat)
+        now_state: dict[str, Any] = {
+            "tools": state["tools"],
+            "folder": state["folder"],
+        }
+        if "missing" in told:
+            now_state["missing"] = not_installed()
+        return now_state
+
+    def unloop(self, msg: dict[str, Any]) -> dict[str, Any]:
+        """The closing message of a step whose text looped: the looped text keeps its first block and a marker
+        instead of the repeats (the model must not read the loop again), and the answer ends with a note."""
+        assert self.looped is not None
+        kind, length, block, times = self.looped
+        kept = self.stream[kind][: length - block * (times - 1)].rstrip()
+        msg[kind] = f"{kept}\n\n{LOOP_MARK.format(times=times - 1)}"
+        return {**msg, "finish": "repeat", "note": NOTE_LOOP}
 
     def generate(
         self,
@@ -1185,6 +1595,7 @@ class Turn:
         deadline: the answer's limit counts its own time only. Stop ends the wait (llm.cancel). In the last step the
         model cannot start a call (tool_choice "none")."""
         waiting_since: float | None = None
+        self.stream, self.looped = {"reasoning": "", "content": ""}, None
         for ev in llm.generate(
             messages,
             images,
@@ -1209,17 +1620,52 @@ class Turn:
             if ev["event"] == "error":
                 raise llm.LLMError(ev["message"])
             self.emit(ev)  # waiting, reasoning, content
+            if ev["event"] in self.stream and self.looped is None:
+                self.watch(ev["event"], ev["text"])
             if self.late() and not self.timed_out and self.run.rid:
                 self.timed_out = True
                 llm.cancel(self.run.rid)
         raise llm.LLMError(llm.CRASHED)
+
+    def watch(self, kind: str, text: str) -> None:
+        """The repetition guard: when the step's reasoning or content ends with one block repeated again and again
+        (deferred.looping), cancel the step; answer() then ends the answer (unloop)."""
+        self.stream[kind] += text
+        hit = deferred.looping(self.stream[kind])
+        if hit:
+            self.looped = (kind, len(self.stream[kind]), *hit)
+            if self.run.rid:
+                llm.cancel(self.run.rid)
 
     def call(self, call: dict[str, Any]) -> tuple[str, str] | None:
         """Decide, maybe ask, and run one call; add its tool message. Returns (finish, note) when the answer must
         end."""
         name = str(call.get("name") or "")
         args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+        via = None
+        if name == deferred.CALL and not call.get("error") and name in self.reg.tools:
+            # the bridge: from here on the call is the tool it names, for the policy, the card, the taint flag and
+            # the repeat rule; the tool message answers the model's tool_call by its id
+            via = name
+            name = str(args.get("name") or "").strip()
+            inner = args.get("arguments", {})
+            if isinstance(inner, str):
+                try:
+                    inner = json.loads(inner)
+                except ValueError:
+                    inner = None
+            if not isinstance(inner, dict):
+                call = {**call, "error": "tool_call: arguments must be a JSON object"}
+                inner = {}
+            args = inner
+            call = {**call, "name": name, "arguments": args}
         tool = self.reg.get(name)
+        if via and name in deferred.BRIDGE:
+            tool = None  # tool_call runs one of the more tools, not a bridge tool
+        if tool is not None and name not in self.array:
+            # a deferred tool: the worker typed its arguments without its schema
+            args = deferred.coerce(tool.parameters, args)
+            call = {**call, "arguments": args}
         describe = ""
         host = None
         if tool is not None and not call.get("error"):
@@ -1238,6 +1684,7 @@ class Turn:
                 "describe": describe,
                 "risk": int(tool.risk) if tool else None,
                 "network": tool.network if tool else None,
+                **({"via": via} if via else {}),
             }
         )
         self.calls += 1
@@ -1250,10 +1697,15 @@ class Turn:
             )
             return ("timeout", self.note_timeout())
         if call.get("error"):
+            expected = ""
+            if tool is not None:
+                expected = json.dumps(tool.parameters, ensure_ascii=False)
+                expected = f" {tool.name} takes: {expected[:MAX_SCHEMA]}"
             self.result(
                 call,
                 "error",
-                f"{call['error']}. Write the call again with the function name and every parameter.",
+                f"{call['error']}. Write the call again: the function name, then every required parameter in its own "
+                f"parameter block.{expected}",
                 describe,
             )
             return None
@@ -1274,12 +1726,14 @@ class Turn:
             return ("repeat", NOTE_REPEAT)
         state = self.state()
         grants = grants_of(state)
-        verdict = decide(tool, grants, state["tainted"], frozenset(state["tools"]))
+        on = frozenset(state["tools"]) | set(ALWAYS_ON)
+        verdict = decide(tool, grants, state["tainted"], on)
         if verdict.action == Action.REFUSE:
             reason = verdict.reason
-            if tool is None:
-                names = ", ".join(offered(state, self.reg)) or "none"
-                reason = f"There is no tool {name!r}. The tools of this chat: {names}."
+            if tool is None and via and name in deferred.BRIDGE:
+                reason = f"Call {name} directly, not through tool_call."
+            elif tool is None:
+                reason = self.catalog.unknown(name)
             self.result(call, "refused", reason, describe)
             return None
         ctx = Context(
@@ -1342,12 +1796,19 @@ class Turn:
         if name == plan_tool.NAME and res.status == "ok" and res.args is not None:
             plan = plan_tool.items(res.args)
             self.emit({"event": "plan", "id": call["id"], "items": plan})
+        text, made = res.full, list(res.files)
+        if res.truncated and spill.NAME in self.reg.tools:
+            # the whole result goes to the work folder; the model gets its start and the file's name
+            path = spill.save(work_dir(CHATS, self.chat_id), str(call["id"]), res.full)
+            if path:
+                text = spill.note(res.full, path)
+                made.append(path)
         self.result(
             call,
             res.status,
-            res.full,
+            text,
             describe,
-            files=self.files(res.files, res.images, res.saved),
+            files=self.files(made, res.images, res.saved),
             seconds=res.seconds,
             approval=approval,
             plan=plan,
@@ -1529,6 +1990,7 @@ def agent_answer(chat_id: str, level: str, run: Live) -> None:
             reply["finish"] = "cancelled"
             run.events.append(STOPPED_EARLY)
             return
+        ensure_prompt(chat_id)
         turn = Turn(chat_id, level, run)
         # one lease for every step: a queued media job does not unload the model between them
         with llm.session(lambda: run.stop, TURN_SECONDS):
@@ -1685,6 +2147,8 @@ def delete_chat(chat_id: str) -> dict[str, str]:
         trash = CHATS / f".deleted-{chat_id}-{secrets.token_hex(4)}"
         os.rename(path, trash)
     llm.forget_chat(chat_id)
+    with provided_lock:
+        provided.pop(chat_id, None)
     remove_tree(trash)
     return {"status": "deleted"}
 
@@ -2101,9 +2565,13 @@ def check_folder(text: str) -> str:
 
 
 def agent_view(chat: dict[str, Any]) -> dict[str, Any]:
-    """The chat's agent state with every tool that its mode can have, for the Tools menu."""
+    """The chat's agent state with every tool that it can have, for the Tools menu: the tools of its mode and, after
+    its first turn, the providers' tools it froze. "loaded" says whether a tool is in the chat's tools array ("core")
+    or reached through tool_search ("search"); before the first turn, where it would go. "prompt" describes the
+    frozen prompt (null values before the first turn)."""
     state = agent_of(chat)
-    reg = tools_for(mode_of(chat))
+    reg, catalog = chat_registry(chat)
+    p = chat["prompt"] if frozen(chat) else {}
     items = [
         {
             "name": t.name,
@@ -2114,8 +2582,11 @@ def agent_view(chat: dict[str, Any]) -> dict[str, Any]:
             "network": t.network,
             "enabled": t.name in state["tools"],
             "granted": t.name in state["grants"],
+            "loaded": "core" if t.name in catalog.core else "search",
+            "group": deferred.group_of(t),
         }
         for t in reg.tools.values()
+        if t.name not in ALWAYS_ON
     ]
     return {
         **state,
@@ -2125,6 +2596,13 @@ def agent_view(chat: dict[str, Any]) -> dict[str, Any]:
             "steps": MAX_STEPS,
             "seconds": TURN_SECONDS,
             "approval_s": APPROVAL_SECONDS,
+        },
+        "prompt": {
+            "frozen": bool(p),
+            "date": p.get("date"),
+            "online": p.get("online"),
+            "tokens": p.get("tokens"),
+            "problems": p.get("problems") or [],
         },
     }
 
@@ -2160,13 +2638,14 @@ def change_agent(chat_id: str, body: AgentChange, request: Request) -> dict[str,
     while an answer runs."""
     same_origin(request)
     with lock:
-        mode = mode_of(agent_chat(chat_id))
+        current = agent_chat(chat_id)
+    mode = mode_of(current)
     try:
-        reg = tools_for(mode)
+        reg, _ = chat_registry(current)
     except RuntimeError as e:
         raise HTTPException(500, str(e)) from None
     if body.tools is not None:
-        unknown = [n for n in body.tools if reg.get(n) is None]
+        unknown = [n for n in body.tools if reg.get(n) is None or n in ALWAYS_ON]
         if unknown:
             raise HTTPException(400, f"Unknown tool: {', '.join(unknown)}")
     folder_given = "folder" in body.model_fields_set
@@ -2177,7 +2656,9 @@ def change_agent(chat_id: str, body: AgentChange, request: Request) -> dict[str,
         chat = agent_chat(chat_id)
         state = agent_of(chat)
         if body.tools is not None:
-            state["tools"] = [n for n in reg.names() if n in body.tools]
+            state["tools"] = [
+                n for n in reg.names() if n in body.tools and n not in ALWAYS_ON
+            ]
         if folder_given:
             state["folder"] = granted
         if body.revoke:

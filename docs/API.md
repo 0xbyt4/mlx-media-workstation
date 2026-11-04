@@ -600,6 +600,34 @@ tokens in every answer ([AGENT.md](AGENT.md#how-the-chat-loop-uses-the-package))
 no `mode` in `chat.json` and is a `workstation` chat. The mode is fixed after the first message, because a different
 system prompt changes what the earlier answers meant. The context budget counts the chat's own system prompt.
 
+A chat fixes its prompt at its first turn and keeps it in `chat.json` under `prompt`. Every later request sends the
+same tools array and system text, so the worker's prompt cache holds ([AGENT.md](AGENT.md#the-prompt-and-the-prompt-cache)):
+
+```json
+{"version": 1, "date": "2026-11-04", "online": true,
+ "system": "You are a helpful assistant ...",
+ "tools": ["update_plan", "list_workstation_tools", "job_status", "create_job", "media_info", "web_search",
+           "fetch_url", "tool_search", "tool_describe", "tool_call"],
+ "schemas": [{"type": "function", "function": {"name": "update_plan", "...": "..."}}],
+ "deferred": ["search_library", "list_jobs", "..."],
+ "providers": [],
+ "state": {"tools": ["update_plan", "..."], "folder": null},
+ "tokens": {"system": 1103, "tools": 1860, "sections": {}},
+ "problems": []}
+```
+
+- `date` is the day of the first turn; the system text has it in words. `online` is the result of the network check
+  at the first turn (always `true` outside agent chats).
+- `system` is the system text. `tools` are the names of the tools array, in order, and `schemas` their schemas as
+  the model got them. `deferred` are the tools that were on and not in the array. A general chat has empty lists.
+- `providers` are the names of the providers' tools that the chat keeps.
+- `state` is what the model knew at the first turn: the tools that were on, the folder and, in a workstation chat with
+  tools, `missing` (the media tools that were not installed). The app's notes for later changes compare with it.
+- `tokens` estimates the prompt (characters / 3): the system text, the schemas and each provider section.
+- `problems` lists the providers that were left out, with the reason.
+
+A chat saved before this has no `prompt` and gets one at its next turn. Regenerate keeps it.
+
 A text the model writes for a tool comes in a fenced block whose info string is `prompt`, the tool id and, for a tool
 with several prompt-help fields, the field name (`prompt video.t2v`, `prompt music.ace lyrics`). In a workstation
 chat the UI shows a "Use in <tool>" button on such a block; without a field name it fills the tool's first `assist`
@@ -763,14 +791,22 @@ file cannot approve calls or grant folders. The writes also need an `Origin` hea
 with another one).
 
 - `GET /api/chats/{id}/agent` returns the state for the Tools menu: `folder`, `grants`, `tainted`, `enabled` (the
-  names), `limits` (`steps`, `seconds`, `approval_s`) and `tools`, a list of `{name, label, description, risk,
-  risk_text, network, enabled, granted}` for every tool that the chat's mode can have (a workstation chat: the
-  Workstation tools). HTTP 409 for a chat without tools: a general chat, or a workstation chat in the chat profile.
+  names), `limits` (`steps`, `seconds`, `approval_s`), `prompt` and `tools`, a list of `{name, label, description,
+  risk, risk_text, network, enabled, granted, loaded, group}` for every tool that the chat can have: the tools of its
+  mode (a workstation chat: the Workstation tools) and, after the first turn, the providers' tools it keeps.
+  `loaded` is `"core"` for a tool in the chat's tools array and `"search"` for a tool that the model reaches with
+  `tool_search` (before the first turn: where the tool would go now). `group` names the tool's line in the listing
+  of deferred tools ("Media jobs"). `prompt` is `{frozen, date, online, tokens, problems}` from the chat's `prompt`
+  (`frozen` is `false` and the others `null` or `[]` before the first turn). `tool_search`, `tool_describe`,
+  `tool_call` and `read_result` are not in the list: they are always on. HTTP 409 for a chat without tools: a
+  general chat, or a workstation chat in the chat profile.
 - `PATCH /api/chats/{id}/agent` changes it and returns the new state. The JSON body has any of:
-  - `tools`: the names of the enabled tools (HTTP 400 for an unknown name);
+  - `tools`: the names of the enabled tools (HTTP 400 for an unknown name, and for `tool_search`, `tool_describe`,
+    `tool_call` and `read_result`);
   - `folder`: a folder to grant, or `null` or `""` to revoke it (HTTP 400 for a grant in a workstation chat);
   - `revoke`: tools whose "allow in this chat" ends.
-  The changes apply from the next tool call, also while an answer runs. The folder must be an absolute path to an
+  The changes apply from the next tool call, also while an answer runs. They do not change the chat's prompt: the
+  model gets the app's note before its next step (see the saved messages below). The folder must be an absolute path to an
   existing folder. The server stores its real path as the disk spells it (`F_GETPATH`). It refuses `/`, a folder
   directly under `/`, the home folder and the folders above it, system folders (`/System`, `/Library`, `/usr`,
   `/private/etc`...), `~/Library`, `/private/var` and `/private/tmp` (also as `/var` and `/tmp`), other users' folders
@@ -794,12 +830,14 @@ with another one).
 Events. The message stream of an agent chat has these events besides `waiting`, `reasoning`, `content` and `error`:
 
 - `{"event": "step", "n": 2, "max": 12, "last": false}` before each model request. `last` is `true` for the last
-  step, which cannot call tools.
+  step, which cannot call tools. `max` grows by one after the first malformed call of an answer (one automatic
+  retry).
 - `{"event": "tool_call", "id", "name", "label", "arguments", "describe", "risk", "network"}` for each call the model
   made. `describe` is one line about what the call does, with bidi, zero-width and control characters written as
   `\uXXXX`. `risk` is 0 to 3, or `null` for an unknown tool. `network` says whether the tool sends data off this Mac
   (`null` for an unknown tool): the page labels a local R2 tool "Uses this Mac". `arguments` are as the model sent
-  them: the page writes those characters as `\uXXXX` when it shows them.
+  them: the page writes those characters as `\uXXXX` when it shows them. A call that the model made with `tool_call`
+  has `"via": "tool_call"`, and `name`, `arguments` and `risk` are those of the tool it runs.
 - `{"event": "approval", "id", "name", "label", "arguments", "describe", "host", "reason", "risk", "network",
   "chat_scope", "timeout_s", "preview"}` when the call waits for the user. Offer "Allow in this chat" only when
   `chat_scope` is `true`. `host` is the host that `fetch_url` contacts, as the network sees it (IDNA: `xn--...` for a
@@ -818,13 +856,14 @@ Events. The message stream of an agent chat has these events besides `waiting`, 
   `kind` is `image` or `file` for a file in the workspace (`url` under `.../ws/`), `image` for a `view_image` copy
   (`url` under `.../files/`), or `saved` for a file written in the granted folder (`path` relative to it, `url` empty:
   the page shows it with a "Show in Finder" button). The page shows a card for `job` with the job's live status from
-  `GET /api/jobs`, a link to the Jobs view and the outputs when the job is done.
+  `GET /api/jobs`, a link to the Jobs view and the outputs when the job is done. A result over 12,000 characters
+  in an agent chat links its saved copy (`results/<call id>.txt`, `kind` `file`).
 - `{"event": "plan", "id", "items": [{"step", "status"}]}` after an `update_plan` call that ran, before its
   `tool_result`. `status` is `pending`, `in_progress` or `done`. Each event has the whole plan: the page replaces the
   checklist of the answer and shows no card for such a call.
 - `done` as above, plus `note` (why the answer ended early, or `""`). `finish` can also be `steps` (the step limit:
   `content` is then the model's summary from the last step, which could not call tools), `repeat` (the same call a
-  third time) or `timeout` (the time limit). `stats` adds `steps`, `tool_calls` and `generation_tokens` over all
+  third time, or a step whose text repeated one block again and again) or `timeout` (the time limit). `stats` adds `steps`, `tool_calls` and `generation_tokens` over all
   steps; `seconds` is the whole answer.
 
 `GET /api/chats/{id}/stream` replays these events too. A page that comes back while a call waits sees its `approval`
@@ -841,7 +880,9 @@ Rules of the loop (`app/chat.py`, `Turn`):
    anyway does not run.
 3. Stop is checked before each step, before each call, while a call waits for approval and inside the tools.
 4. A malformed call, an unknown or disabled tool, a refusal and a denial each give the model a tool message. The
-   answer goes on.
+   answer goes on. An unknown name gets the nearest names; invalid arguments and a malformed call get the tool's
+   parameters. The first malformed call of an answer gets one extra step. A step whose text repeats one block 4 times
+   or more (400 characters or more) is cancelled and ends the answer with `finish` `repeat`.
 5. The same call (name and arguments) a second time in one answer, after the first one returned `ok`, does not run:
    its tool message (`status: "repeat"`) says that the call already ran and its result is above. A third time ends
    the answer with a note. The rule does not apply to the tools whose result can change (`job_status`, `list_jobs`,
@@ -870,7 +911,12 @@ The answer's messages are saved when it ends. The assistant messages keep their 
 "risk", "time"}`, plus `images` for a `view_image` result and `job` as in `tool_result`, with `content` cut at
 100,000 characters. An `update_plan` message also has `plan` (its items), so a saved answer shows its last plan. The
 message of the last step has `nudge`, the app's note that the model got as a user message before it; the next turns
-send it in the same place. The model gets at most 12,000 characters of each result.
+send it in the same place. A step after a change in the Tools menu (or a folder grant, a new tool, a media tool that
+got installed) has `notice`, the app's note of the change, sent the same way before `nudge`, and `told`, the state
+that the note told (`{tools, folder}`, plus `missing` in a workstation chat). A tool message of a call made with
+`tool_call` has the name of the tool it ran. A looped step keeps its first block and a marker instead of the
+repeats. The model gets at most 12,000 characters of each result. In an agent chat a longer result is saved whole in
+the work folder; the tool message then has its start and a note with the file name, and `read_result` reads on.
 When the history does not fit the context budget, old tool results are shortened first, oldest first, and then the
 oldest turns are dropped, until the history fills 60% of the budget. The budget counts the system prompt and the tool
 schemas. `chat.json` then stores the cut as `window`: `{"start": n, "short": n}`, indexes into `messages`. The model

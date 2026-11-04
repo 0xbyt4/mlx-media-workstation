@@ -18,6 +18,11 @@ which reads about 16 GB from disk. It unloads after 10 minutes without use. See
 
 The mode is fixed after the first message. A new chat starts in the mode of your last new chat.
 
+The chat also fixes its instructions for the model at the first message: the tools it shows the model, the date and
+whether this Mac has a network. Then the model does not read the whole chat again before each answer, so answers
+start sooner. When you change the Tools menu later, the model gets a short note about the change with your next
+message. To give the model a new date or a network that came back, start a new chat.
+
 | Mode | What it does |
 |---|---|
 | Workstation | Knows the app's tools and every field of their forms. It queues a job when you ask it to make something, after you approve it. When it writes a text for a tool, the answer shows a "Use in" button. |

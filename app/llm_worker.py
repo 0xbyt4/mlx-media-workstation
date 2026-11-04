@@ -247,6 +247,35 @@ def trailing_calls(
     return rest, blocks
 
 
+def thought_calls(
+    reasoning: str, answer: str, start: str = TOOL_START, end: str = TOOL_END
+) -> tuple[str, list[tuple[str, bool]]]:
+    """The calls that Qwen wrote in its reasoning, for an answer that has none, as (the reasoning without them, blocks
+    as in ToolText.finish):
+
+    - complete call blocks at the end of the reasoning (trailing_calls);
+    - when the answer has no text either: every complete call block in the reasoning, each one once;
+    - when the answer has no text and the reasoning ends inside a call (the thinking budget cut it): that call as an
+      unclosed block, so it comes back to the model as a malformed call instead of an empty answer.
+
+    An answer with text keeps a call in the middle of the reasoning there: it was a draft that the model did not
+    send."""
+    rest, blocks = trailing_calls(reasoning, start, end)
+    if blocks or answer.strip():
+        return (rest, blocks) if blocks else (reasoning, [])
+    found = re.compile(re.escape(start) + r"(.*?)" + re.escape(end), re.DOTALL)
+    seen: list[str] = []
+    for body in found.findall(reasoning):
+        if body.strip() and body not in seen:
+            seen.append(body)
+    if seen:
+        return found.sub("", reasoning).strip(), [(body, True) for body in seen]
+    at = reasoning.rfind(start)
+    if at >= 0 and FUNCTION.search(reasoning, at):
+        return reasoning[:at].rstrip(), [(reasoning[at + len(start) :], False)]
+    return reasoning, []
+
+
 # ---------- banned tokens: emoji, and the call marker for tool_choice "none" ----------
 
 # Code points that are emoji: the Misc Symbols and Dingbats blocks (but the music signs U+2669-266F, as in "C♯"), the
@@ -842,14 +871,16 @@ def finish_tools(
 ) -> None:
     """Complete a "done" event of a request with tools: the rest of the visible text (as a last content delta), the
     content without call markup, and "tool_calls" ("finish": "tool_calls" when there are any). A cancelled answer
-    gets no calls: nothing it started may run. When the content has no call but the reasoning ends with complete
-    call blocks (Qwen wrote its call while it thought), those are the calls, and the reasoning loses them."""
+    gets no calls: nothing it started may run. When the content has no call, the calls that Qwen wrote while it
+    thought are the calls (thought_calls), and the reasoning loses them."""
     tail, visible, blocks = calls.finish()
     if tail and done["finish"] != "cancelled":
         emit({"id": done["id"], "event": "content", "text": tail})
     done["content"] = visible.lstrip("\n")
     if not blocks and done["finish"] != "cancelled":
-        rest, blocks = trailing_calls(done["reasoning"], calls.start, calls.end)
+        rest, blocks = thought_calls(
+            done["reasoning"], done["content"], calls.start, calls.end
+        )
         if blocks:
             done["reasoning"] = rest
     done["tool_calls"] = (

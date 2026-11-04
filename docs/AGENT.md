@@ -17,7 +17,8 @@ Each tool has a risk level. `app/agent/policy.py` decides from that level whethe
 | R3 | Runs code, changes an existing file, or has effects the app cannot check. | Asks every time. "Allow in this chat" is not offered. |
 
 A tool that is off in the chat's Tools menu is refused. An unknown tool name is refused. The model gets the reason as
-the tool's result, so it can answer the user.
+the tool's result, so it can answer the user. For an unknown name the reason gives the nearest names (`difflib`) and
+the tools in the chat's tools array.
 
 | Tool | Level | What it does |
 |---|---|---|
@@ -44,6 +45,13 @@ the tool's result, so it can answer the user.
 | `fetch_url` | R2 | Reads one public web page as text, in parts of 10,000 characters. Sends the URL off this Mac. |
 | `run_python` | R3 | Runs Python code in the sandbox. Present only when the sandbox works on this Mac. |
 | `run_shell` | R3 | Runs a shell command (zsh) in the sandbox. Present only when the sandbox works on this Mac. |
+| `tool_search` | R0 | Finds the chat's tools by what they do (BM25) and returns the best matches with their full schema. In the tools array only when the chat has deferred tools. |
+| `tool_describe` | R0 | Returns the full schema of named tools. |
+| `tool_call` | R0 | Runs a deferred tool by name. The loop runs the named tool with its own level, so the rule of that tool applies. |
+| `read_result` | R0 | Reads on in a long result that the loop saved in the work folder (see [Long results](#long-results)). Its result is untrusted. |
+
+`tool_search`, `tool_describe`, `tool_call` and `read_result` are not in the Tools menu. They are on in every chat that
+has them.
 
 The Workstation tools exist only in the full profile. The chat profile has no Workstation, so its registry has none
 of them.
@@ -482,14 +490,17 @@ registry per media flag, so at most one per profile: with the media tools (the f
 `Workstation` object from `app/server.py`) and without them (the chat profile; the port is `None`). One answer
 (`Turn`) runs these steps:
 
-1. Take the schemas of the tools the chat offers. The tools that need a folder are offered only when one is granted.
+1. Take the chat's frozen prompt: its tools array and system text (see [The prompt and the prompt
+   cache](#the-prompt-and-the-prompt-cache)). When the tools that are on, the folder or the installed media tools
+   changed since the model last heard of them, add the app's note (a user message, see [Notes for later
+   changes](#notes-for-later-changes)).
 2. Build the model input. The budget counts the system prompt, the tool schemas and the tool messages. Old tool
    results are shortened first, then old turns are dropped, until the input fills 60% of the budget (`TRIM_TO`).
-3. Run one model request with the schemas. With no calls, the answer ends. When the content has no call but the
-   reasoning ends with complete call blocks (Qwen sometimes writes its call while it thinks), the worker takes the
-   calls from there.
-4. For each call: check Stop and the time, check the format, check for a repeat, then call
-   `decide(tool, grants, tainted, enabled)`. The second identical call (same tool, same arguments) in one answer does
+3. Run one model request with the schemas. With no calls, the answer ends. When the content has no call, the worker
+   looks for calls in the reasoning (Qwen sometimes writes its call while it thinks; see [Guards for small
+   models](#guards-for-small-models)).
+4. For each call: unwrap `tool_call` (the call is then the tool it names), check Stop and the time, check the format,
+   check for a repeat, then call `decide(tool, grants, tainted, enabled)`. The second identical call (same tool, same arguments) in one answer does
    not run when the first one returned `ok`: its result says that the call already ran and its result is above. The
    third one ends the answer with a note. The rule skips a tool with `repeatable=True`: its result can change between
    two identical calls (jobs, files, web pages). After a tool with `writes=True` or `side_effects=True` ran (it
@@ -505,8 +516,9 @@ registry per media flag, so at most one per profile: with the media tools (the f
    `deadline` is when the answer must end, so a tool that waits stops in time. `preview` is the diff the user
    approved. Then update the taint flag with `taints(tool, tainted)`. The images of a result (`view_image`) go into
    its tool message.
-7. Add a tool message with the result and go to the next step. For `update_plan`, also send the checked items to the
-   page (a `plan` event) and keep them in the tool message.
+7. Add a tool message with the result and go to the next step. A result over 12,000 characters is saved whole in the
+   work folder first (see [Long results](#long-results)). For `update_plan`, also send the checked items to the page
+   (a `plan` event) and keep them in the tool message.
 8. An answer has at most 12 steps (`MAX_STEPS`) and 10 minutes. The time a step waits for memory (a media job runs)
    does not count against the 10 minutes, and Stop ends that wait.
 9. The last step cannot call tools. Its request keeps the same tool schemas, so the prompt's start does not change
@@ -528,11 +540,132 @@ marker token to the end marker token) nothing is banned: the arguments are data,
 ### The prompt and the prompt cache
 
 The worker keeps a chat's prompt cache only while each new prompt extends the one before: Qwen3.8's linear-attention
-layers cannot rewind, so any change reads the whole chat again. So the agent prompt does not change between turns.
-It holds the offered tools, the tools that are off (by name, with the rule to ask the user to turn one on in the
-Tools menu), the step limit, the folder and two short fixed example runs (`AGENT_EXAMPLES`, about 250 tokens). It
-changes only when the user changes the tools or the folder, and when the date changes: the prompt has today's date,
-so the first answer after midnight reads the chat again.
+layers cannot rewind, so any change reads the whole chat again. The Qwen3.8 chat template puts the tools array before
+the system text. So a change to either one reads the whole chat again: about 8 s for 4,000 tokens on an M5 Pro, two
+to four times more on a smaller Mac.
+
+So a chat fixes its prompt at its first turn (`freeze` in `app/chat.py`) and keeps it in `chat.json` under `prompt`
+(see `docs/API.md`). Every later request sends exactly the same tools array and system text. The chat fixes:
+
+- the tools array: the names, and the schemas as they were then;
+- the system text: the text of the mode, then the providers' sections in order;
+- the date, to the day;
+- whether the Mac had a network (see [Offline](#offline));
+- the providers' tools (see [Providers](#providers));
+- the tools that were on, the folder and the media tools that were not installed, as the start of the notes.
+
+These no longer change the prompt of a chat that has started: the Tools menu (tools on or off, the folder), a tool
+that the app gets after an update (`known` in the agent state), a media tool that gets installed, the date, the
+`[agent]` settings after a restart (the description of `run_python`), the network, and the providers' tools and
+sections. The mode is fixed after the first message in any case. A chat saved before this has no `prompt`: it gets
+one at its next turn, which reads the chat once more.
+
+The thinking level is not fixed. The template writes a line for the reasoning effort before the tools array, so a
+message with another level (for example `off`, then `low`) reads the whole chat again. The levels `off` and `medium`
+have no such line, so a change between those two keeps the cache.
+
+#### Prompt layout
+
+The system turn of a request has these parts, in this order:
+
+1. The template's reasoning-effort line (it depends on the thinking level).
+2. The tools array: the core tools, then `tool_search`, `tool_describe` and `tool_call` when the chat has deferred
+   tools.
+3. The system text: the text of the mode (`agent_prompt`, `workstation_prompt` or `general_prompt`). An agent chat's
+   text names the tools of the array, then lists the deferred tools, one line per group ("- Media jobs: list_jobs,
+   wait_for_job, ..."). A group whose tools need a folder (none is granted) or the network (offline) says so. Then
+   come the rules, the step limit, the internet line, the folder line and two short example runs
+   (`AGENT_EXAMPLES`, about 250 tokens).
+4. The providers' sections, each as "Title:" and its text.
+
+#### Core and deferred tools
+
+Each mode names its core tools (`CORE` in `app/chat.py`). A core tool goes in the tools array when it is on and can
+run: a file tool needs a granted folder, a web tool needs the network. Each provider names its own core tools.
+Every other tool that is on is deferred: the system text lists its name, and the model reaches it in one of two ways:
+
+- `tool_search` (BM25 over the name, the group, the description and the parameter names; an exact name comes first)
+  or `tool_describe` gives the schema. Then the model calls the tool by its name, or with `tool_call`.
+- The loop knows every tool of the chat, not only the array. A direct call to a deferred tool runs. The worker types
+  the arguments by the schemas of the array, so a deferred tool's numbers and switches come as text; the loop turns
+  them into the type of the schema (`deferred.coerce`).
+
+`tool_call` is unwrapped before anything else: the policy, the approval card, the taint flag and the repeat rule see
+the real tool. The tool message answers the model's `tool_call` by its id. The `tool_call` event has `"via":
+"tool_call"`.
+
+| Mode | Core tools |
+|---|---|
+| Agent | `update_plan`, `web_search`, `fetch_url`, `list_workstation_tools`, `create_job`, `job_status`, `list_files`, `read_file`, `write_file`, `edit_file`, `media_info`, `run_python` |
+| Workstation | all its tools (9): a workstation chat has no deferred tools unless a provider adds some |
+| General | none: a general chat has no tools |
+
+The agent's deferred tools are `search_library`, `list_jobs`, `wait_for_job`, `cancel_job`, `transcribe_audio`,
+`system_status`, `search_files`, `copy_to_workspace`, `export_from_workspace`, `view_image`, `run_shell` and
+`read_result` (the last one is not in the listing: the note of a cut result names it).
+
+The prompt of each mode (the template's system turn with the tools array, thinking off; real tokens of the Qwen3.8
+tokenizer, and characters / 3):
+
+| Chat | Before | After |
+|---|---|---|
+| Agent, no folder, defaults | 14 tools, 3,088 tokens (3,621) | 10 tools, 2,520 tokens (2,963) |
+| Agent, a folder, `run_python` and `run_shell` on | 23 tools, 4,934 tokens (5,845) | 15 tools, 3,442 tokens (4,079) |
+| Agent, offline, no folder | - | 8 tools, 2,222 tokens (2,597) |
+| Workstation | 9 tools, 4,921 tokens (5,368) | the same |
+| General | 78 tokens (105) | the same |
+
+#### Notes for later changes
+
+A change after the first turn reaches the model as the app's note: a user message at the end of the chat, before the
+next model step. It starts with "[The app: this chat's settings changed." and says which tools are now on or off, the
+folder that the user granted or took back, and the media tools that are now installed or no longer installed. The
+step's saved message keeps the note as `notice` and the state it told as `told`, so the next turns send the note in
+the same place and do not repeat it. A tool that is off is refused by the policy at once; the note only tells the
+model why.
+
+#### Offline
+
+At a chat's first turn, `online_check` (`network_up`) looks at the Mac's routing table: it connects a UDP socket to
+a documentation address, which sends no packet. Without a route the chat is offline: the web tools are deferred, their
+group in the listing says "(need the network)", `tool_search` and `tool_describe` add "Needs the network" to their
+description, and the system text says that the Mac had no network when the chat started. The check runs once per
+chat. A web call still runs when the network comes back.
+
+#### Providers
+
+A provider (`app/agent/extensions.py`) adds tools and one short section. `freeze` asks the providers once, at the
+chat's first turn (`extensions.collect(providers.load(), chat)`). The chat keeps the names of the providers' tools
+(`prompt.providers`). While the app runs, the tools stay in memory per chat. After a restart the loop asks the
+providers again and keeps only the tools with those names: a tool that is gone gets "There is no tool". So an MCP
+server's tools can change between chats, never inside one. A provider tool whose name the app already uses is left
+out, with a line in `prompt.problems`. A general chat gets the sections but no tools. A provider sees the chat
+(`chat["mode"]`) and can leave its section out.
+
+#### Long results
+
+The model gets at most 12,000 characters of a result. In an agent chat a longer result is saved whole as
+`results/<call id>.txt` in the chat's work folder (at most 4 M characters). The model gets the start of the result and
+a note with the file name and the offset to read on with `read_result`. The page links the file. Every part of the
+path is opened with `O_NOFOLLOW`, because the sandboxed code writes in the work folder too: a link that it made
+cannot send the write or the read out of the folder. `run_python` and `run_shell` can read the file as well.
+
+#### Guards for small models
+
+The loop and the worker catch the mistakes that a 27B model makes most:
+
+| Mistake | What happens |
+|---|---|
+| An unknown tool name | The tool message names the nearest names and the tools in the array. |
+| Invalid arguments | The tool message gives the error and the tool's parameters as compact JSON (at most 1,500 characters). |
+| A malformed call | The tool message gives the error and the tool's parameters. The first malformed call of an answer gets one extra step: that step does not count against the step limit (one automatic retry). |
+| A call in the reasoning | When the answer has no call, the worker takes the complete call blocks at the end of the reasoning. When the answer has no text either, it takes every complete call block in the reasoning, each one once. When the reasoning ends inside a call (the thinking budget cut it), that call comes back as a malformed call. A call in the reasoning of an answer with text is a draft: it does not run. |
+| The same call again | The repeat rule (step 4 above): the second identical call does not run, the third one ends the answer. |
+| The same text again and again | When a step's reasoning or content ends with one block repeated 4 times or more, 400 characters or more in all, the loop cancels the step and ends the answer (`finish` `repeat`, a note). The saved message keeps the first block and a marker instead of the repeats, so the model never reads the loop again. |
+
+The repeat rule works on calls; the text guard works on the text of one step. Neither one needs the other. A retry
+does not run the step again from the same prompt: that would read the whole chat again. The model writes the call
+again in the next step, after the error.
 
 A full context also changes the prompt's start: old turns must go. A trim to just under the budget would drop one
 turn on each new turn, and each turn would read the whole chat again. So a trim goes down to 60% of the budget
@@ -552,6 +685,8 @@ These steps also read the whole chat again (mlx-vlm 0.7.11):
 - The step after a call that the worker took from the reasoning (Qwen wrote it while it thought). The saved step has
   the call as a normal tool call after the reasoning, so the new prompt does not start with the text the model
   wrote.
+- The step after a loop that the text guard stopped, and any step after a cancelled one: the worker drops the cache of
+  a cancelled request.
 
 Only the newest 2 tool images go to the model (`MAX_TOOL_IMAGES`). An older one is dropped from its tool message,
 which gets a note instead. This changes an earlier message, but it happens only in the request that adds a new

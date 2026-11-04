@@ -7,6 +7,7 @@ becomes an error result too, so a broken tool never ends the turn.
 """
 
 import hashlib
+import json
 import re
 import threading
 import time
@@ -19,6 +20,7 @@ from app.agent import schema
 from app.agent.policy import Risk
 
 MAX_RESULT = 12000  # characters of a result in the model's context (about 4,000 tokens)
+MAX_SCHEMA = 1500  # characters of a tool's parameters in the error of a call with invalid arguments
 # characters that hide or reorder text on the approval card: C0 and C1 controls, the soft hyphen, zero-width
 # characters and bidi marks, line and paragraph separators, bidi embeddings, overrides and isolates, invisible
 # operators, variation selectors, the byte order mark and the tag characters (invisible text)
@@ -108,6 +110,9 @@ class Tool:
     # it changes what other tools read (the work folder, the jobs) without writing the user's files; after it, or
     # a tool with writes=True, ran, the repeat rule forgets the calls made before
     side_effects: bool = False
+    # the group that names it in a chat's listing of deferred tools ("Media jobs"); "" = app/agent/deferred.py GROUPS,
+    # or the server part of a "<server>__<tool>" name
+    group: str = ""
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -139,7 +144,7 @@ class Tool:
         try:
             checked = schema.check(self.parameters, args)
         except schema.ArgumentError as e:
-            raise ToolError(f"Invalid arguments for {self.name}: {e}") from None
+            raise ToolError(invalid(self, e)) from None
         raw = self.preview(checked, ctx)
         ctx.digest = digest(raw)
         return visible_lines(raw)
@@ -174,6 +179,15 @@ class Result:
     images: list[str] = field(default_factory=list)
     saved: list[str] = field(default_factory=list)
     job: str | None = None  # Output.job
+
+
+def invalid(tool: Tool, error: Exception) -> str:
+    """The error of a call with invalid arguments, with the parameters the tool expects (a small model writes the call
+    again from these)."""
+    expected = json.dumps(tool.parameters, ensure_ascii=False, separators=(",", ":"))
+    if len(expected) > MAX_SCHEMA:
+        expected = expected[:MAX_SCHEMA] + "..."
+    return f"Invalid arguments for {tool.name}: {error}. Its parameters: {expected}"
 
 
 def cap(text: str, limit: int = MAX_RESULT) -> tuple[str, bool]:
@@ -231,7 +245,7 @@ class Registry:
         try:
             checked = schema.check(tool.parameters, args)
         except schema.ArgumentError as e:
-            return done("error", f"Invalid arguments for {name}: {e}")
+            return done("error", invalid(tool, e))
         if ctx.abort.is_set():
             return done("cancelled", "Stopped by the user.", checked)
         try:

@@ -150,6 +150,12 @@ def reg(monkeypatch, ws, box, shell, net):
     return r
 
 
+@pytest.fixture(autouse=True)
+def online(monkeypatch):
+    """Every chat starts online unless a test says otherwise: the real check reads this Mac's routing table."""
+    monkeypatch.setattr(chat, "online_check", lambda: True)
+
+
 @pytest.fixture
 def client():
     return app_client()
@@ -281,13 +287,12 @@ def test_the_next_turn_sends_the_history_as_the_template_needs_it(client, reg):
     assert tool["tool_call_id"] == step["tool_calls"][0]["id"]
     assert "status: running" in tool["content"]
     assert llm.model_messages(sent) == sent  # already in the template's shape
-    # the tools of the request: the enabled ones, without run_python (off) and the file tools (no folder); the media
-    # tools need no folder (they also read the work folder and the Library)
+    # the tools array: the core tools that are on, without run_python (off) and the file tools (no folder); the media
+    # tools need no folder (they also read the work folder and the Library); then the bridge to the deferred tools
     names = [t["function"]["name"] for t in seen["tools"]]
     assert names == [
-        "update_plan", "list_workstation_tools", "job_status", "search_library", "create_job", "list_jobs",
-        "wait_for_job", "cancel_job", "transcribe_audio", "system_status", "media_info", "view_image", "web_search",
-        "fetch_url",
+        "update_plan", "list_workstation_tools", "job_status", "create_job", "media_info", "web_search", "fetch_url",
+        "tool_search", "tool_describe", "tool_call",
     ]  # fmt: skip
     system = sent[0]["content"]
     assert "untrusted data" in system and "emoji" in system
@@ -379,12 +384,22 @@ def test_untrusted_content_makes_a_network_tool_ask_again(client):
 def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
     cid = agent_chat(client)
     prompt = chat.system_prompt(saved(client, cid))
-    # no folder: the file tools are on but not offered
+    # no folder: the file tools are on but deferred; the core tools that can run are in the array
     assert (
-        "You can call tools: update_plan, list_workstation_tools, job_status, search_library, create_job, "
-        "list_jobs, wait_for_job, cancel_job, transcribe_audio, system_status, media_info, view_image, web_search, "
+        "You can call tools: update_plan, list_workstation_tools, job_status, create_job, media_info, web_search, "
         "fetch_url.\n" in prompt
     )
+    # the listing of the deferred tools, one line per group
+    assert "More tools are not loaded" in prompt
+    assert (
+        "- Media jobs: search_library, list_jobs, wait_for_job, cancel_job, transcribe_audio, system_status\n"
+        in prompt
+    )
+    assert (
+        "- Files (need a granted folder): list_files, read_file, search_files, write_file, edit_file, "
+        "copy_to_workspace, export_from_workspace\n" in prompt
+    )
+    assert "- Media files: view_image\n" in prompt and "read_result" not in prompt
     assert "You reach the internet only through" in prompt
     assert (
         "These tools are off in this chat: run_python, run_shell. Never call them."
@@ -396,6 +411,7 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
     )
     prompt = chat.system_prompt(saved(client, cid))
     assert "You can call tools: job_status.\n" in prompt
+    assert "More tools are not loaded" not in prompt  # nothing deferred is on
     assert (
         "These tools are off in this chat: update_plan, list_workstation_tools, search_library, create_job, "
         "list_jobs, wait_for_job, cancel_job, transcribe_audio, system_status, list_files, read_file, search_files, "

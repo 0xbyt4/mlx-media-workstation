@@ -225,6 +225,10 @@ approval card first. A Workstation chat has only the Workstation tools: no web, 
 menu of the chat turns tools on or off and, in Agent mode, grants the folder. Python and shell are off until you turn
 them on. [docs/AGENT.md](docs/AGENT.md) has each tool, its risk level and the limits of the sandbox.
 
+A chat fixes its instructions and the tools it shows the model at the first message, so the model does not read the
+whole chat again before each answer. The model sees a few core tools in full and looks up the others by name. A later
+change in the Tools menu reaches the model as a short note.
+
 ### Chat only
 
 The chat profile shows only Chat, Models and Settings (Cmd-1 to Cmd-3), and opens on Chat. It has no Workstation
