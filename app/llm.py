@@ -9,6 +9,11 @@ kills the process: only an exit returns all of its memory.
 A multi-step turn (model, tool, model, ...) holds the memory between its requests with session(): a lease that a media
 job's claim waits for like a running answer, so the model is not unloaded between the steps. Requests may carry tools
 (OpenAI-style function schemas); the worker then holds the tool-call text back and returns the parsed calls in "done".
+
+Before a media job stops the worker, the worker saves its chat's prompt cache to CACHE (at most SAVE_WAIT seconds).
+The next worker restores it: right after the load after jobs (reload_after_jobs), or before the first request of that
+chat. That answer then reads only its new tokens, not the whole chat. CACHE holds one chat at most; it goes when its
+chat is deleted (forget_chat), when the model changes (check_cache) and when a restore uses it or fails.
 """
 
 import itertools
@@ -23,11 +28,17 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
-from app import config, models
+from app import config, llm_worker, models
 from app.config import PATHS, ROOT
 
 MODEL = models.BY_ID["qwen3.8-27b-4bit"]
 LOG = ROOT / "outputs" / "llm.log"
+# the saved prompt cache of one chat (llm_worker.Engine.save)
+CACHE = ROOT / "outputs" / "llm-cache.safetensors"
+# seconds a media job waits for that save. It writes about 0.75 GB at 9K tokens and 2.3 GB at the 32K context
+# (64 KiB a token plus 0.15 GB of linear-attention state), so it takes about 1 s; a save that takes longer is stuck,
+# and the job does not wait for it: the worker is killed as without a save
+SAVE_WAIT = 10.0
 CANCEL_WAIT = 0.5  # seconds a stopping worker gives its cancelled answers to end between two tokens
 LOAD_TIMEOUT = 300.0  # seconds to load the weights (about 16 GB from disk)
 STOP_WAIT = 5.0  # seconds for a clean exit before SIGKILL
@@ -75,6 +86,9 @@ class Worker:
             None  # why it was stopped, for the requests still waiting
         )
         self.pending: dict[str, queue.Queue] = {}  # request id -> its events
+        self.ops: dict[str, queue.Queue] = {}  # save request id -> its result
+        self.restore_id: str | None = None  # the restore whose result has not come
+        self.restored = False  # a restore was sent: each worker restores once (the file is an earlier worker's)
         self.write_lock = threading.Lock()
         threading.Thread(target=self.read_events, daemon=True).start()
 
@@ -93,16 +107,22 @@ class Worker:
             elif ev.get("event") == "fatal":
                 self.fatal = ev.get("message")
             else:
+                rid = ev.get("id", "")
                 with lock:
-                    q = self.pending.get(ev.get("id", ""))
+                    q = self.pending.get(rid) or self.ops.get(rid)
+                    if rid == self.restore_id:
+                        self.restore_id = None
                 if q is not None:
                     q.put(ev)
         self.proc.wait()
         with lock:
             message = self.reason or self.fatal or CRASHED
-            for q in self.pending.values():
+            for q in [*self.pending.values(), *self.ops.values()]:
                 q.put({"event": "error", "message": message})
             self.pending.clear()
+            broken = self.restore_id is not None
+        if broken:  # it ended while it read the cache: never offer that file again
+            CACHE.unlink(missing_ok=True)
         self.ready.set()
 
     def send(self, msg: dict[str, Any]) -> None:
@@ -113,9 +133,35 @@ class Worker:
         except (BrokenPipeError, ValueError):
             raise LLMError(self.reason or CRASHED) from None
 
-    def stop(self, reason: str) -> None:
+    def save(self) -> bool:
+        """Ask the worker to save its chat's prompt cache to CACHE. False when it did not answer within SAVE_WAIT."""
+        global forgotten
+        rid = f"s{next(ids)}"
+        q: queue.Queue = queue.Queue()
+        with lock:
+            self.ops[rid] = q
+            forgotten = set()
+        try:
+            self.send({"op": "save", "id": rid, "path": str(CACHE)})
+            q.get(timeout=SAVE_WAIT)
+            return True
+        except LLMError:  # the worker is gone: nothing to wait for
+            return True
+        except queue.Empty:
+            return False
+        finally:
+            with lock:
+                self.ops.pop(rid, None)
+                gone, forgotten = forgotten, None
+            for chat in gone:  # deleted while the save ran
+                forget_chat(chat)
+
+    def stop(self, reason: str, save: bool = False) -> None:
+        """Stop the process; its waiting requests fail with reason. save: first save the prompt cache (for a media
+        job); a worker that does not finish the save in SAVE_WAIT is killed at once, and its partial file goes."""
         self.reason = reason
-        if self.alive():
+        stuck = save and self.alive() and self.ready.is_set() and not self.save()
+        if self.alive() and not stuck:
             with lock:
                 running = list(self.pending)
             try:
@@ -147,6 +193,12 @@ class Worker:
         except ProcessLookupError:
             pass
         self.proc.wait()
+        if stuck:
+            llm_worker.partial(CACHE).unlink(missing_ok=True)
+            with LOG.open("a") as log:
+                log.write(
+                    f"prompt cache: no answer to the save in {SAVE_WAIT:.0f} s: stopped without it\n"
+                )
 
 
 lock = (
@@ -169,6 +221,8 @@ closed = False  # set when the app closes: no new worker starts
 leases: set["Session"] = set()  # the sessions that hold the memory
 reload_after_job = False  # a media job unloaded the model while it was in use: load it again when the queue empties
 local = threading.local()  # .session: the session of the thread's with-block
+# while a worker saves its prompt cache: the chats deleted meanwhile
+forgotten: set[str] | None = None
 
 
 class Session:
@@ -319,13 +373,54 @@ def check_installed() -> None:
         )
 
 
+def check_cache() -> None:
+    """Delete a saved prompt cache that cannot be used: an unfinished save, a file that is not a cache, and the cache
+    of another model (its weights folder or files changed)."""
+    llm_worker.partial(CACHE).unlink(missing_ok=True)
+    if CACHE.exists():
+        info = llm_worker.cache_info(CACHE)
+        if info is None or info.get("model") != llm_worker.model_tag(
+            ROOT / PATHS.qwen_model
+        ):
+            CACHE.unlink(missing_ok=True)
+
+
+def restore(w: Worker, chat: str | None) -> None:
+    """Send the saved prompt cache to a new worker, before its first request of that chat; chat None: whatever chat
+    the cache holds (the load after jobs, before any request). The worker deletes the file when it has read it."""
+    if w.restored:
+        return
+    info = llm_worker.cache_info(CACHE)
+    if info is None or (chat is not None and info.get("chat") != chat):
+        return
+    rid = f"c{next(ids)}"
+    with lock:
+        if w.restored:
+            return
+        w.restored, w.restore_id = True, rid
+    try:
+        w.send({"op": "restore", "id": rid, "path": str(CACHE), "chat": info["chat"]})
+    except LLMError:
+        pass  # the worker is gone: the request fails on its own
+
+
+def forget_chat(chat_id: str) -> None:
+    """A chat was deleted: delete its saved prompt cache (also one that a running save writes now)."""
+    with lock:
+        if forgotten is not None:
+            forgotten.add(chat_id)
+    info = llm_worker.cache_info(CACHE)
+    if info is not None and info.get("chat") == chat_id:
+        CACHE.unlink(missing_ok=True)
+
+
 def start(
     cancelled: threading.Event | None = None, background: bool = False
 ) -> Worker | None:
     """The running worker, started first if needed; waits until the model is loaded. None when cancelled is set
     during the load: the load goes on in the worker, so the next request finds the model ready. background: a load
     that no request asked for (preload); it starts no worker while a media job holds memory that the model does not
-    fit next to, and it does not count as use for the idle time."""
+    fit next to, and it does not count as use for the idle time; it restores the saved prompt cache of any chat."""
     global worker, last_used, reload_after_job
     with start_lock:
         with lock:
@@ -337,6 +432,7 @@ def start(
                 return None
         if w is None or not w.alive():
             check_installed()
+            check_cache()
             try:
                 w = Worker()
             except OSError as e:  # a python that is not a program: a folder, no exec bit, the wrong CPU
@@ -374,6 +470,8 @@ def start(
             )
             stop(message)
             raise LLMError(message)
+        if background:
+            restore(w, None)  # under start_lock: before any request reaches this worker
         return w
 
 
@@ -509,6 +607,8 @@ def run(
         last_used = time.time()
     finished = False
     try:
+        if req.get("chat"):
+            restore(w, req["chat"])
         w.send(req)
         if cancelled.is_set():  # the cancel came before the worker knew the request
             w.send({"op": "cancel", "id": rid})
@@ -567,13 +667,13 @@ def cancel(rid: str) -> bool:
     return True
 
 
-def stop(reason: str = "The model was unloaded.") -> None:
-    """Stop the worker; its waiting requests fail with reason."""
+def stop(reason: str = "The model was unloaded.", save: bool = False) -> None:
+    """Stop the worker; its waiting requests fail with reason. save: keep its chat's prompt cache in CACHE."""
     global worker
     with lock:
         w, worker = worker, None
     if w is not None:
-        w.stop(reason)
+        w.stop(reason, save=save)
 
 
 def close(reason: str = CLOSED) -> None:
@@ -608,9 +708,10 @@ def wait_room(
 
 def claim(peak: float, abort: Callable[[], bool] = lambda: False) -> bool:
     """Hold the memory for a media job (before it starts): the requests waiting since the last job run first, then
-    the model unloads if the job does not fit next to it, once the running requests and sessions end. New requests
-    wait until release (a held session's requests do not). Returns False when abort (the job was cancelled, or the
-    app closes) ended the wait; the memory is then free again."""
+    the model unloads if the job does not fit next to it, once the running requests and sessions end (it saves its
+    chat's prompt cache first, for at most SAVE_WAIT seconds). New requests wait until release (a held session's
+    requests do not). Returns False when abort (the job was cancelled, or the app closes) ended the wait; the memory
+    is then free again."""
     global job_peak, reload_after_job
     end = time.time() + JOB_WAIT
     with room:
@@ -632,7 +733,8 @@ def claim(peak: float, abort: Callable[[], bool] = lambda: False) -> bool:
     stop(
         "Unloaded to free the memory for a media job."
         if drained
-        else "Stopped: a media job could not wait longer for this answer."
+        else "Stopped: a media job could not wait longer for this answer.",
+        save=bool(drained),  # an answer cut off at JOB_WAIT leaves no whole cache
     )
     return True
 
@@ -648,8 +750,8 @@ def release() -> None:
 def reload_after_jobs() -> bool:
     """The queue is empty: load the model again in the background when a media job unloaded it and its last request
     is within the idle time (it would still be loaded without the job). The next chat answer then does not wait for
-    the load (it still reads its chat again: the prompt cache went with the process). A job queued during the load
-    unloads it again. True when a load started."""
+    the load, and the load restores the prompt cache that the worker saved for the job, so that answer reads only its
+    new tokens. A job queued during the load unloads it again. True when a load started."""
     global reload_after_job
     limit = idle_stop()
     with lock:

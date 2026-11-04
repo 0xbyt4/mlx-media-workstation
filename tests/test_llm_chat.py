@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 import uvicorn
 
-from app import assist, chat, config, llm, models, server, tools
+from app import assist, chat, config, llm, llm_worker, models, server, tools
 from app.agent import ws_tools
 from tests.conftest import app_client
 
@@ -81,7 +81,7 @@ class IdleWorker:
         self.ready.set()
         self.stopped: list[str] = []
 
-    def stop(self, reason: str) -> None:
+    def stop(self, reason: str, save: bool = False) -> None:
         self.stopped.append(reason)
 
 
@@ -950,3 +950,177 @@ def test_prompt_help_is_off_where_the_model_cannot_run(monkeypatch):
     assert assist.status()["available"] is True
     monkeypatch.setattr(models, "mem_total_gb", lambda: 24.0)  # 18 + 8 reserve > 24
     assert assist.status()["available"] is False
+
+
+# ---------- the saved prompt cache ----------
+
+
+def turns(n):
+    """A chat of n user turns (the fake counts each message as one cached token)."""
+    out = []
+    for i in range(n):
+        out += [{"role": "user", "content": f"turn {i}"}]
+        if i < n - 1:
+            out += [{"role": "assistant", "content": "Hello world"}]
+    return out
+
+
+def cached(messages, chat_id):
+    return llm.complete(messages, chat=chat_id)["stats"]["cached_tokens"]
+
+
+def big_job():
+    """A media job that does not fit next to the model: the claim saves the cache and stops the worker."""
+    llm.claim(35.0)
+    assert llm.status()["state"] == "off"
+    llm.release()
+
+
+def test_a_job_saves_the_chat_s_cache_and_its_next_request_restores_it(llm_cache):
+    assert cached(turns(1), "A") == 0
+    assert cached(turns(2), "A") == 2  # the worker kept the first turn
+    llm.claim(14.0)  # fits next to the model: nothing stops, nothing is saved
+    llm.release()
+    assert not llm_cache.exists()
+    big_job()
+    info = llm_worker.cache_info(llm_cache)
+    assert info["chat"] == "A" and info["tokens"] == "4"
+    assert not llm_worker.partial(llm_cache).exists()
+    assert cached(turns(3), "A") == 4  # restored: not read again
+    assert not llm_cache.exists()  # a restore uses the file once
+
+
+def test_the_load_after_jobs_restores_the_active_chat(llm_cache):
+    cached(turns(1), "A")
+    big_job()
+    assert llm.reload_after_jobs()
+    assert wait_for(lambda: llm.status()["state"] == "ready")
+    assert wait_for(lambda: not llm_cache.exists())  # read before any request
+    assert cached(turns(2), "A") == 2
+
+
+def test_another_chat_does_not_get_the_cache(llm_cache):
+    cached(turns(1), "A")
+    big_job()
+    assert cached(turns(1), "B") == 0
+    assert llm_worker.cache_info(llm_cache)["chat"] == "A"  # kept for chat A
+    assert cached(turns(2), "A") == 2
+    assert not llm_cache.exists()
+
+
+def test_the_cache_of_another_model_is_deleted(fake_llm, llm_cache):
+    cached(turns(1), "A")
+    big_job()
+    assert llm_cache.exists()
+    fake_llm("other-model")  # another weights folder
+    assert cached(turns(2), "A") == 0
+    assert not llm_cache.exists()
+
+
+def test_the_cache_goes_when_its_model_files_change(fake_llm, llm_cache, tmp_path):
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    (weights / "config.json").write_text("{}")
+    fake_llm(str(weights))
+    cached(turns(1), "A")
+    big_job()
+    (weights / "config.json").write_text('{"changed": true}')
+    assert cached(turns(2), "A") == 0
+    assert not llm_cache.exists()
+
+
+def test_a_failed_restore_deletes_the_cache(llm_cache):
+    cached(turns(1), "A")
+    big_job()
+    meta = {
+        **llm_worker.cache_info(llm_cache),
+        "runtime": "mlx 0.0",
+    }  # saved by other MLX versions
+    header = json.dumps({"__metadata__": meta}).encode()
+    llm_cache.write_bytes(len(header).to_bytes(8, "little") + header)
+    assert cached(turns(2), "A") == 0  # the answer still comes, read in full
+    assert not llm_cache.exists()
+
+
+def test_a_file_that_is_not_a_cache_is_deleted(llm_cache):
+    llm_cache.write_bytes(b"\xff" * 64)
+    llm_worker.partial(llm_cache).write_bytes(b"half")  # a save that never ended
+    assert llm_worker.cache_info(llm_cache) is None
+    assert cached(turns(1), "A") == 0
+    assert not llm_cache.exists() and not llm_worker.partial(llm_cache).exists()
+
+
+def test_no_cache_without_a_chat(llm_cache):
+    llm.complete(user("hi"))  # prompt help: no chat
+    big_job()
+    assert not llm_cache.exists()
+
+
+def test_deleting_the_chat_deletes_its_cache(client, llm_cache):
+    one, two = new_chat(client), new_chat(client)
+    for cid in (one, two):
+        client.post(f"/api/chats/{cid}/messages", data={"text": "Hello"})
+    big_job()
+    assert llm_worker.cache_info(llm_cache)["chat"] == two  # the last chat
+    assert client.delete(f"/api/chats/{one}").status_code == 200
+    assert llm_cache.exists()
+    assert client.delete(f"/api/chats/{two}").status_code == 200
+    assert not llm_cache.exists()
+
+
+def test_a_chat_deleted_while_its_cache_is_saved_loses_it(fake_llm, llm_cache):
+    fake_llm("lagsave")
+    cached(turns(1), "A")
+    t = threading.Thread(target=big_job, daemon=True)
+    t.start()
+    assert wait_for(lambda: llm_worker.partial(llm_cache).exists())
+    llm.forget_chat("A")  # the file is not there yet
+    t.join(5)
+    assert not llm_cache.exists()
+
+
+def test_a_save_that_hangs_does_not_hold_the_job(fake_llm, llm_cache, monkeypatch):
+    fake_llm("slowsave")
+    monkeypatch.setattr(llm, "SAVE_WAIT", 0.3)
+    cached(turns(1), "A")
+    t0 = time.monotonic()
+    assert llm.claim(35.0)
+    assert (
+        time.monotonic() - t0 < 2.0
+    )  # no STOP_WAIT on top: the worker is killed at once
+    assert llm.status()["state"] == "off"
+    assert not llm_cache.exists() and not llm_worker.partial(llm_cache).exists()
+    assert "no answer to the save" in llm.LOG.read_text()
+    llm.release()
+    assert cached(turns(2), "A") == 0
+
+
+def test_model_tag_follows_the_folder_and_its_files(tmp_path):
+    (tmp_path / "config.json").write_text("{}")
+    tag = llm_worker.model_tag(tmp_path)
+    assert tag == llm_worker.model_tag(tmp_path)
+    assert tag != llm_worker.model_tag(tmp_path / "other")
+    (tmp_path / "model.safetensors").write_bytes(b"x")
+    assert llm_worker.model_tag(tmp_path) != tag
+
+
+def test_a_queued_big_job_keeps_the_chat_s_cache_over_its_run(
+    make_job, monkeypatch, llm_cache
+):
+    seen = {}
+
+    def fake_run(job):
+        seen.update(
+            state=llm.status()["state"], chat=llm_worker.cache_info(llm_cache)["chat"]
+        )
+        job["status"] = "done"
+
+    monkeypatch.setattr(server, "run_job", fake_run)
+    monkeypatch.setattr(server, "ended", lambda job: None)
+    cached(turns(1), "A")
+    make_job("j1", "queued", tool="video.t2v")
+    server.run_next(server.jobs["j1"])
+    assert seen == {"state": "off", "chat": "A"}
+    assert wait_for(lambda: llm.status()["state"] == "ready")  # the load after jobs
+    assert wait_for(lambda: not llm_cache.exists())
+    assert cached(turns(2), "A") == 2

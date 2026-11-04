@@ -1681,6 +1681,7 @@ def delete_chat(chat_id: str) -> dict[str, str]:
             raise HTTPException(409, "Stop the answer first.")
         trash = CHATS / f".deleted-{chat_id}-{secrets.token_hex(4)}"
         os.rename(path, trash)
+    llm.forget_chat(chat_id)
     remove_tree(trash)
     return {"status": "deleted"}
 

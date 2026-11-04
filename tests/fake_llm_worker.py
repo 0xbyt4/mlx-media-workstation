@@ -1,7 +1,13 @@
 """A stand-in for app/llm_worker.py that speaks its JSON-line protocol without a model (tests only).
 
-The model path argument picks the behaviour: "fail" reports a load error, "crash" exits after loading. A user message
-containing SLOW streams tokens until cancelled (also with a schema); any other request with a schema answers JSON.
+The model path argument picks the behaviour: "fail" reports a load error, "crash" exits after loading, "slowsave"
+starts a save and never ends it, "lagsave" waits 0.5 s before it saves. A user message containing SLOW streams tokens
+until cancelled (also with a schema); any other request with a schema answers JSON.
+
+The prompt cache is a stand-in too: one chat's "tokens" are its message count plus one for the answer. A request of the
+kept chat gets "cached_tokens" in its done stats (0 for another chat), and a cancelled answer drops the cache, as in
+the worker. "save" writes a cache file with only the header metadata of the real one (llm_worker.cache_info reads it);
+"restore" checks it as the worker does (format, model tag, runtime "fake", chat) and deletes it either way.
 
 With tools, the fake streams scripted tool-call text through the real worker's hold-back and parsing (ToolText,
 finish_tools), with a small stand-in for mlx-vlm's qwen3_coder parser. The last message picks the script (see
@@ -66,6 +72,8 @@ SCRIPTS = {
 LIMITS = ("thinking", "reasoning_effort", "thinking_budget", "max_tokens")
 PARAM = re.compile(r"<parameter=(.*?)>\n?(.*?)\n?</parameter>", re.DOTALL)
 STEPS = "STEPS:"
+RUNTIME = "fake"  # the "runtime" tag of the fake's cache files
+kept = {"chat": None, "tokens": 0}  # the fake prompt cache
 
 
 def emit(ev):
@@ -152,6 +160,76 @@ def parse(text, tools):
     return {"name": name, "arguments": args}
 
 
+def use_cache(req, finish):
+    """The cached tokens of this request, and the cache after it (dropped when the answer was cancelled)."""
+    chat = req.get("chat")
+    cached = kept["tokens"] if chat and chat == kept["chat"] else 0
+    if finish == "cancelled" or not chat:
+        kept.update(chat=None, tokens=0)
+    else:
+        kept.update(chat=chat, tokens=len(req["messages"]) + 1)
+    return {"cached_tokens": cached} if chat else {}
+
+
+def save(req, mode):
+    path = Path(req["path"])
+    tmp = llm_worker.partial(path)
+    if kept["chat"] is None:
+        emit({"id": req["id"], "event": "saved", "chat": None, "note": "no chat cache"})
+        return
+    meta = {
+        "format": llm_worker.CACHE_FORMAT,
+        "model": llm_worker.model_tag(sys.argv[1]),
+        "runtime": RUNTIME,
+        "chat": kept["chat"],
+        "tokens": str(kept["tokens"]),
+        "layers": "fake",
+    }
+    header = json.dumps({"__metadata__": meta}).encode()
+    tmp.write_bytes(len(header).to_bytes(8, "little") + header)
+    if mode == "slowsave":
+        time.sleep(3600)
+    if mode == "lagsave":
+        time.sleep(0.5)
+    tmp.replace(path)
+    print(f"prompt cache: saved chat {kept['chat']}", file=sys.stderr)
+    emit(
+        {
+            "id": req["id"],
+            "event": "saved",
+            "chat": kept["chat"],
+            "tokens": kept["tokens"],
+        }
+    )
+
+
+def restore(req):
+    path = Path(req["path"])
+    try:
+        info = llm_worker.cache_info(path)
+        if (
+            info is None
+            or info["model"] != llm_worker.model_tag(sys.argv[1])
+            or info["runtime"] != RUNTIME
+            or (req.get("chat") is not None and info["chat"] != req["chat"])
+        ):
+            raise ValueError("the cache does not match")
+    except ValueError as e:
+        emit({"id": req["id"], "event": "error", "message": f"ValueError: {e}"})
+        return
+    finally:
+        path.unlink(missing_ok=True)
+    kept.update(chat=info["chat"], tokens=int(info["tokens"]))
+    emit(
+        {
+            "id": req["id"],
+            "event": "restored",
+            "chat": info["chat"],
+            "tokens": kept["tokens"],
+        }
+    )
+
+
 def tool_answer(req, cancel):
     """A request with tools: stream the script through the worker's hold-back, then finish as the worker does."""
     rid, messages = req["id"], req["messages"]
@@ -199,7 +277,12 @@ def tool_answer(req, cancel):
         "finish": finish,
         "reasoning": reasoning.strip(),
         "content": calls.text,
-        "stats": {"turns": len(messages), "images": len(req["images"]), "seen": seen},
+        "stats": {
+            "turns": len(messages),
+            "images": len(req["images"]),
+            "seen": seen,
+            **use_cache(req, finish),
+        },
     }
     llm_worker.finish_tools(done, calls, parse, req["tools"])
     emit(done)
@@ -225,12 +308,20 @@ def main():
             elif req["op"] == "generate":
                 cancels[req["id"]] = threading.Event()
                 jobs.put(req)
+            elif req["op"] in ("save", "restore"):
+                jobs.put(req)
             elif req["op"] == "shutdown":
                 break
         jobs.put(None)
 
     threading.Thread(target=reader, daemon=True).start()
     while (req := jobs.get()) is not None:
+        if req["op"] == "save":
+            save(req, mode)
+            continue
+        if req["op"] == "restore":
+            restore(req)
+            continue
         rid, cancel = req["id"], cancels[req["id"]]
         if req.get("tools"):
             tool_answer(req, cancel)
@@ -278,6 +369,7 @@ def main():
                     "turns": len(req["messages"]),
                     "images": len(req["images"]),
                     "seen": {k: req.get(k) for k in LIMITS},
+                    **use_cache(req, finish),
                 },
             }
         )

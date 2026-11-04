@@ -310,6 +310,10 @@ The local LLM shares the memory with the jobs:
   job starts.
 - When the queue is empty again, an LLM that such a job unloaded loads again in the background, if its last request
   was within the idle time.
+- Before such a job, the LLM saves the prompt cache of its last chat to `outputs/llm-cache.safetensors`: 64 KiB for
+  each token plus 0.15 GB, so about 0.75 GB for a chat of 9,000 tokens. The save takes about 1 second; the job waits
+  for it for at most 10 seconds. After the job, the LLM reads the cache back, so the first answer in that chat reads
+  only the new message, not the whole chat again.
 
 ## Install the models
 
@@ -553,7 +557,8 @@ ends.
   the result files. The app reads these folders at start.
 - Each chat goes to `outputs/chats/<chat id>/`: `chat.json`, the images and files sent in it, and the text that the
   model read of each file.
-- The local LLM writes its log to `outputs/llm.log`.
+- The local LLM writes its log to `outputs/llm.log`. After a big job, `outputs/llm-cache.safetensors` can hold the
+  LLM's saved prompt cache of one chat.
 - When you start the app from `Workstation.app` or `Workstation Chat.app`, it writes its log to `outputs/app.log`.
   When you start it from a terminal, it writes the log to the terminal.
 

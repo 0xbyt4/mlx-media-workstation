@@ -6,9 +6,16 @@ free the memory, which only a process exit releases in full. Everything mlx-vlm 
 carries only the protocol.
 
 Requests: {"op": "generate", "id", "messages", "images", "thinking", "schema", "max_tokens", "chat", "tools",
-"tool_choice", "reasoning_effort", "thinking_budget", "allow_emoji"}, {"op": "cancel", "id"} and {"op": "shutdown"}.
+"tool_choice", "reasoning_effort", "thinking_budget", "allow_emoji"}, {"op": "cancel", "id"}, {"op": "save", "id",
+"path"}, {"op": "restore", "id", "path", "chat"} and {"op": "shutdown"}.
 Events: {"event": "ready"}, then per request "reasoning" and "content" deltas, and one "done" (with the full answer
-and its stats) or "error".
+and its stats) or "error". A save ends with {"event": "saved", "chat", ...} or "error", a restore with
+{"event": "restored", "chat", "tokens", "seconds"} or "error".
+
+"save" and "restore" keep the chat's prompt cache over a stop for a media job (Engine.save, Engine.restore): the
+parent asks for a save before it stops the worker, and the next worker restores the file, so the first answer after
+the job does not read the whole chat again. The file holds the model's tag (model_tag), the MLX versions and the exact
+token ids; a cache that does not match is never used, and a restore deletes the file whether it worked or not.
 
 thinking_budget uses mlx-vlm's ThinkingBudgetCriteria: after that many thinking tokens it forces "\n</think>", so the
 model must answer. It counts from the "<think>" that the template's generation prompt opens; mlx-vlm looks for that
@@ -25,6 +32,7 @@ rule alone did not stop them. Inside a tool-call block (the arguments) nothing i
 bans the call marker, so the model answers with text while the tools stay in the prompt.
 """
 
+import hashlib
 import json
 import os
 import queue
@@ -34,6 +42,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 THINK_END = 248069  # the '</think>' token of Qwen3.5-3.8
@@ -466,10 +475,57 @@ def bans(
     return out
 
 
+# ---------- the saved prompt cache (the parent and tests/fake_llm_worker.py use these too) ----------
+
+CACHE_FORMAT = "1"
+CACHE_HEADER_MAX = 1 << 20  # bytes; the header of a 32K-token cache is about 15 KB
+
+
+def model_tag(model_dir: str | os.PathLike[str]) -> str:
+    """The identity of a model folder: its full path and the name, size and change time of each file in it. A saved
+    prompt cache carries the tag of its model; a cache with another tag is never used."""
+    folder = Path(model_dir).expanduser().absolute()
+    parts = [str(folder)]
+    try:
+        files = sorted(
+            p for p in folder.iterdir() if p.is_file() and not p.name.startswith(".")
+        )
+    except OSError:  # no such folder: the path alone
+        files = []
+    for p in files:
+        st = p.stat()
+        parts.append(f"{p.name} {st.st_size} {st.st_mtime_ns}")
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:32]
+
+
+def partial(path: Path) -> Path:
+    """The file a save writes before it renames it to path (MLX adds .safetensors to a name without it)."""
+    return path.with_name(f"{path.stem}.partial.safetensors")
+
+
+def cache_info(path: Path) -> dict[str, Any] | None:
+    """The metadata of a saved prompt cache ("format", "model", "runtime", "chat", "tokens", "layers"), read from
+    the safetensors header without MLX. None when there is no file, or it is not a cache of this format."""
+    try:
+        with open(path, "rb") as f:
+            size = int.from_bytes(f.read(8), "little")
+            if not 0 < size <= CACHE_HEADER_MAX:
+                return None
+            header = json.loads(f.read(size))
+    except (OSError, ValueError):
+        return None
+    meta = header.get("__metadata__") if isinstance(header, dict) else None
+    if not isinstance(meta, dict) or meta.get("format") != CACHE_FORMAT:
+        return None
+    return meta
+
+
 class Engine:
     def __init__(self, model_dir: str) -> None:
         import mlx.core as mx
         from mlx_vlm import PromptCacheState, apply_chat_template, load, stream_generate
+        from mlx_vlm import __version__ as vlm_version
+        from mlx_vlm.models.cache import ArraysCache, KVCache, make_prompt_cache
         from mlx_vlm.structured import build_json_schema_logits_processor
 
         self.mx, self.template, self.stream = mx, apply_chat_template, stream_generate
@@ -477,6 +533,12 @@ class Engine:
             PromptCacheState,
             build_json_schema_logits_processor,
         )
+        # the layer caches that save() and restore() know: the hybrid Qwen3.8 has KVCache (full attention) and
+        # ArraysCache (the conv and recurrent state of its linear-attention layers); any other type is not saved
+        self.kinds: dict[str, type] = {"KVCache": KVCache, "ArraysCache": ArraysCache}
+        self.make_cache = make_prompt_cache
+        self.tag = model_tag(model_dir)
+        self.runtime = f"mlx {mx.__version__}, mlx-vlm {vlm_version}"
         self.model, self.processor = load(model_dir)
         self.chat: str | None = (
             None  # the chat whose prompt cache is kept (one at a time)
@@ -507,6 +569,150 @@ class Engine:
                 )
             self.parser = load_tool_module(name)
         return self.parser
+
+    def unsaved(self) -> str | None:
+        """Why the kept prompt cache cannot be saved, or None. Only a whole cache of known layer types is saved: each
+        full-attention layer holds exactly the cached tokens (mlx-vlm feeds every generated token before it stops)."""
+        state = self.state
+        if self.chat is None or state.cache is None or not state.token_ids:
+            return "no chat cache"
+        n = len(state.token_ids)
+        for c in state.cache:
+            kind = type(c).__name__
+            if self.kinds.get(kind) is not type(c):
+                return f"unknown layer cache {kind}"
+            if kind == "KVCache" and (c.keys is None or c.offset != n):
+                return "a layer does not hold the cached tokens"
+            if kind == "ArraysCache" and (
+                c.left_padding is not None or c.lengths is not None
+            ):
+                return "a batch cache"
+        return None
+
+    def save(self, req: dict[str, Any]) -> None:
+        """Write the kept chat's prompt cache to req["path"]: a safetensors file with the layer states, the token ids
+        and the tags that restore() checks. It is written to partial(path) first and renamed, so a stopped save never
+        leaves a file that looks whole."""
+        rid, path = req["id"], Path(req["path"])
+        reason = self.unsaved()
+        if reason is not None:
+            print(f"prompt cache: not saved: {reason}", file=sys.stderr)
+            emit({"id": rid, "event": "saved", "chat": None, "note": reason})
+            return
+        mx, state, t0 = self.mx, self.state, time.time()
+        arrays = {"token_ids": mx.array(state.token_ids, dtype=mx.int32)}
+        for i, c in enumerate(state.cache):
+            if type(c).__name__ == "KVCache" and c.offset != c.keys.shape[2]:
+                # cut the free room off one layer at a time: saving the slices would copy every layer at once, and
+                # the media job waits for that memory (+0.54 GB at 9K tokens, measured with arrays of these shapes)
+                c.keys = mx.contiguous(c.keys[..., : c.offset, :])
+                c.values = mx.contiguous(c.values[..., : c.offset, :])
+                mx.eval(c.keys, c.values)
+                mx.clear_cache()
+            for j, a in enumerate(c.state):
+                if a is not None:
+                    arrays[f"{i}.{j}"] = a
+        meta = {
+            "format": CACHE_FORMAT,
+            "model": self.tag,
+            "runtime": self.runtime,
+            "chat": self.chat,
+            "tokens": str(len(state.token_ids)),
+            "layers": ",".join(type(c).__name__ for c in state.cache),
+        }
+        tmp = partial(path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            mx.save_safetensors(str(tmp), arrays, meta)
+            fd = os.open(tmp, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        size, seconds = path.stat().st_size, round(time.time() - t0, 2)
+        print(
+            f"prompt cache: saved chat {self.chat}: {meta['tokens']} tokens, {size / 1e9:.2f} GB in {seconds} s",
+            file=sys.stderr,
+        )
+        emit(
+            {
+                "id": rid,
+                "event": "saved",
+                "chat": self.chat,
+                "tokens": len(state.token_ids),
+                "bytes": size,
+                "seconds": seconds,
+            }
+        )
+
+    def restore(self, req: dict[str, Any]) -> None:
+        """Load a prompt cache that save() wrote, as the kept cache of its chat; extend_ids then reuses it as if this
+        process had made it. Every check must pass, or the cache is not used. The file is deleted either way."""
+        rid, path, t0 = req["id"], Path(req["path"]), time.time()
+        mx = self.mx
+        try:
+            arrays, meta = mx.load(str(path), return_metadata=True)
+            ids, caches = self.loaded(arrays, meta, req.get("chat"))
+            mx.eval(list(arrays.values()))  # read it all before the file goes
+        finally:
+            path.unlink(missing_ok=True)
+        state = self.cache_state()
+        state.update(ids, caches)
+        self.chat, self.state = meta["chat"], state
+        seconds = round(time.time() - t0, 2)
+        print(
+            f"prompt cache: restored chat {self.chat}: {len(ids)} tokens in {seconds} s",
+            file=sys.stderr,
+        )
+        emit(
+            {
+                "id": rid,
+                "event": "restored",
+                "chat": self.chat,
+                "tokens": len(ids),
+                "seconds": seconds,
+            }
+        )
+
+    def loaded(
+        self, arrays: dict[str, Any], meta: dict[str, str], chat: str | None
+    ) -> tuple[list[int], list[Any]]:
+        """(the token ids, the layer caches) of a loaded cache file; a ValueError when anything does not match this
+        model, these MLX versions, the chat or the file's own token count."""
+        for key, want in (
+            ("format", CACHE_FORMAT),
+            ("model", self.tag),
+            ("runtime", self.runtime),
+        ):
+            if meta.get(key) != want:
+                raise ValueError(f"the cache is of another {key}")
+        if not meta.get("chat") or (chat is not None and meta["chat"] != chat):
+            raise ValueError("the cache is of another chat")
+        ids = arrays["token_ids"].tolist()
+        if not ids or len(ids) != int(meta.get("tokens", -1)):
+            raise ValueError("the token ids do not match the cache")
+        caches = self.make_cache(self.model.language_model)
+        if meta.get("layers", "").split(",") != [type(c).__name__ for c in caches]:
+            raise ValueError("the layers do not match the model")
+        used = 1  # token_ids
+        for i, c in enumerate(caches):
+            if type(c).__name__ == "KVCache":
+                keys, values = arrays.get(f"{i}.0"), arrays.get(f"{i}.1")
+                if keys is None or values is None or keys.shape[2] != len(ids):
+                    raise ValueError(f"layer {i} does not hold the cached tokens")
+                c.state = (keys, values)
+                used += 2
+            else:
+                parts = [arrays.get(f"{i}.{j}") for j in range(len(c.cache))]
+                c.state = parts
+                used += sum(p is not None for p in parts)
+        if used != len(arrays):
+            raise ValueError("the file has arrays that the model has no place for")
+        return ids, caches
 
     def generate(self, req: dict[str, Any], cancel: threading.Event) -> None:
         rid, thinking = req["id"], bool(req.get("thinking"))
@@ -668,6 +874,8 @@ def read_requests(jobs: queue.Queue, cancels: dict[str, threading.Event]) -> Non
         elif op == "generate":
             cancels[req["id"]] = threading.Event()
             jobs.put(req)
+        elif op in ("save", "restore"):  # in the queue: MLX runs on the main thread
+            jobs.put(req)
         elif op == "shutdown":
             break
     jobs.put(None)  # stdin closed or shutdown: stop after the current answer
@@ -689,6 +897,19 @@ def main() -> None:
     threading.Thread(target=read_requests, args=(jobs, cancels), daemon=True).start()
     # every MLX call stays on this thread: mlx-vlm's generation stream is thread-local
     while (req := jobs.get()) is not None:
+        if req["op"] in ("save", "restore"):
+            try:
+                (engine.save if req["op"] == "save" else engine.restore)(req)
+            except Exception as e:  # noqa: BLE001 - without the cache the chat is only read again
+                print(f"prompt cache: {req['op']} failed: {e}", file=sys.stderr)
+                emit(
+                    {
+                        "id": req["id"],
+                        "event": "error",
+                        "message": f"{type(e).__name__}: {e}",
+                    }
+                )
+            continue
         cancel = cancels[req["id"]]
         try:
             if not cancel.is_set():

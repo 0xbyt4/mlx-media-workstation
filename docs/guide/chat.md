@@ -128,12 +128,19 @@ The LLM and a media job share the memory.
 - When a job fits next to the LLM, both stay in memory.
 - When a job does not fit, the answers that run finish first (for at most 10 minutes). Then the LLM unloads and the
   job starts.
+- Before the LLM unloads, it saves what it read of the last chat (its prompt cache) to
+  `outputs/llm-cache.safetensors`. This takes about 1 second. The job waits for the save for at most 10 seconds.
 - A message that you send while such a job runs waits. The chat shows "Waiting for memory". The answer starts when
   the job ends, before the next queued job.
 - When the queue is empty again, the LLM loads again in the background, so the next answer does not wait for the
   load. It does this only when it was in use before the job: its last request was within the idle time (10 minutes by
-  default). The first answer after the job still reads the whole chat again, which takes about 1 second for each 500
-  tokens.
+  default).
+- The LLM reads the saved prompt cache back, so the next answer in that chat reads only your new message. Without
+  the saved cache, the LLM reads the whole chat again: about 1 second for each 500 tokens.
+
+The app keeps the saved prompt cache of one chat only, and uses it one time. It deletes the cache when you delete
+that chat, when the LLM weights change and when the cache does not match the chat. A cache that does not match never
+changes an answer: the LLM then reads the whole chat again.
 
 ## Manage chats
 
