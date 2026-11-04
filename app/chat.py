@@ -124,6 +124,7 @@ LABELS = {
     "create_job": "Queue a media job",
     "cancel_job": "Cancel a job",
     "transcribe_audio": "Transcribe",
+    "system_status": "System status",
     "list_files": "List files",
     "read_file": "Read a file",
     "search_files": "Search files",

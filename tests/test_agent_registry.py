@@ -246,6 +246,7 @@ def test_tools_outside_the_repeat_rule_and_tools_that_clear_it() -> None:
             "list_jobs",
             "wait_for_job",
             "transcribe_audio",
+            "system_status",
             "search_library",
             "list_files",
             "read_file",

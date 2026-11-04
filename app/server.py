@@ -36,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -57,7 +57,7 @@ from app import (
     tools,
 )
 from app.agent import load_settings as load_agent_settings
-from app.agent.ports import InputFile
+from app.agent.ports import MCP, InputFile
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs"
@@ -523,6 +523,20 @@ def view(job: dict[str, Any]) -> dict[str, Any]:
     return v
 
 
+# the keys of a job in GET /api/status (and "chat")
+STATUS_KEYS = (
+    "id",
+    "tool",
+    "tool_label",
+    "status",
+    "created",
+    "position",
+    "waiting",
+    "progress",
+    "elapsed",
+)
+
+
 def check_value(f: dict[str, Any], value: str | None) -> str | None:
     """Validate one form value against its field; returns the value to store (None = use the default)."""
     if value is None or value == "":
@@ -555,12 +569,17 @@ def check_value(f: dict[str, Any], value: str | None) -> str | None:
 
 
 @app.get("/api/tools")
-def get_tools() -> list[dict[str, Any]]:
-    return tools.TOOLS
+def get_tools(installed: bool = False) -> list[dict[str, Any]]:
+    """The media tools. With ?installed=true each one also has "installed": whether its model files are on disk."""
+    return workstation.list_tools() if installed else tools.TOOLS
 
 
 @app.get("/api/jobs")
-def get_jobs() -> list[dict[str, Any]]:
+def get_jobs(limit: int | None = Query(None, ge=1, le=100)) -> list[dict[str, Any]]:
+    """Every job, newest first. With ?limit=, the queued and running jobs, then the newest finished ones up to `limit`
+    jobs in all, each with "chat" (the agent's list_jobs)."""
+    if limit is not None:
+        return workstation.list_jobs(limit)
     with lock:
         return [
             view(j)
@@ -682,7 +701,9 @@ async def create_job(request: Request) -> dict[str, str]:
     tool = tools.BY_ID.get(tool_id)
     if tool is None:
         raise HTTPException(400, f"Unknown tool {tool_id!r}")
-    job_id, job_dir = new_job_dir()
+    client = str(form.get("client") or "")
+    if client not in ("", MCP):
+        raise HTTPException(400, f"Unknown client {client!r}")
     uploads = {
         f["name"]: [
             InputFile(u.filename, u.size or 0, upload_writer(u))
@@ -692,6 +713,22 @@ async def create_job(request: Request) -> dict[str, str]:
         for f in tool["fields"]
         if f["type"] in ("file", "files")
     }
+    # a job from an MCP client: the agent's checks (a media type that the field accepts), and "chat" is MCP
+    if client == MCP:
+        values = {
+            f["name"]: str(form.get(f["name"]))
+            for f in tool["fields"]
+            if f["type"] not in ("file", "files") and form.get(f["name"]) is not None
+        }
+        try:
+            return {"id": workstation.create_job(tool_id, values, uploads, MCP)}
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        except Exception as e:  # noqa: BLE001 - as below; create_job removed the job folder
+            raise HTTPException(
+                500, f"Could not create the job: {type(e).__name__}: {e}"
+            ) from None
+    job_id, job_dir = new_job_dir()
     try:
         params, files = prepare_job(tool, job_dir, form.get, uploads)
     except ValueError as e:
@@ -833,6 +870,84 @@ class Workstation:
             raise
         queue_job(job_id, tool, params, files, chat)
         return job_id
+
+    def system_status(self) -> dict[str, Any]:
+        """GET /api/status. A tool's "fit" uses the queue's rule (models.fits, llm.fits_with): "fits" (it runs next to
+        the chat model, or the model is off), "unloads_chat_model" (the job unloads the model first) or "too_big"
+        (its peak plus the reserve is more than this Mac's memory)."""
+        mem = memory()
+        model = llm.status()
+        loaded = model["state"] != "off"
+
+        def short(job: dict[str, Any]) -> dict[str, Any]:
+            v = view(job)
+            return {**{k: v.get(k) for k in STATUS_KEYS}, "chat": job.get("chat")}
+
+        with lock:
+            running = next(
+                (short(j) for j in jobs.values() if j["status"] == "running"), None
+            )
+            queue = [short(j) for j in queued_jobs()]
+        fit = []
+        for t in self.list_tools():
+            peak = models.tool_peak(t["id"])
+            if not models.fits(peak, mem["mem_total_gb"]):
+                state = "too_big"
+            elif not loaded or llm.fits_with(peak):
+                state = "fits"
+            else:
+                state = "unloads_chat_model"
+            fit.append(
+                {
+                    "id": t["id"],
+                    "label": t["label"],
+                    "installed": t["installed"],
+                    "peak_gb": peak,
+                    "fit": state,
+                }
+            )
+        return {
+            "memory": {**mem, "reserve_gb": models.RESERVE_GB},
+            "running": running,
+            "queue": queue,
+            "chat_model": {
+                "label": model["model"],
+                "installed": model["installed"],
+                "state": model["state"],  # off, loading or ready
+                "busy": model["busy"],
+                "peak_gb": model["peak_gb"],
+                "held_gb": model["peak_gb"] if loaded else 0.0,  # its peak while loaded
+            },
+            "tools": fit,
+            "profile": config.APP.profile,
+        }
+
+
+# the server's own port: the agent chats and the endpoints below use it
+workstation = Workstation()
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str) -> dict[str, Any]:
+    """One job as GET /api/jobs shows it, plus "chat"."""
+    job = workstation.job_status(job_id)
+    if job is None:
+        raise HTTPException(404, "No such job")
+    return job
+
+
+@app.get("/api/library/search")
+def library_search(
+    q: str = Query(min_length=1, max_length=200), limit: int = Query(10, ge=1, le=100)
+) -> list[dict[str, Any]]:
+    """Finished outputs whose text, tool or file name contains q, newest first (the agent's search_library)."""
+    return workstation.search_library(q, limit)
+
+
+@app.get("/api/status")
+def get_status() -> dict[str, Any]:
+    """The memory, the running job, the queue, the chat model and whether each media tool fits now."""
+    return workstation.system_status()
 
 
 @app.post("/api/jobs/{job_id}/cancel")
@@ -1078,6 +1193,24 @@ def system(request: Request, nonce: str | None = None) -> dict[str, Any]:
         raise HTTPException(400, "Bad nonce: 32 to 128 lowercase hex digits")
     if nonce is not None and not signed_in(request):
         return {"proof": proof(nonce), "profile": config.APP.profile}
+    with lock:
+        running = next(
+            (j["id"] for j in jobs.values() if j["status"] == "running"), None
+        )
+        queued = sum(1 for j in jobs.values() if j["status"] == "queued")
+    info = {
+        **memory(),
+        "running": running,
+        "queued": queued,
+        "profile": config.APP.profile,  # what the UI shows: "full" or "chat"
+    }
+    if nonce is not None:
+        info["proof"] = proof(nonce)
+    return info
+
+
+def memory() -> dict[str, float]:
+    """The Mac's memory in GB: in all, free (free, inactive and speculative pages) and the swap in use."""
     page = 16384
     vm = subprocess.run(["vm_stat"], capture_output=True, text=True, check=False).stdout
     pages = {
@@ -1094,22 +1227,11 @@ def system(request: Request, nonce: str | None = None) -> dict[str, Any]:
         ["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, check=False
     ).stdout
     used = re.search(r"used = ([\d.]+)M", swap)
-    with lock:
-        running = next(
-            (j["id"] for j in jobs.values() if j["status"] == "running"), None
-        )
-        queued = sum(1 for j in jobs.values() if j["status"] == "queued")
-    info = {
+    return {
         "mem_total_gb": round(total / 2**30, 1),
         "mem_free_gb": round(sum(pages.values()) * page / 2**30, 1),
         "swap_used_gb": round(float(used.group(1)) / 1024, 1) if used else 0.0,
-        "running": running,
-        "queued": queued,
-        "profile": config.APP.profile,  # what the UI shows: "full" or "chat"
     }
-    if nonce is not None:
-        info["proof"] = proof(nonce)
-    return info
 
 
 def start() -> None:
@@ -1128,9 +1250,8 @@ def start() -> None:
 
 
 settings_api.on_change.append(sync_awake)  # the keep-awake switch applies at once
-chat.port = (
-    Workstation()
-)  # the media tools of agent chats (not offered in the chat profile)
+# the media tools of agent chats (not offered in the chat profile)
+chat.port = workstation
 app.include_router(models_api.router)
 app.include_router(chat.router)
 app.include_router(settings_api.router)

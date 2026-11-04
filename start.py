@@ -4,6 +4,7 @@
   .venv/bin/python start.py            # app window
   .venv/bin/python start.py --browser  # server only; open the sign-in link it prints in a browser
   .venv/bin/python start.py --chat     # Chat, Models and Settings only (the chat profile)
+  .venv/bin/python start.py --mcp      # the MCP server on stdin and stdout, for local agents (docs/MCP.md)
 
 Without --chat, `profile` in config.toml [app] picks the profile ("full" when it is not set).
 
@@ -24,7 +25,6 @@ import json
 import os
 import secrets
 import socket
-import stat
 import subprocess
 import sys
 import threading
@@ -36,6 +36,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import uvicorn
+
+from app import session_token
 
 ROOT = Path(__file__).resolve().parent
 # Opened from Finder or the Dock, the app gets a bare PATH without Homebrew; the models need ffmpeg and ffprobe from it
@@ -77,6 +79,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="show only Chat, Models and Settings (overrides profile in config.toml)",
     )
+    ap.add_argument(
+        "--mcp",
+        action="store_true",
+        help="run the MCP server on stdin and stdout; the app must run (docs/MCP.md)",
+    )
     return ap.parse_args(argv)
 
 
@@ -94,22 +101,7 @@ def port_free() -> bool:
 def server_token() -> str | None:
     """The running server's token: a regular file (not a link) of this user that only this user can read; else
     None."""
-    try:
-        fd = os.open(TOKEN_FILE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError:
-        return None
-    try:
-        st = os.fstat(fd)
-        if (
-            not stat.S_ISREG(st.st_mode)
-            or st.st_uid != os.getuid()
-            or st.st_mode & 0o077
-        ):
-            return None
-        text = os.read(fd, 1024).decode("ascii", errors="replace").strip()
-    finally:
-        os.close(fd)
-    return text or None
+    return session_token.read(TOKEN_FILE)
 
 
 def running_profile(timeout: float = 2.0) -> str | None:
@@ -227,6 +219,12 @@ def main(argv: list[str] | None = None) -> None:
     ) as e:  # config.toml could not be read
         notify("config.toml has an error; see the log.")
         raise SystemExit(f"config.toml: {e}") from None
+    # --mcp: a client of the running app, with no server and no window; stdout carries the protocol
+    if args.mcp:
+        from app import mcp_server
+
+        mcp_server.main([])
+        return
     profile = "chat" if args.chat else config.APP.profile
     if not port_free():
         attach(profile, args.browser)
