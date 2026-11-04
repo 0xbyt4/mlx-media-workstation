@@ -343,6 +343,42 @@ def test_load_skill_returns_the_body_the_folder_and_the_files(dirs) -> None:
     assert bad.status == "error" and "'alpha'" in bad.content
 
 
+def test_load_skill_reads_a_listed_file_without_a_granted_folder(
+    dirs, tmp_path: Path
+) -> None:
+    path = make(
+        dirs["app"],
+        "alpha",
+        md("alpha"),
+        {
+            "references/guide.md": "Step two: trim.",
+            "secrets.json": "{}",
+            ".hidden": "x",
+            "bin.dat": "\x00\x01",
+        },
+    )
+    (tmp_path / "outside.md").write_text("not of the skill")
+    (path / "references" / "link.md").symlink_to(tmp_path / "outside.md")
+    tool = provider().tools()[0]
+    assert "file" in tool.parameters["properties"]
+    skill_reg = Registry([tool])
+
+    def read(name: str):
+        return skill_reg.call("load_skill", {"name": "alpha", "file": name}, ctx(dirs["tmp"]))
+
+    r = read("references/guide.md")
+    assert r.status == "ok" and r.content == (
+        '<skill_file skill="alpha" path="references/guide.md">\nStep two: trim.\n</skill_file>'
+    )
+    assert read("./references/guide.md").status == "ok"
+    for name in ("secrets.json", ".hidden", "../outside.md", "/etc/hosts", "SKILL.md"):
+        bad = read(name)
+        assert bad.status == "error" and "has no file" in bad.content, name
+    # a link in the folder is listed, but read only when it stays in the folder
+    assert read("references/link.md").content == "references/link.md: not available."
+    assert "not a text file" in read("bin.dat").content
+
+
 def test_load_skill_names_what_the_chat_lacks_and_refuses_a_skill_turned_off(
     dirs,
 ) -> None:

@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml  # PyYAML: installed with huggingface_hub (requirements.txt)
+import yaml  # PyYAML (requirements.txt)
 
 from app.agent.extensions import Section, tokens
 from app.agent.file_tools import blocked, looks_text
@@ -56,6 +56,7 @@ MAX_COMPATIBILITY = 500
 MAX_SKILL_MD = 256 * 1024  # bytes
 MAX_FRONTMATTER = 16 * 1024  # characters
 MAX_LISTED = 200  # files of one skill in load_skill's list
+MAX_FILE = 200_000  # bytes of one skill file that load_skill reads (a longer result spills, app/agent/spill.py)
 MAX_SKILLS = 200  # skill folders read from one source
 FIELDS = (
     "name",
@@ -479,11 +480,43 @@ def content(skill: Skill, gone: list[str] | None = None) -> str:
         listed = "\n".join(f"{f} (script)" if f in scripts else f for f in skill.files)
         parts.append(
             f"Skill folder (read-only): {os.path.realpath(skill.path)}\n<skill_resources>\n{listed}\n"
-            "</skill_resources>\nRead a file only when the guide points to it: read_file with the folder's path "
-            "and the file's name. A script never runs by itself: to run one, read it and pass its code to "
+            f"</skill_resources>\nRead a file only when the guide points to it: {TOOL} with the skill's name and the "
+            "file's path from this list. A script never runs by itself: to run one, read it and pass its code to "
             "run_python or run_shell; the user approves each run."
         )
     return "\n\n".join(parts)
+
+
+def read_file(skill: Skill, name: str) -> str:
+    """One text file of a skill, as load_skill returns it. Only a file of the skill's list (Skill.files: visible
+    files, no links followed, no hidden or secret files) inside the skill's folder; read without following a link."""
+    name = name.strip().lstrip("./")
+    if name not in skill.files:
+        near = ", ".join(skill.files[:20]) or "none"
+        raise ToolError(
+            f"The skill {skill.name} has no file {name!r}. Its files: {near}."
+        )
+    root = os.path.realpath(skill.path)
+    path = os.path.join(root, name)
+    if os.path.realpath(path) != path or any(blocked(part) for part in name.split("/")):
+        raise ToolError(f"{name}: not available.")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as e:
+        raise ToolError(f"{name}: cannot be read ({e.strerror}).") from None
+    with os.fdopen(fd, "rb") as f:
+        data = f.read(MAX_FILE + 1)
+    if not looks_text(data[:8192]):
+        raise ToolError(f"{name}: not a text file.")
+    text = data[:MAX_FILE].decode("utf-8", errors="replace")
+    cut = (
+        f"\n[The file is longer: the first {MAX_FILE:,} bytes are shown.]"
+        if len(data) > MAX_FILE
+        else ""
+    )
+    return (
+        f'<skill_file skill="{skill.name}" path="{name}">\n{text}{cut}\n</skill_file>'
+    )
 
 
 def load_tool(names: list[str], have_of: Callable[[str], Have | None]) -> Tool:
@@ -493,24 +526,34 @@ def load_tool(names: list[str], have_of: Callable[[str], Have | None]) -> Tool:
             raise ToolError(
                 f"The skill {args['name']} is off or gone now. Do the task without it."
             )
+        if args.get("file"):
+            return read_file(skill, args["file"])
         return content(skill, missing(skill, have_of(ctx.chat_id)))
 
     return Tool(
         name=TOOL,
         description=(
             "Load a skill: its step-by-step guide for a kind of task (see Skills in the system prompt) and the list "
-            "of its files. Call it before you start a task that a skill covers."
+            "of its files. Call it before you start a task that a skill covers. With file, it reads one file of "
+            "that list instead."
         ),
         parameters={
             "type": "object",
-            "properties": {"name": {"type": "string", "enum": names}},
+            "properties": {
+                "name": {"type": "string", "enum": names},
+                "file": {"type": "string", "maxLength": 512},
+            },
             "required": ["name"],
             "additionalProperties": False,
         },
         risk=Risk.R0,
         run=run,
         untrusted_output=True,  # an imported skill is text from outside the app
-        explain=lambda a: f"Reads the guide of the skill {a.get('name')!r}.",
+        explain=lambda a: (
+            f"Reads the file {a['file']!r} of the skill {a.get('name')!r}."
+            if a.get("file")
+            else f"Reads the guide of the skill {a.get('name')!r}."
+        ),
         effect="Reads the guide of a skill that is on in Settings > Skills. Runs without asking.",
     )
 

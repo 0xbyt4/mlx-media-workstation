@@ -653,18 +653,23 @@ The skills provider (`SkillsProvider`, loaded by `app/agent/providers.py`) gives
 - The section "Skills" of the system prompt: one lead line, then one line for each skill that is on, with its name
   and description. It may hold at most 600 tokens (`BUDGET`). When a skill does not fit, it is left out, and the
   last line says how many are left out. The three skills of the app take about 280 tokens.
-- The core tool `load_skill(name)`. `name` is an enum of the skills that are on (without `disable-model-invocation`
-  skills). The tool and its schema take about 150 tokens. With no skill on, there is no tool and no section.
+- The core tool `load_skill(name, file)`. `name` is an enum of the skills that are on (without
+  `disable-model-invocation` skills); `file` is optional. The tool and its schema take about 170 tokens. With no skill on, there is no tool and no section.
 
 `load_skill` is R0: it runs without asking. Its result is the body in `<skill_content name="...">`. When the skill
 has other files, the result also gives the skill folder's full path and a `<skill_resources>` list (scripts are
 marked). The result is untrusted (`untrusted_output`), so it taints the chat like a web page: an imported skill is
 text from outside the app. A skill that was turned off or deleted after the chat started gives an error.
 
-The read tools (`list_files`, `read_file`, `search_files`) read inside a skill folder when the path is the full path
-of a file there. Only the folders of skills that are on count. The rules of the granted folder apply: no hidden or
-secret files, real paths only. The write tools never write there. The policy still asks for a granted folder before
-any R1 tool runs.
+With `file`, `load_skill` returns one file of the skill's `<skill_resources>` list in `<skill_file skill="..."
+path="...">`, at most 200,000 bytes. This works in a chat without a granted folder. The file must be in the list (no
+hidden or secret files), must stay in the skill folder when its links are followed, and must be text. The result is
+untrusted, as the body is.
+
+The read tools (`list_files`, `read_file`, `search_files`) also read inside a skill folder when the path is the full
+path of a file there. Only the folders of skills that are on count. The rules of the granted folder apply: no hidden
+or secret files, real paths only. The write tools never write there. The policy still asks for a granted folder
+before any R1 tool runs, so in a chat without one, `load_skill` with `file` is the way to read a skill's files.
 
 Skill scripts never run by themselves. To run one, the agent reads it and gives its code to `run_python` or
 `run_shell`. The user approves each call and sees the code on the approval card. `allowed-tools` never approves a
