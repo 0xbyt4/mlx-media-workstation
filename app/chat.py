@@ -1706,6 +1706,7 @@ class Turn:
         end."""
         name = str(call.get("name") or "")
         args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+        saved = call  # the dict in self.new: the call as the chat keeps it (below, `call` may become a copy)
         via = None
         if name == deferred.CALL and not call.get("error") and name in self.reg.tools:
             # the bridge: from here on the call is the tool it names, for the policy, the card, the taint flag and
@@ -1845,9 +1846,19 @@ class Turn:
             if approval == "chat":
                 state = self.state()
                 self.change(grants=sorted(set(state["grants"]) | {name}))
-            # the user edited the arguments on the card (ask): those run
+            # the user edited the arguments on the card (ask): those run, and the chat keeps them in the call the
+            # model made (for tool_call, inside its "arguments")
             if call.get("edited"):
                 args = call["arguments"]
+                if saved is not call:
+                    if via:
+                        saved["arguments"] = {
+                            **saved.get("arguments", {}),
+                            "arguments": args,
+                        }
+                    else:
+                        saved["arguments"] = args
+                    saved["edited"] = True
                 key = json.dumps([name, args], sort_keys=True, ensure_ascii=False)
                 try:
                     describe = tool.describe(args)
@@ -2247,13 +2258,22 @@ def create_from(
         except RuntimeError as e:
             raise HTTPException(500, str(e)) from None
         state = default_agent(mode)
+        # the Tools menu lists the providers' tools too (agent_view): the new chat gets them as its first turn will
+        names = reg.names() + [t.name for t in preview_tools(mode)]
+        names = list(dict.fromkeys(names))
         if body.tools is not None:
-            unknown = [n for n in body.tools if reg.get(n) is None]
+            unknown = [n for n in body.tools if n not in names]
             if unknown:
                 raise HTTPException(400, f"Unknown tool: {', '.join(unknown)}")
-            state["tools"] = [n for n in reg.names() if n in body.tools]
+            state["tools"] = [n for n in names if n in body.tools]
         elif mode == mode_of(src):
-            state["tools"] = agent_of(src)["tools"]
+            state["tools"] = [n for n in agent_of(src)["tools"] if n in names]
+        else:
+            state["tools"] += [
+                n for n in names if n not in state["tools"] and n not in OFF_BY_DEFAULT
+            ]
+        # every listed tool counts as known, so a tool the user left off stays off (agent_of)
+        state["known"] = names
         old = agent_of(src)["folder"] if mode_of(src) == "agent" else None
         if mode == "agent" and old:
             try:

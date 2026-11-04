@@ -655,6 +655,7 @@ The skills provider (`SkillsProvider`, loaded by `app/agent/providers.py`) gives
   last line says how many are left out. The three skills of the app take about 280 tokens.
 - The core tool `load_skill(name, file)`. `name` is an enum of the skills that are on (without
   `disable-model-invocation` skills); `file` is optional. The tool and its schema take about 170 tokens. With no skill on, there is no tool and no section.
+  A chat with tools off (the Tools switch) gets neither.
 
 `load_skill` is R0: it runs without asking. Its result is the body in `<skill_content name="...">`. When the skill
 has other files, the result also gives the skill folder's full path and a `<skill_resources>` list (scripts are
@@ -698,7 +699,8 @@ A message that starts with `/skill <name>` forces that skill. The server handles
 1. The server finds the skill among the skills that are on. When there is none, the message is refused with HTTP 400
    and the names of the skills that are on.
 2. The user message is stored as typed, with a `skill` key: `{"name", "source", "command", "content"}`. `content` is
-   a note that the user chose the skill, then the same text as `load_skill` gives.
+   a note that the user chose the skill, then the same text as `load_skill` gives. That text is cut at 24,000
+   characters (`FORCED_MAX`), with a note that `load_skill` gives all of it.
 3. For the model, the command is removed from the text, and `content` goes before the message (before its files).
 4. A skill from another source than the app taints an agent or workstation chat, as an attached file does.
 

@@ -364,7 +364,9 @@ def test_load_skill_reads_a_listed_file_without_a_granted_folder(
     skill_reg = Registry([tool])
 
     def read(name: str):
-        return skill_reg.call("load_skill", {"name": "alpha", "file": name}, ctx(dirs["tmp"]))
+        return skill_reg.call(
+            "load_skill", {"name": "alpha", "file": name}, ctx(dirs["tmp"])
+        )
 
     r = read("references/guide.md")
     assert r.status == "ok" and r.content == (
@@ -426,6 +428,14 @@ def test_the_read_tools_read_inside_a_skill_folder_only(dirs) -> None:
 
 
 # ---------- /skill <name> ----------
+
+
+def test_a_forced_guide_is_cut_to_fit_the_context(dirs) -> None:
+    body = "Do the step. " * 4000  # 52,000 characters
+    make(dirs["app"], "long", md("long").replace("1. Do the thing.", body))
+    got = skills.forced("/skill long go", {"mode": "general"})["content"]
+    assert len(got) < skills.FORCED_MAX + 600
+    assert "load_skill with the name long gives all of it." in got
 
 
 def test_forced_finds_the_skill_and_strips_the_command(dirs) -> None:

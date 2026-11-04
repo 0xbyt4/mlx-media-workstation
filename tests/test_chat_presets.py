@@ -8,7 +8,7 @@ from urllib.parse import unquote
 
 from fastapi import HTTPException
 
-from app import chat
+from app import chat, memory, skills
 from tests import test_agent_chat as base
 from tests.test_agent_chat import (
     ORIGIN,
@@ -32,6 +32,8 @@ box = base.box
 shell = base.shell
 net = base.net
 client = base.client
+online = base.online
+no_providers = base.no_providers
 
 
 def stored(cid: str) -> dict:
@@ -297,3 +299,83 @@ def test_edited_arguments_cannot_be_allowed_for_the_chat(client):
     assert r.status_code == 400
     approve(client, cid, ask["id"], "deny")
     t.join(5)
+
+
+# ---------- seams with the core and deferred tools and the providers ----------
+
+
+def test_an_edit_of_a_bridged_or_deferred_call_is_saved_as_it_ran(client, net, shell):
+    cid = agent_chat(client)
+    bridged = {
+        "name": "tool_call",
+        "arguments": {"name": "web_search", "arguments": {"query": "fox"}},
+    }
+    t, _ = start(client, cid, script([bridged], "RESULT"))
+    ask = pending(cid)
+    assert (
+        answer_with(client, cid, ask["id"], "once", {"query": "hare"}).status_code
+        == 200
+    )
+    t.join(5)
+    assert "hare" in net.requests[-1].target
+    saved_call = next(m for m in stored(cid)["messages"] if m.get("tool_calls"))[
+        "tool_calls"
+    ][0]
+    assert saved_call["arguments"] == {
+        "name": "web_search",
+        "arguments": {"query": "hare"},
+    }
+    assert saved_call["edited"] is True
+    # a deferred tool called by its name (run_shell is not core)
+    cid = agent_chat(client)
+    on = client.get(f"/api/chats/{cid}/agent").json()["enabled"] + ["run_shell"]
+    client.patch(f"/api/chats/{cid}/agent", json={"tools": on}, headers=ORIGIN)
+    t, _ = start(client, cid, script([call("run_shell", command="echo fox")], "RESULT"))
+    ask = pending(cid)
+    edited = {**ask["arguments"], "command": "echo hare"}
+    assert answer_with(client, cid, ask["id"], "once", edited).status_code == 200
+    t.join(5)
+    saved_call = next(m for m in stored(cid)["messages"] if m.get("tool_calls"))[
+        "tool_calls"
+    ][0]
+    assert saved_call["arguments"]["command"] == "echo hare" and saved_call["edited"]
+
+
+def test_a_new_chat_takes_the_providers_tools_from_the_draft(client, monkeypatch):
+    monkeypatch.setattr(chat.providers, "load", lambda: [memory.Provider()])
+    cid = agent_chat(client)
+    send(client, cid, "hi")
+    menu = client.get(f"/api/chats/{cid}/agent").json()["tools"]
+    assert "memory" in [t["name"] for t in menu]
+    draft = [t["name"] for t in menu if t["enabled"] and t["name"] != "memory"]
+    r = client.post(f"/api/chats/{cid}/new", json={"tools": draft}, headers=ORIGIN)
+    assert r.status_code == 200, r.text
+    new = r.json()["id"]
+    state = client.get(f"/api/chats/{new}/agent").json()
+    assert "memory" not in state["enabled"]  # left off in the draft: it stays off
+    assert "web_search" in state["enabled"]
+    # without a draft, the new chat keeps the source chat's tools, providers' tools too
+    r = client.post(f"/api/chats/{cid}/new", headers=ORIGIN)
+    assert (
+        "memory" in client.get(f"/api/chats/{r.json()['id']}/agent").json()["enabled"]
+    )
+
+
+def test_a_chat_without_tools_gets_no_skills_catalog(client, monkeypatch, tmp_path):
+    folder = tmp_path / "app-skills" / "plain"
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text(
+        "---\nname: plain\ndescription: Writes a haiku. Use when asked for a haiku.\n---\n# Guide\n\n1. Write.\n"
+    )
+    monkeypatch.setattr(skills, "APP_DIR", folder.parent)
+    monkeypatch.setattr(skills, "USER_DIR", tmp_path / "user-skills")
+    monkeypatch.setattr(skills, "STATE", tmp_path / "skills.json")
+    monkeypatch.setattr(chat.providers, "load", lambda: [skills.SkillsProvider()])
+    general = client.post("/api/chats", json={"mode": "general"}).json()["id"]
+    send(client, general, "hi")
+    p = stored(general)["prompt"]
+    assert "load_skill" not in p["system"] and p["tools"] == []
+    agent = agent_chat(client)
+    send(client, agent, "hi")
+    p = stored(agent)["prompt"]
+    assert "load_skill" in p["tools"] and "- plain: Writes a haiku." in p["system"]

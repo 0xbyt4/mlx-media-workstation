@@ -56,6 +56,7 @@ MAX_COMPATIBILITY = 500
 MAX_SKILL_MD = 256 * 1024  # bytes
 MAX_FRONTMATTER = 16 * 1024  # characters
 MAX_LISTED = 200  # files of one skill in load_skill's list
+FORCED_MAX = 24_000  # characters of a guide that /skill puts in the user's message (about 8,000 tokens)
 MAX_FILE = 200_000  # bytes of one skill file that load_skill reads (a longer result spills, app/agent/spill.py)
 MAX_SKILLS = 200  # skill folders read from one source
 FIELDS = (
@@ -581,7 +582,12 @@ class SkillsProvider:
         self.tools_of, self.saved_of = tools_of, saved_of
 
     def visible(self, chat: dict[str, Any]) -> list[Skill]:
-        """The skills of the chat's catalog: on, not manual, nothing missing."""
+        """The skills of the chat's catalog: on, not manual, nothing missing. None in a chat without tools (a General
+        chat, or a Workstation chat in the chat profile): it could not call load_skill. /skill still works there."""
+        from app import chat as chats  # imported here: app.chat imports this module
+
+        if "mode" in chat and not chats.uses_tools(chat):
+            return []
         have = self.tools_of(chat)
         return [s for s in active() if not s.manual and not missing(s, have)]
 
@@ -620,11 +626,20 @@ def forced(text: str, chat: dict[str, Any]) -> dict[str, str] | None:
     lead = (
         f"[The user chose the skill {skill.name} for this message. Follow its guide.]"
     )
+    text = content(skill, missing(skill, chat_tools(chat)))
+    if (
+        len(text) > FORCED_MAX
+    ):  # the newest message always goes to the model whole: keep it in the context
+        text = (
+            text[:FORCED_MAX]
+            + f"\n[The guide is longer: the first {FORCED_MAX:,} characters are shown. {TOOL} with the name "
+            f"{skill.name} gives all of it.]"
+        )
     return {
         "name": skill.name,
         "source": skill.source,
         "command": m.group(0),
-        "content": lead + "\n\n" + content(skill, missing(skill, chat_tools(chat))),
+        "content": lead + "\n\n" + text,
     }
 
 
