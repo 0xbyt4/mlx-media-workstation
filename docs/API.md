@@ -551,12 +551,22 @@ Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images and files 
 `{id}` return HTTP 404 for an unknown chat.
 
 - `GET /api/chats` lists the chats, most recently updated first: `id`, `title`, `created`, `updated`, `messages`
-  (count), `mode`, `running`.
-- `POST /api/chats` creates an empty chat and returns its summary. An optional JSON body `{"mode": "general"}` sets
-  the mode (default `workstation`). HTTP 400 for an unknown mode.
+  (count), `mode`, `running`, `waiting` (`true` while the running answer waits for an approval) and `temporary`.
+- `POST /api/chats` creates an empty chat and returns its summary. An optional JSON body `{"mode": "general",
+  "temporary": true}` sets the mode (default `workstation`) and makes a temporary chat (default `false`). HTTP 400 for
+  an unknown mode.
+- `POST /api/chats/{id}/new` creates an empty chat with the settings of chat `{id}` and returns its summary plus
+  `note`. The new chat gets the mode, the enabled tools, the granted folder (agent chats only), the thinking level
+  (`effort`) and the temporary flag. It does not get the messages, the chat-wide approvals (`grants`) or the taint. The
+  optional JSON body `{"mode": "agent", "tools": ["web_search"], "temporary": false}` replaces the mode, the enabled
+  tools or the flag. Another mode without `tools` gets the default tools of that mode. The server checks the folder
+  again; a folder that it cannot grant now stays behind, and `note` says why (else `""`). The page uses this endpoint
+  because a chat's tools are fixed after its first message. It needs an `Origin` header of the app's own page (HTTP
+  403), because it carries the folder grant. HTTP 400 for an unknown mode or tool.
 - `GET /api/chats/{id}` returns the chat with all messages, `mode` and `running`.
-- `PATCH /api/chats/{id}` with the JSON body `{"mode": "..."}` changes the mode of a chat that has no messages yet
-  and returns its summary. HTTP 409 after the first message, HTTP 400 for an unknown mode.
+- `PATCH /api/chats/{id}` with the JSON body `{"mode": "...", "temporary": true}` (each field optional) changes the
+  mode or the temporary flag of a chat that has no messages yet and returns its summary. HTTP 409 after the first
+  message, HTTP 400 for an unknown mode.
 - `DELETE /api/chats/{id}` deletes it (HTTP 409 while it answers). The folder is renamed to a hidden trash name
   first, so the chat is gone at once, then removed; immutable or locked files that sandboxed code made are removed
   too.
@@ -595,7 +605,13 @@ Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images and files 
 - `POST /api/chats/{id}/stop` stops the answer between tokens, also while it waits. It returns
   `{"status": "stopping"}`, or `{"status": "idle"}` when nothing runs. The reply is saved with `finish: "cancelled"`.
 
-The mode of a chat sets its system prompt:
+A temporary chat has `"temporary": true` in `chat.json` (a kept chat has no such key). Memory and the model's chat
+search skip it; `GET /api/chats` still lists it. The page deletes it (`DELETE /api/chats/{id}`) when it leaves it: when it opens another chat or starts a new one.
+At its start the app deletes every temporary chat that is still on disk (`chat.drop_temporary()` in `start()`), for
+example the chat of a window that was closed.
+
+The mode of a chat sets its system prompt. The page calls the modes presets: General ("No tools, fastest"), Agent
+("Files, code, web") and Workstation ("Media jobs"). `chat.json` keeps the mode names.
 
 | Mode | System prompt | "Use in" cards |
 |---|---|---|
@@ -833,6 +849,10 @@ with another one).
   the call that waits. It returns `{"status": "answered", "decision": "..."}`, and the call then runs with that
   answer, also when the wait timed out in the same moment. HTTP 409 when that call does not wait any more (the
   `approval_done` event was sent), HTTP 400 for `"chat"` when the approval did not offer it.
+  With `"decision": "once"` the body can also have `"arguments": {...}`: arguments that the user edited. The server
+  checks them against the tool's schema (`app/agent/schema.py`) and the call runs with them. HTTP 400 for arguments
+  that the schema refuses (`"Invalid arguments: query: expected string"`), with another decision, or for a call whose
+  approval has a `preview` (`editable` is `false`). The call still waits after such an HTTP 400.
 - `POST /api/chats/{id}/reveal` with `{"path": "notes/plan.md"}` shows a file of the granted folder in Finder (`open
   -R`). The page uses it for the files that `write_file`, `edit_file` and `export_from_workspace` wrote. The path gets
   the file tools' checks. It returns `{"status": "shown"}`. HTTP 409 without a granted folder, HTTP 404 for a path
@@ -855,7 +875,8 @@ Events. The message stream of an agent chat has these events besides `waiting`, 
   them: the page writes those characters as `\uXXXX` when it shows them. A call that the model made with `tool_call`
   has `"via": "tool_call"`, and `name`, `arguments` and `risk` are those of the tool it runs.
 - `{"event": "approval", "id", "name", "label", "arguments", "describe", "host", "reason", "risk", "network",
-  "chat_scope", "timeout_s", "preview"}` when the call waits for the user. Offer "Allow in this chat" only when
+  "chat_scope", "timeout_s", "preview", "editable"}` when the call waits for the user. `editable` says whether the
+  user may edit the arguments (`false` for a call with a `preview`). Offer "Allow in this chat" only when
   `chat_scope` is `true`. `host` is the host that `fetch_url` contacts, as the network sees it (IDNA: `xn--...` for a
   non-ASCII name), or `null` for other tools and for a URL without a valid host. The page shows it on its own line.
   `network` says whether the tool sends data off this Mac. `preview` is the change as a unified diff (`edit_file`,
@@ -864,9 +885,11 @@ Events. The message stream of an agent chat has these events besides `waiting`, 
   shows each line as text, never as HTML. For `run_shell` the event also has `cwd` (the folder the command runs in:
   the chat's work folder) and `read_only` (the granted folder that the command can read, or `null`). The page shows
   the command in a code block and both folders.
-- `{"event": "approval_done", "id", "decision"}` with `once`, `chat`, `deny`, `timeout` or `stopped`.
+- `{"event": "approval_done", "id", "decision"}` with `once`, `chat`, `deny`, `timeout` or `stopped`. After edited
+  arguments it also has `"arguments"` (the arguments that run) and `"edited": true`.
 - `{"event": "tool_result", "id", "name", "status", "content", "truncated", "files", "seconds", "approval", "risk",
-  "network"}`, plus `"job": "<job id>"` when the call queued or read a media job (`create_job`, `transcribe_audio`).
+  "network"}`, plus `"job": "<job id>"` when the call queued or read a media job (`create_job`, `transcribe_audio`),
+  and `"edited": true` when it ran with edited arguments.
   `status` is `ok`, `error`, `cancelled`, `denied`, `refused`, `skipped` or `repeat` (the same call a second time
   after an `ok` result: it did not run). `content` is the first 4,000 characters. `files` are `{path, url, kind}`.
   `kind` is `image` or `file` for a file in the workspace (`url` under `.../ws/`), `image` for a `view_image` copy
@@ -924,9 +947,11 @@ Rules of the loop (`app/chat.py`, `Turn`):
     the next model requests get it as an image part before the result text. Only the newest 2 tool images go to the
     model; an older result gets a note instead.
 
-The answer's messages are saved when it ends. The assistant messages keep their `tool_calls`. The tool messages are
+The answer's messages are saved when it ends. The assistant messages keep their `tool_calls`. A call that ran with
+edited arguments keeps those arguments and has `"edited": true`; the model input sends only `id`, `name` and
+`arguments`. The tool messages are
 `{"role": "tool", "tool_call_id", "name", "label", "status", "content", "describe", "files", "seconds", "approval",
-"risk", "time"}`, plus `images` for a `view_image` result and `job` as in `tool_result`, with `content` cut at
+"risk", "time"}`, plus `images` for a `view_image` result, `job` as in `tool_result` and `edited`, with `content` cut at
 100,000 characters. An `update_plan` message also has `plan` (its items), so a saved answer shows its last plan. The
 message of the last step has `nudge`, the app's note that the model got as a user message before it; the next turns
 send it in the same place. A step after a change in the Tools menu (or a folder grant, a new tool, a media tool that
@@ -1202,6 +1227,14 @@ views.
   and move buttons (the light jobs in their own list), and finished jobs with their media, settings,
   "Use these settings", "Send to" (an output into another tool's file field), download and delete.
 - Chat, Library, Models and Settings use the endpoints of their sections above.
+- Chat: "New chat" and its menu offer the presets (General, Agent, Workstation, each with a short line on what it
+  can do) and "Temporary chat". The preset chip in the chat header opens the same presets: on an empty chat it
+  changes the preset (`PATCH`), on a chat with messages it starts a new chat (`POST .../new`). In a chat with messages
+  the Tools menu switches make a draft, and "Start a new chat with these tools" sends it to `POST .../new`; the
+  folder and the revoke buttons still change the open chat. The Tools menu groups the tools by the per-tool field
+  `loaded` of `GET .../agent`: "Always loaded" (`core`) and "Found by search" (`search`); a tool without the field
+  counts as `core`. The chat list shows a lock and "Waits for your approval" for a chat with `waiting`, and a clock
+  for a temporary chat. The approval card has "Edit arguments" when `editable` is `true`.
 - Chat: the Thinking button under the message box opens a menu of the thinking levels, each with a short hint (arrow
   keys, Return and Escape work). A chat opens with its saved `effort`, a new chat with `default_effort` of
   `GET /api/llm`. A level picked in a chat stays for this session, also before a message is sent.

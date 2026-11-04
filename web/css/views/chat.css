@@ -1214,6 +1214,7 @@
   }
   .v-chat .thread-title {
     min-width: 0;
+    flex-basis: calc(100% - 50px); /* the menu button, then the title and its preset chips; the model chip wraps */
   }
   .v-chat .model-chip:has(.pill-idle, .pill-ok) .sub {
     display: none; /* "Off" and "Ready" say enough here; the title keeps the room */
@@ -1236,4 +1237,117 @@
   .v-chat .tool-body {
     padding-left: 12px;
   }
+}
+
+/* ---------- presets, temporary chats, edited approvals ---------- */
+.v-chat button.mode-chip {
+  gap: 4px;
+  border: 0;
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+}
+.v-chat button.mode-chip:hover,
+.v-chat button.mode-chip[aria-expanded="true"] {
+  background: var(--border);
+  color: var(--text);
+}
+.v-chat .temp-chip {
+  flex: none;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.v-chat .temp-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: var(--fs-sm);
+}
+.v-chat .temp-label {
+  color: var(--text-2);
+  cursor: pointer;
+}
+.v-chat .temp-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 auto;
+  width: 100%;
+  max-width: 760px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--fs-sm);
+}
+.v-chat .temp-note .ic,
+.v-chat .tools-note .ic {
+  flex: none;
+  margin-top: 2px;
+}
+.v-chat .convo-temp {
+  display: inline-flex;
+  vertical-align: -2px;
+  margin-right: 4px;
+  color: var(--warn);
+}
+.v-chat .convo-sub.is-waiting {
+  color: var(--warn);
+  font-weight: 500;
+}
+.v-chat .tools-note {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--sunken);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.v-chat .tool-group {
+  display: grid;
+  gap: 4px;
+}
+.v-chat .tool-group h4 {
+  margin: 4px 0 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.v-chat .tool-group > .help {
+  margin: 0 0 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.v-chat .tools-keep {
+  position: sticky;
+  bottom: -16px; /* the popover's own padding: the box stays on screen while the list scrolls */
+  display: grid;
+  gap: 8px;
+  margin: 0 -16px -16px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  font-size: var(--fs-sm);
+}
+.v-chat .tools-keep p {
+  margin: 0;
+}
+.v-chat .tools-keep .help {
+  color: var(--text-3);
+}
+.v-chat .tools-keep-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.v-chat .approval-edit {
+  width: 100%;
+  min-height: 120px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  resize: vertical;
 }

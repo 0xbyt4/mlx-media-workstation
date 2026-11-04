@@ -1336,6 +1336,7 @@ def start() -> None:
     if hasattr(settings_api, "AGENT"):
         settings_api.AGENT = chat.settings
     chat.registry()
+    chat.drop_temporary()  # temporary chats of the last run (the page deletes one when it leaves it)
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=worker, args=("light",), daemon=True).start()
     threading.Thread(target=llm.watch_idle, daemon=True).start()

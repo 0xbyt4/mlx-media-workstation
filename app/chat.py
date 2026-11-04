@@ -10,7 +10,8 @@ A chat has a mode that picks its system prompt: "workstation" knows the app's to
 (in the full profile) runs them with the Workstation tools only, "general" is a plain assistant, "agent" is a general
 assistant with tools (app/agent, docs/AGENT.md). A chat saved before modes existed has no "mode" key and is a
 workstation chat. The mode can change only while the chat is empty: a new system prompt would change what the earlier
-answers meant.
+answers meant. POST .../new starts a new chat with a chat's settings (the page calls the modes presets). A temporary
+chat ("temporary": true) is deleted when the page leaves it and at the next app start (drop_temporary).
 
 An answer with tools (agent, or workstation in the full profile) is a loop of model steps and tool calls in one memory
 lease (Turn below). Each call is run, refused or shown to the user for approval (app/agent/policy.py). The steps' assistant messages and the tool messages are saved
@@ -76,6 +77,8 @@ from app.agent import (
 from app.agent.extensions import Section
 from app.agent.registry import MAX_RESULT, MAX_SCHEMA, Cancelled, cap
 from app.agent.sandbox import remove_tree
+from app.agent.schema import ArgumentError
+from app.agent.schema import check as check_arguments
 from app.config import ROOT
 
 CHATS = ROOT / "outputs" / "chats"
@@ -526,6 +529,10 @@ class Approval:
         self.chat_scope = chat_scope  # "Allow in this chat" may be answered
         self.answered = threading.Event()
         self.decision: str | None = None  # "once", "chat", "deny" or "stopped"
+        # the user may edit the arguments before "Allow once" (Turn.ask sets these): the tool's schema checks them
+        self.editable = False
+        self.parameters: dict[str, Any] = {}
+        self.arguments: dict[str, Any] | None = None  # the edited arguments, or None
 
 
 # ---------- agent tools and state ----------
@@ -1009,7 +1016,15 @@ def summary(chat: dict[str, Any]) -> dict[str, Any]:
         "messages": len(chat["messages"]),
         "mode": mode_of(chat),
         "running": chat["id"] in live,
+        "waiting": waiting(chat["id"]),
+        "temporary": bool(chat.get("temporary")),
     }
+
+
+def waiting(chat_id: str) -> bool:
+    """Whether the chat's running answer waits for the user to answer an approval card."""
+    ap = getattr(live.get(chat_id), "approval", None)
+    return ap is not None and not ap.answered.is_set()
 
 
 def tokens(msg: dict[str, Any]) -> int:
@@ -1830,6 +1845,14 @@ class Turn:
             if approval == "chat":
                 state = self.state()
                 self.change(grants=sorted(set(state["grants"]) | {name}))
+            # the user edited the arguments on the card (ask): those run
+            if call.get("edited"):
+                args = call["arguments"]
+                key = json.dumps([name, args], sort_keys=True, ensure_ascii=False)
+                try:
+                    describe = tool.describe(args)
+                except Exception:  # noqa: BLE001 - as above
+                    describe = f"Runs {name}."
         res = self.reg.call(name, args, ctx)
         # the repeat rule: after a call that changes state ran, the earlier results can be stale; only an ok
         # result of a tool whose result cannot change counts
@@ -1877,8 +1900,12 @@ class Turn:
         grants: Grants,
         preview: str | None = None,
     ) -> str:
-        """Show the approval card and wait for the answer: "once", "chat", "deny", "timeout" or "stopped"."""
+        """Show the approval card and wait for the answer: "once", "chat", "deny", "timeout" or "stopped". Arguments
+        that the user edited before "Allow once" replace the call's arguments, also in the saved assistant message
+        (the call dict is the one in self.new), and the call gets "edited": True. A tool with a preview (a diff) cannot
+        be edited: the user would allow a change they did not see."""
         ap = Approval(call["id"], chat_scope)
+        ap.editable, ap.parameters = tool.preview is None, tool.parameters
         wait = max(0.0, min(APPROVAL_SECONDS, self.deadline - time.monotonic()))
         self.run.approval = ap
         self.emit(
@@ -1896,6 +1923,7 @@ class Turn:
                 "chat_scope": chat_scope,
                 "timeout_s": round(wait),
                 "preview": preview,
+                "editable": ap.editable,
                 # run_shell: the folder the command runs in and the folder it may read
                 **(
                     {
@@ -1921,7 +1949,12 @@ class Turn:
                 decision = ap.decision
             self.run.approval = None
             ap.answered.set()
-        self.emit({"event": "approval_done", "id": ap.id, "decision": decision})
+        edited = ap.arguments if decision == "once" else None
+        done = {"event": "approval_done", "id": ap.id, "decision": decision}
+        if edited is not None:
+            call["arguments"], call["edited"] = edited, True
+            done.update(arguments=edited, edited=True)
+        self.emit(done)
         return decision
 
     def result(
@@ -1955,6 +1988,8 @@ class Turn:
         }
         if job:
             extra["job"] = job
+        if call.get("edited"):
+            extra["edited"] = True
         self.new.append(
             {
                 "role": "tool",
@@ -2118,7 +2153,8 @@ def list_chats() -> list[dict[str, Any]]:
             except (OSError, json.JSONDecodeError, KeyError):
                 continue
             seen.add(path)
-            out.append({**hit[2], "running": hit[2]["id"] in live})
+            cid = hit[2]["id"]
+            out.append({**hit[2], "running": cid in live, "waiting": waiting(cid)})
         for gone in listed.keys() - seen:
             del listed[gone]
     return sorted(out, key=lambda c: c["updated"], reverse=True)
@@ -2126,10 +2162,21 @@ def list_chats() -> list[dict[str, Any]]:
 
 class NewChat(BaseModel):
     mode: str = DEFAULT_MODE
+    temporary: bool = False
 
 
 class ChatChange(BaseModel):
-    mode: str
+    mode: str | None = None
+    temporary: bool | None = None
+
+
+class NewFrom(BaseModel):
+    """What differs from the chat's own settings: None keeps the chat's mode and flag. Without tools, the same mode
+    keeps the chat's enabled tools and another mode gets its default tools."""
+
+    mode: str | None = None
+    tools: list[str] | None = None
+    temporary: bool | None = None
 
 
 def check_mode(mode: str) -> str:
@@ -2138,10 +2185,9 @@ def check_mode(mode: str) -> str:
     return mode
 
 
-@router.post("/chats")
-def create_chat(body: NewChat | None = None) -> dict[str, Any]:
-    """An empty chat; the JSON body {"mode": ...} is optional (default workstation)."""
-    mode = check_mode(body.mode if body else DEFAULT_MODE)
+def new_chat(mode: str, temporary: bool = False) -> dict[str, Any]:
+    """A new empty chat (not saved yet). A temporary chat is deleted when the page leaves it and at the next app
+    start (drop_temporary), and memory and chat search skip it."""
     chat_id = datetime.now().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
     chat = {
         "id": chat_id,
@@ -2151,12 +2197,72 @@ def create_chat(body: NewChat | None = None) -> dict[str, Any]:
         "updated": now(),
         "messages": [],
     }
+    if temporary:
+        chat["temporary"] = True
     if mode == "agent":
         chat["agent"] = default_agent()
+    return chat
+
+
+def add_chat(chat: dict[str, Any]) -> None:
     with lock:
-        (CHATS / chat_id).mkdir(parents=True)
+        (CHATS / chat["id"]).mkdir(parents=True)
         save(chat)
+
+
+@router.post("/chats")
+def create_chat(body: NewChat | None = None) -> dict[str, Any]:
+    """An empty chat; the JSON body {"mode": ..., "temporary": ...} is optional (default workstation, kept)."""
+    chat = new_chat(
+        check_mode(body.mode if body else DEFAULT_MODE),
+        bool(body and body.temporary),
+    )
+    add_chat(chat)
     return summary(chat)
+
+
+@router.post("/chats/{chat_id}/new")
+def create_from(
+    chat_id: str, request: Request, body: NewFrom | None = None
+) -> dict[str, Any]:
+    """A new empty chat with this chat's settings: its mode, tools, folder grant, thinking level and temporary flag,
+    each one unless the body gives another. Not its messages, chat-wide approvals or taint. A chat's tools are fixed
+    after its first message (the prompt cache), so the page offers this to change them. The folder is checked again;
+    one that cannot be granted now is left out and "note" says why."""
+    same_origin(request)  # it carries the folder grant
+    body = body or NewFrom()
+    with lock:
+        src = load(chat_id)
+    mode = check_mode(body.mode or mode_of(src))
+    temporary = (
+        body.temporary if body.temporary is not None else bool(src.get("temporary"))
+    )
+    chat = new_chat(mode, temporary)
+    if src.get("effort") in effort.LEVELS:
+        chat["effort"] = src["effort"]
+    note = ""
+    if mode in ("agent", "workstation"):
+        try:
+            reg = tools_for(mode)
+        except RuntimeError as e:
+            raise HTTPException(500, str(e)) from None
+        state = default_agent(mode)
+        if body.tools is not None:
+            unknown = [n for n in body.tools if reg.get(n) is None]
+            if unknown:
+                raise HTTPException(400, f"Unknown tool: {', '.join(unknown)}")
+            state["tools"] = [n for n in reg.names() if n in body.tools]
+        elif mode == mode_of(src):
+            state["tools"] = agent_of(src)["tools"]
+        old = agent_of(src)["folder"] if mode_of(src) == "agent" else None
+        if mode == "agent" and old:
+            try:
+                state["folder"] = check_folder(old)
+            except HTTPException as e:
+                note = f"The folder was not carried over: {e.detail}"
+        chat["agent"] = state
+    add_chat(chat)
+    return {**summary(chat), "note": note}
 
 
 @router.get("/chats/{chat_id}")
@@ -2168,21 +2274,26 @@ def get_chat(chat_id: str) -> dict[str, Any]:
 
 @router.patch("/chats/{chat_id}")
 def change_chat(chat_id: str, body: ChatChange) -> dict[str, Any]:
-    """Change the mode of a chat that has no messages yet (HTTP 409 after the first message)."""
-    mode = check_mode(body.mode)
+    """Change the mode or the temporary flag of a chat that has no messages yet (HTTP 409 after the first
+    message)."""
+    mode = check_mode(body.mode) if body.mode is not None else None
     with lock:
         chat = load(chat_id)
         if chat["messages"] or chat_id in live:
             raise HTTPException(
                 409, "The mode is fixed after the first message. Start a new chat."
             )
-        if mode_of(chat) != mode:
+        if mode is not None and mode_of(chat) != mode:
             chat["mode"] = mode
-            chat["updated"] = now()
             # the tools of the new mode (a workstation chat's list is not an agent chat's); no grants exist yet
             if mode in ("agent", "workstation"):
                 chat["agent"] = default_agent(mode)
-            save(chat)
+        if body.temporary is not None:
+            chat.pop("temporary", None)
+            if body.temporary:
+                chat["temporary"] = True
+        chat["updated"] = now()
+        save(chat)
     return summary(chat)
 
 
@@ -2202,6 +2313,24 @@ def delete_chat(chat_id: str) -> dict[str, str]:
         provided.pop(chat_id, None)
     remove_tree(trash)
     return {"status": "deleted"}
+
+
+def drop_temporary() -> list[str]:
+    """Delete the temporary chats that are still on disk: the page deletes one when it leaves it, so these are the
+    ones of a window that closed or an app that quit. app/server.py start() calls it. Returns their ids."""
+    dropped = []
+    for path in sorted(CHATS.glob("*/chat.json")) if CHATS.exists() else []:
+        chat_id = path.parent.name
+        if not ID.fullmatch(chat_id) or chat_id in live:
+            continue
+        try:
+            if json.loads(path.read_text()).get("temporary") is not True:
+                continue
+            delete_chat(chat_id)
+        except (OSError, json.JSONDecodeError, HTTPException):
+            continue
+        dropped.append(chat_id)
+    return dropped
 
 
 @router.get("/chats/{chat_id}/files/{name}")
@@ -2731,12 +2860,14 @@ def change_agent(chat_id: str, body: AgentChange, request: Request) -> dict[str,
 class Answer(BaseModel):
     call_id: str
     decision: Literal["once", "chat", "deny"]
+    arguments: dict[str, Any] | None = None  # edited arguments: only with "once"
 
 
 @router.post("/chats/{chat_id}/approve")
 def approve(chat_id: str, body: Answer, request: Request) -> dict[str, str]:
     """Answer the call that waits for approval: allow it once, allow the tool for the rest of the chat, or deny it.
-    HTTP 409 when that call does not wait (any more)."""
+    "once" may come with edited arguments, which the tool's schema must accept: the call then runs with them. HTTP 409
+    when that call does not wait (any more)."""
     same_origin(request)
     folder(chat_id)
     run = live.get(chat_id)
@@ -2746,6 +2877,19 @@ def approve(chat_id: str, body: Answer, request: Request) -> dict[str, str]:
             raise HTTPException(409, "This call does not wait for an answer any more.")
         if body.decision == "chat" and not ap.chat_scope:
             raise HTTPException(400, "This call can be allowed only once.")
+        if body.arguments is not None:
+            if body.decision != "once":
+                raise HTTPException(400, "Edited arguments can be allowed only once.")
+            if not ap.editable:
+                raise HTTPException(
+                    400,
+                    "This call shows a change that the arguments make. Deny it and ask for another change.",
+                )
+            try:
+                check_arguments(ap.parameters, body.arguments)
+            except ArgumentError as e:
+                raise HTTPException(400, f"Invalid arguments: {e}") from None
+            ap.arguments = body.arguments
         ap.decision = body.decision
         ap.answered.set()
     return {"status": "answered", "decision": body.decision}
