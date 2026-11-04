@@ -1222,6 +1222,7 @@ def test_the_server_port_searches_the_library(state, make_job):
     # any word matches, in any order and any case
     assert port.search_library("Lighthouse  A", 5) == [hit]
     assert port.search_library("lighthouse storm", 5) == [hit]
+    assert port.search_library("20261103-100000-aaaa", 5) == [hit]  # by the job id too
 
 
 def test_library_search_puts_the_most_matched_words_first(state, make_job):

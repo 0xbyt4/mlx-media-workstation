@@ -123,10 +123,31 @@ def _queue_of(job: dict[str, Any]) -> str:
     return "the light lane" if job.get("lane") == "light" else "the queue"
 
 
+PROMPT_KEYS = (
+    "prompt",
+    "text",
+    "caption",
+)  # a job's main text, as app/library.py TEXT_KEYS
+MAX_JOB_TEXT = 400  # the characters of a job's prompt that job_status shows
+
+
+def job_text(job: dict[str, Any]) -> str:
+    """The job's main text (its prompt), so that the model can see what an output shows."""
+    params = job.get("params") or {}
+    for key in PROMPT_KEYS:
+        value = params.get(key)
+        if isinstance(value, str) and value.strip():
+            value = " ".join(value.split())
+            return value if len(value) <= MAX_JOB_TEXT else value[:MAX_JOB_TEXT] + "..."
+    return ""
+
+
 def format_job(
     job: dict[str, Any], chat_id: str | None = None, host: Host = CHAT
 ) -> str:
     lines = [f"Job {job.get('id')}: {job.get('tool_label') or job.get('tool')}"]
+    if text := job_text(job):
+        lines.append(f"prompt: {text}")
     if chat_id is not None and job.get("chat") == chat_id:
         lines.append(f"queued {host.by}")
     lines.append(f"status: {job.get('status')}")
@@ -590,8 +611,8 @@ def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
         Tool(
             name="job_status",
             description=(
-                "Read the status, progress, error and output files of one media job by its id. An output's file "
-                "reference can be an input of the next job."
+                "Read the prompt, status, progress, error and output files of one media job by its id. An "
+                "output's file reference can be an input of the next job."
             ),
             parameters={
                 "type": "object",
@@ -607,7 +628,7 @@ def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
             name="search_library",
             description=(
                 "Search the user's finished outputs (images, audio, videos) by the words of their prompt, the "
-                "tool or the file name. The outputs with the most of the query's words come first, then the newest."
+                "tool, the file name or the job id. The outputs with the most of the query's words come first, then the newest."
             ),
             parameters={
                 "type": "object",

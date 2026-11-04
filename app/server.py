@@ -892,14 +892,16 @@ class Workstation:
             raise ValueError(str(e.detail)) from None
 
     def search_library(self, query: str, limit: int) -> list[dict[str, Any]]:
-        """Outputs whose prompt, tool or file name holds words of the query: the ones with the most of the words
+        """Outputs whose prompt, tool, file name or job id holds words of the query: the ones with the most of the words
         first, then the newest. A query word also matches inside a longer word: "rain" finds "raining", but
         "extended" does not find "extend"."""
         words = set(query.lower().split())
         keys = ("job", "tool", "tool_label", "kind", "name", "created", "text")
         scored = []
         for i, e in enumerate(library.entries()):  # newest first
-            text = " ".join((e["text"], e["tool"], e["tool_label"], e["name"])).lower()
+            text = " ".join(
+                (e["text"], e["tool"], e["tool_label"], e["name"], e["job"])
+            ).lower()
             score = sum(w in text for w in words)
             if score:
                 scored.append((-score, i, {k: e[k] for k in keys}))

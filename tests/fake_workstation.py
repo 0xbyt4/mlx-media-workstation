@@ -130,6 +130,7 @@ class FakeWorkstation:
                 "tool_label": "FLUX.3 Klein",
                 "status": "done",
                 "elapsed": 40.0,
+                "params": {"prompt": "A red fox in the snow at dusk", "steps": 4},
                 "outputs": [{"name": "image.png", "kind": "image"}],
                 "error": None,
             },

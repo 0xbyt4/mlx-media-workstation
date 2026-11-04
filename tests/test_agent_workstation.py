@@ -48,6 +48,7 @@ def test_job_status(reg: Registry, ctx: Context) -> None:
     assert "about 31 s left" in text
     done = reg.call("job_status", {"job_id": "20261103-110000-beef"}, ctx).content
     assert "output: image.png (image)" in done
+    assert "prompt: A red fox in the snow at dusk" in done  # what the output shows
     r = reg.call("job_status", {"job_id": "nope"}, ctx)
     assert r.status == "error" and "No job" in r.content
 
@@ -414,3 +415,18 @@ def test_transcribe_reports_a_failed_job(files: FakeWorkstation, fctx: Context) 
     files.finish["20261103-130000-0001"] = {"status": "failed", "error": "No sound."}
     r = reg.call("transcribe_audio", {"audio": "folder:talk.wav"}, fctx)
     assert r.status == "error" and "failed: No sound." in r.content
+
+
+def test_a_long_job_prompt_is_cut_in_job_status() -> None:
+    from app.agent import ws_tools
+
+    text = ws_tools.format_job(
+        {"id": "j", "status": "done", "params": {"text": "word " * 200}}
+    )
+    line = next(x for x in text.splitlines() if x.startswith("prompt: "))
+    assert len(line) == len("prompt: ") + ws_tools.MAX_JOB_TEXT + 3 and line.endswith(
+        "..."
+    )
+    assert "prompt:" not in ws_tools.format_job(
+        {"id": "j", "status": "done", "params": {}}
+    )
