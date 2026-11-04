@@ -57,6 +57,8 @@ from app import (
     library,
     llm,
     macos,
+    mcp_api,
+    mcp_client,
     memory_api,
     models,
     models_api,
@@ -556,6 +558,7 @@ def shutdown() -> None:
     for pgid in pgids:
         stop_group(pgid)
     models.stop()
+    mcp_client.stop_all()
     llm.close("The app was closed.")
     wake.set()
     wake_light.set()
@@ -1326,6 +1329,7 @@ def start() -> None:
     OUT.mkdir(exist_ok=True)
     publish_token()
     load_jobs()
+    mcp_client.reap_leftovers()  # MCP servers a crash left running
     # the [agent] settings apply from the start (a bad value stops here); the Settings screen shows the same values
     chat.settings = load_agent_settings()
     if hasattr(settings_api, "AGENT"):
@@ -1344,4 +1348,5 @@ app.include_router(chat.router)
 app.include_router(settings_api.router)
 app.include_router(library.router)
 app.include_router(memory_api.router)
+app.include_router(mcp_api.router)
 app.mount("/", StaticFiles(directory=WEB, html=True), name="web")

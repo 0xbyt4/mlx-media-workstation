@@ -280,6 +280,12 @@ queue jobs, wait for them and get the output files. The client starts `start.py 
 app on `127.0.0.1`. The jobs keep the app's memory and queue rules. [docs/MCP.md](docs/MCP.md) has the setup for each
 client and the tools.
 
+### Give the agent tools from MCP servers
+
+The agent can also use the tools of other MCP servers: a program on this Mac or a remote service. Add them in
+Settings > MCP servers. You approve each command line and each tool first, and the agent asks before every call.
+Secrets go to the macOS Keychain. [docs/guide/mcp-servers.md](docs/guide/mcp-servers.md) has the steps.
+
 ## Tools
 
 | Group | Tool | Model | Time on an M5 Pro | Peak memory |
@@ -576,6 +582,8 @@ ends.
   model read of each file.
 - The local LLM writes its log to `outputs/llm.log`. After a big job, `outputs/llm-cache.safetensors` can hold the
   LLM's saved prompt cache of one chat.
+- The MCP servers you add are in `outputs/mcp_servers.json`; each local server writes its output to
+  `outputs/mcp/<name>.log`.
 - When you start the app from `Workstation.app` or `Workstation Chat.app`, it writes its log to `outputs/app.log`.
   When you start it from a terminal, it writes the log to the terminal.
 
@@ -591,6 +599,8 @@ ends.
   loaded between requests.
 - `app/agent/` has the tools, the approval policy and the sandboxes of agent mode ([docs/AGENT.md](docs/AGENT.md)).
 - `app/mcp_server.py` offers the Workstation tools of agent mode to local MCP clients ([docs/MCP.md](docs/MCP.md)).
+- `app/mcp_client.py` and `app/agent/mcp_tools.py` give the agent the tools of other MCP servers
+  ([docs/MCP.md](docs/MCP.md#mcp-client)).
 - `app/runners/` has small scripts that run inside a model's own environment.
 - `web/` has the interface: plain HTML, CSS and JavaScript modules, with no build step and no network requests
   ([web/README.md](web/README.md)). [docs/DESIGN.md](docs/DESIGN.md) has the design notes of the interface.

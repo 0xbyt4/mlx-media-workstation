@@ -7,6 +7,8 @@ wait for them and get the output files.
 The MCP tools are the tools of an Agent chat (`app/agent/ws_tools.py`). They have the same names, argument schemas,
 checks and result texts. Only a few words and limits differ (see [Differences from an Agent chat](#differences-from-an-agent-chat)).
 
+The app is also an MCP client: the agent can use the tools of other MCP servers. See [MCP client](#mcp-client).
+
 ## How it works
 
 ```
@@ -168,3 +170,86 @@ agent must treat it as data, not as instructions.
 | `Unknown tool` | Call `list_workstation_tools` for the tool ids. |
 
 The client keeps the MCP server's messages (stderr) in its log. In Claude Code, `/mcp` shows the server's state.
+
+## MCP client
+
+The agent of an Agent chat can use the tools of other MCP servers. The user adds them in Settings > MCP servers
+(user guide: [MCP servers](guide/mcp-servers.md)). The code is in `app/mcp_client.py` (config, Keychain, connections),
+`app/agent/mcp_tools.py` (the agent tools, a Provider of `app/agent/extensions.py`) and `app/mcp_api.py` (the
+endpoints, [API.md](API.md#mcp-servers)). It uses the installed `mcp` Python SDK (2.3.0). The SDK speaks the spec
+revision 2026-07-28 and falls back to the older handshake.
+
+```
+Agent chat  -->  mcp_tools (Provider)  -->  Manager: one asyncio loop in its own thread
+                                              |-- stdio:  a program on this Mac, its own process group
+                                              |-- remote: Streamable HTTP to an https URL (off this Mac)
+```
+
+### Servers and secrets
+
+- The list of servers is in `outputs/mcp_servers.json` (mode 0600). A server is `stdio` (a program, its arguments,
+  a working folder and the names of its environment variables) or `remote` (a URL).
+- The file holds no secret. The values of the environment variables and a remote server's bearer token are in the
+  macOS Keychain: service `mlx-media-workstation-mcp`, account = the server's name, one JSON object per server. The
+  app writes and reads them with `/usr/bin/security` (an argument list, no shell). No API answer and no log holds a
+  value. The file lists only the names that have a value (`secrets`).
+- A server name has 1 to 24 lowercase letters and digits, with single `-` or `_` between them. It has no `__`, so a
+  tool name `<server>__<tool>` splits one way.
+- A remote URL must be `https://`. Plain `http://` is only for `127.0.0.1`, `localhost` or `::1`. A user name or
+  password in the URL is refused. The bearer token goes in the `Authorization` header only. The HTTP client reads no
+  proxy settings. The OAuth flow of the spec is not done.
+- At most 20 servers, 100 tools per server.
+
+### Approvals
+
+- **Command.** The approval is the SHA-256 of the launch spec: the resolved command line (a bare program name is
+  looked up in `PATH`), the working folder and the names of the environment variables (stdio), or the URL (remote).
+  A server with no matching approval does not start. A change of any of these needs a new approval. A secret value
+  is not part of it.
+- **Tools.** For each tool, the user approves the definition the server lists now. The app stores the definition
+  (name, title, description, input and output schema, annotations) and its SHA-256. The agent gets the stored
+  definition, never the live one.
+- **Rug-pull guard.** Before each call, the app lists the server's tools again. When the tool's definition differs
+  from the approved one ("changed") or the server no longer lists it ("gone"), the call is refused with an error text
+  for the model. The tool stays off until the user approves it again. A chat that starts later does not get it.
+- **Annotations are untrusted.** Every MCP tool is R2, whatever its hints say. Its output is untrusted, so it taints
+  the chat (`app/agent/policy.py`). With the current policy every call asks: an R2 tool whose output taints the chat
+  is not offered "Allow in this chat".
+
+### Tools for the agent
+
+- Name: `<server>__<tool>`. A character other than a letter, a digit, `_` or `-` becomes `_`. At most 64
+  characters. A name that two tools share after this keeps the first tool only.
+- Description: the server's description with hidden characters written as `\uXXXX`, at most 1,000 characters, and
+  a note: the server, and that the result is untrusted data.
+- Input schema: the server's schema, with the keys that `app/agent/schema.py` checks made safe for it. A tool whose
+  schema is over 8,000 characters (JSON) is not offered.
+- Exposure per server: `deferred` (the default: not in the tools array, found with tool search), `direct` (in the
+  tools array; at most 4 MCP tools of all servers, the rest stay deferred) or `hidden` (not offered).
+- The prompt section "MCP servers" lists the servers with their tool counts, at most 150 tokens. It names no tool.
+- The provider never starts a server in `tools()`. `core()` starts the enabled servers in the background, at a chat's
+  first turn.
+
+### Calls and results
+
+- A server starts when a chat needs it. A start may take at most 30 s (`START_TIMEOUT`): the program starts, the
+  client negotiates the version and lists the tools. After a failed start, a call within 30 s (`RETRY_AFTER`) fails at
+  once with the same error.
+- A call may take at most 120 s (`CALL_TIMEOUT`), or less when the answer must end sooner. Stop ends the wait.
+- The model gets the text blocks of the result. An image, an audio clip or a binary resource becomes a short note.
+  With no content, the structured content goes as JSON. The text is cut at 100,000 characters; the registry then
+  caps what the model reads (12,000 characters).
+- A result with `isError`, a protocol error, a timeout, a start failure or a stopped server becomes the tool's error
+  text. The chat goes on.
+
+### Processes
+
+- A stdio server runs in its own process group (`start_new_session`). It gets `HOME`, `LOGNAME`, `PATH`, `SHELL`,
+  `TERM` and `USER` of the app and its own variables, nothing else of the app's environment.
+- Its stderr goes to `outputs/mcp/<name>.log` (made new at each start). The last error shows the end of it, with each
+  secret value of the server replaced by `[secret]`. A server can still write a secret to its own log file.
+- To stop a server, the app closes its stdin, waits 2 s, sends SIGTERM to the group, waits 2 s, then sends SIGKILL.
+  This happens when the user turns the server off, edits its command, presses Test connection, removes it, and at app
+  shutdown (`server.shutdown`).
+- `outputs/mcp/pids.json` records the running groups. At the next start, the app stops a group left by a crash, but
+  only when its leader still runs the recorded command line.
