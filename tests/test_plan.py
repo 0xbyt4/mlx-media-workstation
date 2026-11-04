@@ -1,6 +1,10 @@
 """tools.plan(): the exact commands, environment and output names for each tool."""
 
 import json
+import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -636,7 +640,12 @@ def mix_files(tmp_path: Path, media: FakeMedia) -> dict[str, list[Path]]:
     return {"video": [video], "music": [music]}
 
 
-def mix_command(files: dict[str, list[Path]], graph: str, out: Path) -> list[str]:
+COPY = ["-c:v", "copy"]
+
+
+def mix_command(
+    files: dict[str, list[Path]], graph: str, out: Path, picture: list[str] = COPY
+) -> list[str]:
     return [
         "ffmpeg",
         "-v",
@@ -651,11 +660,10 @@ def mix_command(files: dict[str, list[Path]], graph: str, out: Path) -> list[str
         "-filter_complex",
         graph,
         "-map",
-        "0:v",
+        "0:V:0",
         "-map",
         "[out]",
-        "-c:v",
-        "copy",
+        *picture,
         "-c:a",
         "aac",
         "-b:a",
@@ -668,37 +676,90 @@ def mix_command(files: dict[str, list[Path]], graph: str, out: Path) -> list[str
     ]
 
 
-VOICE = "[0:a]aresample=48000,asplit=2[voice][key]"
-FINAL = ";[mix]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[out]"
+def mix_level(out: Path) -> list[str]:
+    return [
+        sys.executable,
+        str(tools.APP / "runners" / "mix_level.py"),
+        str(out / "mixed.mp4"),
+    ]
 
 
-def bed(start: str, gain: str, fade_in: str, fade_out_at: str, fade_out: str) -> str:
+VOICE = "[0:a]aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=10.000,asplit=2[voice][key]"
+# the second pass uses the first pass's measurement (FakeMedia.loudnorm_stats)
+FINAL = (
+    ";[mix]loudnorm=I=-14:TP=-1.5:LRA=11:measured_I=-17.50:measured_TP=-6.20:measured_LRA=4.10:"
+    "measured_thresh=-27.80:offset=0.30:linear=true,aresample=48000[out]"
+)
+UNDUCKED = (
+    "[bed];[key]anullsink;[voice][bed]amix=inputs=2:normalize=0:duration=first[mix]"
+)
+
+
+def bed(
+    start: str, gain: str, fades: str = ",afade=t=in:d=0.50,afade=t=out:st=8.500:d=1.50"
+) -> str:
     return (
         f"[1:a]atrim=start={start},asetpts=PTS-STARTPTS,atrim=0:10.000,aresample=48000,"
-        f"volume={gain}dB,afade=t=in:d={fade_in},afade=t=out:st={fade_out_at}:d={fade_out}"
+        f"aformat=channel_layouts=stereo,volume={gain}dB{fades}"
     )
+
+
+def mix_graph(cmd: list[str]) -> str:
+    return cmd[cmd.index("-filter_complex") + 1]
+
+
+def notes(out: Path) -> str:
+    return json.loads((out / "notes.json").read_text())["mixed.mp4"]
 
 
 def test_mix_ducks_music_under_the_voice(
-    tmp_path: Path, mix_files: dict[str, list[Path]]
+    tmp_path: Path, media: FakeMedia, mix_files: dict[str, list[Path]]
 ) -> None:
     plan = tools.plan("edit.mix", params("edit.mix"), mix_files, tmp_path)
-    # music 14 dB under the -20 LUFS voice: -34 - (-10) = -24 dB
+    # music 14 dB under the -20 LUFS voice: -34 - (-10) = -24 dB; the key is scaled by 4 dB to a -16 LUFS voice
     graph = (
-        f"{VOICE};{bed('0.000', '-24.00', '0.50', '8.500', '1.50')}[bed];"
-        "[bed][key]sidechaincompress=threshold=0.02:ratio=4:attack=80:release=400[ducked];"
-        "[voice][ducked]amix=inputs=2:normalize=0:duration=first[mix]" + FINAL
+        f"{VOICE};{bed('0.000', '-24.00')}[bed];"
+        "[bed][key]sidechaincompress=threshold=0.05:ratio=2:attack=80:release=400:level_sc=1.5849[ducked];"
+        "[voice][ducked]amix=inputs=2:normalize=0:duration=first[mix]"
     )
-    assert plan.commands == [mix_command(mix_files, graph, tmp_path)]
+    assert plan.commands == [
+        mix_command(mix_files, graph + FINAL, tmp_path),
+        mix_level(tmp_path),
+    ]
     assert plan.env == {}
     assert plan.cwd is None
-    assert json.loads((tmp_path / "notes.json").read_text()) == {
-        "mixed.mp4": "voice -20.0 LUFS, music set 14 dB under it, ducked under speech; "
-        "final mix -14 LUFS"
-    }
+    # the music is measured only on the part the mix uses
+    assert ("in_music_0.mp3", 0.0, 10.0) in media.measured
+    # the first pass: the same graph, measured with print_format=json and nothing written
+    video, music = mix_files["video"][0], mix_files["music"][0]
+    assert media.first_pass == [
+        ["ffmpeg", "-hide_banner", "-nostats", "-i", str(video), "-stream_loop", "-1", "-i", str(music),
+         "-filter_complex", graph + ";[mix]loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json[out]",
+         "-map", "[out]", "-t", "10.000", "-f", "null", "-"]
+    ]  # fmt: skip
+    # the last step adds the measured final loudness
+    assert notes(tmp_path) == "speech found (-20.0 LUFS): music 14 dB under it, ducked"
 
 
-def test_mix_without_ducking(tmp_path: Path, mix_files: dict[str, list[Path]]) -> None:
+@pytest.mark.parametrize(
+    ("voice", "level_sc"),
+    [(-4.0, "0.2512"), (-35.0, "8.9125"), (-39.0, "14.1254")],
+)
+def test_mix_duck_key_follows_the_voice_level(
+    tmp_path: Path,
+    media: FakeMedia,
+    mix_files: dict[str, list[Path]],
+    voice: float,
+    level_sc: str,
+) -> None:
+    media.lufs["in_video_0.mp4"] = voice
+    plan = tools.plan("edit.mix", params("edit.mix"), mix_files, tmp_path)
+    assert f":level_sc={level_sc}[ducked]" in mix_graph(plan.commands[0])
+
+
+def test_mix_without_ducking_or_fades(
+    tmp_path: Path, mix_files: dict[str, list[Path]]
+) -> None:
     p = params(
         "edit.mix",
         duck="false",
@@ -708,14 +769,66 @@ def test_mix_without_ducking(tmp_path: Path, mix_files: dict[str, list[Path]]) -
         fade_out="0",
     )
     plan = tools.plan("edit.mix", p, mix_files, tmp_path)
-    graph = (
-        f"{VOICE};{bed('12.500', '-30.00', '0.00', '10.000', '0.00')}[bed];[key]anullsink;"
-        "[voice][bed]amix=inputs=2:normalize=0:duration=first[mix]" + FINAL
+    # a fade of 0 is left out: afade with d=0 would fade over 44100 samples
+    graph = f"{VOICE};{bed('12.500', '-30.00', '')}{UNDUCKED}"
+    assert plan.commands == [
+        mix_command(mix_files, graph + FINAL, tmp_path),
+        mix_level(tmp_path),
+    ]
+    assert (
+        notes(tmp_path) == "speech found (-20.0 LUFS): music 20 dB under it, not ducked"
     )
-    assert plan.commands == [mix_command(mix_files, graph, tmp_path)]
-    assert json.loads((tmp_path / "notes.json").read_text()) == {
-        "mixed.mp4": "voice -20.0 LUFS, music set 20 dB under it; final mix -14 LUFS"
-    }
+
+
+@pytest.mark.parametrize(
+    ("lra", "dips", "speech"),
+    [
+        (2.3, 0.03, False),  # rain on a real LTX clip
+        (6.9, 0.40, True),  # a Drama 3 narration
+        (5.0, 0.0, True),
+        (2.0, 0.15, True),
+        (4.9, 0.14, False),
+    ],
+)
+def test_mix_finds_speech_by_its_pauses_or_range(
+    tmp_path: Path,
+    media: FakeMedia,
+    mix_files: dict[str, list[Path]],
+    lra: float,
+    dips: float,
+    speech: bool,
+) -> None:
+    media.levels["in_video_0.mp4"] = (lra, dips)
+    plan = tools.plan("edit.mix", params("edit.mix"), mix_files, tmp_path)
+    assert ("sidechaincompress" in mix_graph(plan.commands[0])) is speech
+
+
+def test_mix_steady_sound_is_not_ducked(
+    tmp_path: Path, media: FakeMedia, mix_files: dict[str, list[Path]]
+) -> None:
+    media.levels["in_video_0.mp4"] = (2.3, 0.03)
+    plan = tools.plan("edit.mix", params("edit.mix", under="20"), mix_files, tmp_path)
+    # 6 dB under the -20 LUFS sound, whatever "under" says: -26 - (-10) = -16 dB
+    graph = f"{VOICE};{bed('0.000', '-16.00')}{UNDUCKED}"
+    assert plan.commands[0] == mix_command(mix_files, graph + FINAL, tmp_path)
+    assert (
+        notes(tmp_path)
+        == "no speech, steady sound (-20.0 LUFS): music 6 dB under the sound"
+    )
+
+
+def test_mix_near_silent_sound_stays_in_the_mix(
+    tmp_path: Path, media: FakeMedia, mix_files: dict[str, list[Path]]
+) -> None:
+    media.lufs["in_video_0.mp4"] = -63.0
+    plan = tools.plan("edit.mix", params("edit.mix"), mix_files, tmp_path)
+    # room tone is not a voice: the music goes to -16 LUFS (-6 dB), no ducking, and the sound is kept
+    graph = f"{VOICE};{bed('0.000', '-6.00')}{UNDUCKED}"
+    assert plan.commands[0] == mix_command(mix_files, graph + FINAL, tmp_path)
+    assert (
+        notes(tmp_path)
+        == "no speech, near-silent sound (-63.0 LUFS): music at -16 LUFS"
+    )
 
 
 def test_mix_video_without_sound(
@@ -723,12 +836,55 @@ def test_mix_video_without_sound(
 ) -> None:
     media.audio["in_video_0.mp4"] = False
     plan = tools.plan("edit.mix", params("edit.mix"), mix_files, tmp_path)
-    # no voice: the music goes to -16 LUFS, -16 - (-10) = -6 dB
-    graph = bed("0.000", "-6.00", "0.50", "8.500", "1.50") + "[mix]" + FINAL
-    assert plan.commands == [mix_command(mix_files, graph, tmp_path)]
-    assert json.loads((tmp_path / "notes.json").read_text()) == {
-        "mixed.mp4": "no voice in the video: music at -16 LUFS; final mix -14 LUFS"
-    }
+    # no sound: the music goes to -16 LUFS, -16 - (-10) = -6 dB
+    graph = bed("0.000", "-6.00") + "[mix]"
+    assert plan.commands == [
+        mix_command(mix_files, graph + FINAL, tmp_path),
+        mix_level(tmp_path),
+    ]
+    assert notes(tmp_path) == "no sound in the video: music at -16 LUFS"
+
+
+def test_mix_raises_quiet_music_by_at_most_20_db(
+    tmp_path: Path, media: FakeMedia, mix_files: dict[str, list[Path]]
+) -> None:
+    media.lufs["in_music_0.mp3"] = -60.0
+    plan = tools.plan("edit.mix", params("edit.mix"), mix_files, tmp_path)
+    assert "volume=20.00dB," in mix_graph(
+        plan.commands[0]
+    )  # not the +26 dB that -34 LUFS needs
+    assert notes(tmp_path) == (
+        "speech found (-20.0 LUFS): music 14 dB under it, ducked; the music is very quiet: raised by only 20 dB"
+    )
+
+
+@pytest.mark.parametrize(
+    ("codec", "picture"),
+    [
+        ("h264", COPY),
+        ("vp9", COPY),
+        ("hevc", ["-c:v", "copy", "-tag:v", "hvc1"]),
+        ("prores", ["-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p"]),
+    ],
+)
+def test_mix_copies_the_picture_only_when_mp4_can_hold_it(
+    tmp_path: Path,
+    media: FakeMedia,
+    mix_files: dict[str, list[Path]],
+    codec: str,
+    picture: list[str],
+) -> None:
+    media.codecs["in_video_0.mp4"] = codec
+    plan = tools.plan("edit.mix", params("edit.mix"), mix_files, tmp_path)
+    assert (
+        plan.commands[0][
+            plan.commands[0].index("[out]") + 1 : plan.commands[0].index("-c:a")
+        ]
+        == picture
+    )
+    assert notes(tmp_path).endswith("; picture (prores) encoded again as H.264") is (
+        codec == "prores"
+    )
 
 
 def test_mix_refuses_silent_music(
@@ -746,6 +902,98 @@ def test_mix_needs_both_files(
     del mix_files[missing]
     with pytest.raises(ValueError, match="Add a video and a music file."):
         tools.plan("edit.mix", params("edit.mix"), mix_files, tmp_path)
+
+
+# Mix with the real ffmpeg, on a few seconds of synthetic input
+
+needs_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg is not installed",
+)
+# bursts of 0.8 s with 0.8 s pauses, silent first: on and off like speech
+BURSTS = "volume='if(gte(mod(t,1.6),0.8),1,0)':eval=frame"
+
+
+def make_video(
+    path: Path, seconds: float, sound: str, sound_seconds: float, af: str = "anull"
+) -> None:
+    """A small H.264 video with a mono sound track that can be shorter than the picture."""
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc=size=64x48:rate=24:duration={seconds}",
+         "-f", "lavfi", "-i", f"{sound}:d={sound_seconds}:r=48000", "-af", af, "-ac", "1",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(path)],
+        check=True,
+    )  # fmt: skip
+
+
+def rms(path: Path, start: float, seconds: float) -> float:
+    err = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-ss", str(start), "-t", str(seconds), "-i", str(path),
+         "-af", "astats=measure_perchannel=none", "-f", "null", "-"],
+        capture_output=True, text=True, check=True,
+    ).stderr  # fmt: skip
+    return float(re.findall(r"RMS level dB: (-?[\d.]+)", err)[-1])
+
+
+def run_mix(out: Path, files: dict[str, list[Path]], **values: Any) -> dict[str, Any]:
+    plan = tools.plan("edit.mix", params("edit.mix", **values), files, out)
+    for cmd in plan.commands:
+        subprocess.run(cmd, check=True, capture_output=True)
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=channels,duration",
+         "-of", "json", str(out / "mixed.mp4")],
+        capture_output=True, text=True, check=True,
+    ).stdout  # fmt: skip
+    return json.loads(probe)["streams"][0]
+
+
+@needs_ffmpeg
+def test_mix_real_ffmpeg_stereo_full_length_at_14_lufs_without_fades(
+    tmp_path: Path,
+) -> None:
+    video, music = tmp_path / "in_video_0.mp4", tmp_path / "in_music_0.wav"
+    # 4 s of picture, but only 2 s of mono sound (silent for its first 0.8 s); a tone, not noise, so the peaks let
+    # loudnorm keep one steady gain up to -14 LUFS
+    make_video(video, 4, "sine=frequency=220", 2, BURSTS)
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=48000:duration=1.5",
+         "-ac", "2", str(music)],
+        check=True,
+    )  # fmt: skip
+    files = {"video": [video], "music": [music]}
+    tools.validate("edit.mix", {}, files)
+    stream = run_mix(tmp_path, files, fade_in="0", fade_out="0")
+    mixed = tmp_path / "mixed.mp4"
+    assert stream["channels"] == 2
+    assert float(stream["duration"]) == pytest.approx(4.0, abs=0.05)
+    final = tools.loudness(mixed)
+    assert final == pytest.approx(-14.0, abs=1.0)
+    assert notes(tmp_path).endswith(f"; final mix {final:.1f} LUFS")
+    # no fade: the music is as loud in its first 0.1 s as before the first burst, and in the last 0.1 s as after
+    # the video's sound ended
+    assert rms(mixed, 0.0, 0.1) == pytest.approx(rms(mixed, 0.2, 0.5), abs=1.5)
+    assert rms(mixed, 3.85, 0.1) == pytest.approx(rms(mixed, 2.5, 1.0), abs=1.5)
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize(("af", "ducked"), [("anull", False), (BURSTS, True)])
+def test_mix_real_ffmpeg_ducks_only_under_speech_like_sound(
+    tmp_path: Path, af: str, ducked: bool
+) -> None:
+    video, music = tmp_path / "in_video_0.mp4", tmp_path / "in_music_0.wav"
+    make_video(video, 4, "anoisesrc=c=pink:a=0.1", 4, af)
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=48000:duration=4",
+         str(music)],
+        check=True,
+    )  # fmt: skip
+    plan = tools.plan(
+        "edit.mix", params("edit.mix"), {"video": [video], "music": [music]}, tmp_path
+    )
+    assert ("sidechaincompress" in mix_graph(plan.commands[0])) is ducked
+    assert notes(tmp_path).startswith(
+        "speech found" if ducked else "no speech, steady sound"
+    )
 
 
 def test_transcribe_makes_16k_mono_speech_and_a_job_file(

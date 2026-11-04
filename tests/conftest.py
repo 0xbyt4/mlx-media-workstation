@@ -95,6 +95,11 @@ class FakeMedia:
         self.frames = 121
         self.audio: dict[str, bool] = {}
         self.lufs: dict[str, float | None] = {}
+        # loudness range (LU) and dips of a video's sound; the default is speech
+        self.levels: dict[str, tuple[float, float]] = {}
+        self.codecs: dict[str, str | None] = {}
+        self.measured: list[tuple[str, float, float | None]] = []
+        self.first_pass: list[list[str]] = []
         self.prepped: list[list[str]] = []
 
     def media_seconds(self, path: Path) -> float:
@@ -109,8 +114,28 @@ class FakeMedia:
     def has_audio(self, path: Path) -> bool:
         return self.audio.get(path.name, True)
 
-    def loudness(self, path: Path) -> float | None:
+    def loudness(
+        self, path: Path, start: float = 0.0, seconds: float | None = None
+    ) -> float | None:
+        self.measured.append((path.name, start, seconds))
         return self.lufs.get(path.name)
+
+    def sound_levels(self, path: Path) -> tuple[float, float, float] | None:
+        lufs = self.lufs.get(path.name)
+        return None if lufs is None else (lufs, *self.levels.get(path.name, (7.0, 0.4)))
+
+    def stream_codec(self, path: Path, kind: str) -> str | None:
+        return self.codecs.get(path.name, "h264" if kind == "V" else "aac")
+
+    def loudnorm_stats(self, cmd: list[str]) -> dict[str, str]:
+        self.first_pass.append(cmd)
+        return {
+            "input_i": "-17.50",
+            "input_tp": "-6.20",
+            "input_lra": "4.10",
+            "input_thresh": "-27.80",
+            "target_offset": "0.30",
+        }
 
     def prep(self, cmd: list[str]) -> None:
         self.prepped.append(cmd)
@@ -125,6 +150,9 @@ def media(monkeypatch: pytest.MonkeyPatch) -> FakeMedia:
         "frame_count",
         "has_audio",
         "loudness",
+        "sound_levels",
+        "stream_codec",
+        "loudnorm_stats",
         "prep",
     ):
         monkeypatch.setattr(tools, name, getattr(fake, name))

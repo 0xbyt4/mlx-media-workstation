@@ -124,6 +124,23 @@ VIDEO_ENC = [
     "-ar",
     "48000",
 ]
+# Mix: the video's own sound counts as speech only from this loudness (quieter sound is room tone or hiss), and only
+# when it has pauses (this share of 400 ms windows 10 dB under its loudness) or a wide loudness range (LU); steady
+# sound such as rain has neither
+MIX_SPEECH_LUFS = -40.0
+MIX_SPEECH_DIPS = 0.15
+MIX_SPEECH_LRA = 5.0
+# dB: music under a steady sound that is not speech, so both are heard
+MIX_AMBIENCE_UNDER = 6.0
+MIX_MAX_GAIN = 20.0  # dB: a very quiet music track is not raised more than this
+MIX_LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11"
+MIX_COPY_CODECS = (
+    "h264",
+    "hevc",
+    "av1",
+    "vp9",
+    "mpeg4",
+)  # an MP4 holds these as they are; others (ProRes) are encoded again
 
 
 def opts(pairs: list[tuple[str, str]]) -> list[dict[str, str]]:
@@ -581,8 +598,9 @@ TOOLS: list[dict[str, Any]] = [
         "id": "edit.mix",
         "group": "Edit",
         "label": "Mix (video + music)",
-        "description": "Puts music under a video's own sound: levels measured, music ducked while someone speaks, "
-        "looped or cut to the video, faded, final mix at -14 LUFS (YouTube). The picture is copied, not re-encoded. A few seconds.",
+        "description": "Puts music under a video's own sound: levels measured, music ducked while someone speaks "
+        "(a steady sound such as rain is not ducked), looped or cut to the video, faded, final mix at about -14 LUFS "
+        "(YouTube). The picture is copied when an MP4 can hold it, else encoded as H.264. A few seconds.",
         "fields": [
             field(
                 "video",
@@ -590,7 +608,7 @@ TOOLS: list[dict[str, Any]] = [
                 "file",
                 accept="video/*",
                 required=True,
-                help="Its own sound (the voice) is kept.",
+                help="Its own sound (voice, rain, effects) is kept.",
             ),
             field(
                 "music",
@@ -608,14 +626,17 @@ TOOLS: list[dict[str, Any]] = [
                 min=3,
                 max=30,
                 step=1,
-                help="How much quieter the music is than the voice. 10 = lively, 14 = normal, 20 = quiet background.",
+                help="How much quieter the music is than the voice. 10 = lively, 14 = normal, 20 = quiet background. "
+                f"Used only when the video has speech; under a steady sound the music is {MIX_AMBIENCE_UNDER:.0f} dB "
+                "quieter than it.",
             ),
             field(
                 "duck",
                 "Duck under speech",
                 "checkbox",
                 default=True,
-                help="The music dips a few more dB while someone speaks.",
+                help="The music dips by about 5 dB while someone speaks, at any voice level. Only when the video has "
+                "speech.",
             ),
             field(
                 "fade_in",
@@ -703,17 +724,50 @@ def has_audio(path: Path) -> bool:
     return bool(out.strip())
 
 
-def loudness(path: Path) -> float | None:
-    """Integrated loudness (LUFS) of a file's audio, or None when it is silent or has none."""
-    err = subprocess.run(
+def stream_codec(path: Path, kind: str) -> str | None:
+    """The codec of the first picture ("V") or sound ("a") stream, or None when there is none or the file cannot be
+    read. "V" skips a cover picture. The probe gives up after 10 s."""
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                f"{kind}:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        ).stdout
+    except subprocess.TimeoutExpired:
+        return None
+    return out.strip() or None
+
+
+def ebur128(path: Path, start: float = 0.0, seconds: float | None = None) -> str:
+    """ffmpeg's EBU R128 log of a file's audio: a line every 100 ms, then the summary. With seconds: only the part
+    from start on, with the file looped as the mix loops it."""
+    loop, trim = [], ""
+    if seconds is not None:
+        loop = ["-stream_loop", "-1"]
+        trim = f"atrim=start={start:.3f},asetpts=PTS-STARTPTS,atrim=0:{seconds:.3f},"
+    return subprocess.run(
         [
             "ffmpeg",
             "-nostats",
+            *loop,
             "-i",
             str(path),
             "-vn",
             "-af",
-            "ebur128",
+            trim + "ebur128",
             "-f",
             "null",
             "-",
@@ -722,9 +776,37 @@ def loudness(path: Path) -> float | None:
         text=True,
         check=False,
     ).stderr
-    found = re.findall(r"I:\s+(-?[\d.]+) LUFS", err)
+
+
+def loudness(
+    path: Path, start: float = 0.0, seconds: float | None = None
+) -> float | None:
+    """Integrated loudness (LUFS) of a file's audio, or None when it is silent or has none. With seconds: only the
+    part from start on, with the file looped as the mix loops it."""
+    found = re.findall(r"I:\s+(-?[\d.]+) LUFS", ebur128(path, start, seconds))
     value = float(found[-1]) if found else None
     return value if value is not None and value > -70 else None
+
+
+def sound_levels(path: Path) -> tuple[float, float, float] | None:
+    """From one EBU R128 pass: the integrated loudness (LUFS), the loudness range (LU) and the share of 400 ms
+    windows more than 10 dB below the integrated loudness ("dips"). None when the audio is silent or missing."""
+    err = ebur128(path)
+    found = re.findall(r"I:\s+(-?[\d.]+) LUFS", err)
+    lufs = float(found[-1]) if found else None
+    if lufs is None or lufs <= -70:
+        return None
+    lra = float(re.findall(r"LRA:\s+(-?[\d.]+) LU", err)[-1])
+    # the first windows (before 0.4 s) are not full yet
+    windows = [
+        float(m)
+        for t, m in re.findall(
+            r"t:\s*([\d.]+)\s+TARGET:\S+ LUFS\s+M:\s*(-?[\d.]+)", err
+        )
+        if float(t) >= 0.39
+    ]
+    dips = sum(m < lufs - 10 for m in windows) / len(windows) if windows else 0.0
+    return lufs, lra, dips
 
 
 def media_seconds(path: Path) -> float:
@@ -827,6 +909,16 @@ def prep(cmd: list[str]) -> None:
         raise ValueError(f"Could not prepare the input file: {why}")
 
 
+def loudnorm_stats(cmd: list[str]) -> dict[str, str]:
+    """Run a loudnorm first pass (print_format=json) while a job is planned and return what it measured."""
+    err = subprocess.run(cmd, capture_output=True, text=True, check=False).stderr
+    try:
+        return json.loads(err[err.rindex("{") : err.rindex("}") + 1])
+    except ValueError:
+        why = " ".join(err.strip().splitlines()[-3:]) or "no measurement"
+        raise ValueError(f"Could not measure the mix: {why}") from None
+
+
 def fit_image(src: Path, dst: Path, w: int, h: int) -> None:
     """Scale to cover, then centre-crop to exactly w x h."""
     prep(
@@ -887,6 +979,11 @@ def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) ->
             )
     if tool == "video.extend" and files.get("video"):
         check_extend_source(files["video"][0], num(params, "end_at"))
+    if tool == "edit.mix":
+        if files.get("video") and stream_codec(files["video"][0], "V") is None:
+            raise ValueError("The video file has no picture, or it could not be read.")
+        if files.get("music") and stream_codec(files["music"][0], "a") is None:
+            raise ValueError("The music file has no sound, or it could not be read.")
 
 
 def plan(
@@ -1297,46 +1394,94 @@ def plan(
             num(params, "fade_out", 1.5) or 0,
         )
         start = num(params, "music_start", 0) or 0
-        music_lufs = loudness(music)
+        # the music is measured only on the part the mix uses (a soft intro must not set the level of the song)
+        music_lufs = loudness(music, start, dur)
         if music_lufs is None:
             raise ValueError("The music file has no audible sound.")
-        voice_lufs = loudness(video) if has_audio(video) else None
-        # music level: `under` dB below the voice, or a normal bed level when the video has no sound of its own
-        target = (voice_lufs - under) if voice_lufs is not None else -16.0
-        gain = target - music_lufs
+        levels = sound_levels(video) if has_audio(video) else None
+        voice_lufs = levels[0] if levels else None
+        speech = bool(
+            levels
+            and levels[0] >= MIX_SPEECH_LUFS
+            and (levels[2] >= MIX_SPEECH_DIPS or levels[1] >= MIX_SPEECH_LRA)
+        )
+        duck = speech and str(params.get("duck", "true")).lower() == "true"
+        # music level: `under` dB below speech; a fixed step below a steady sound (rain, effects); a normal bed level
+        # when the video's own sound is near silent or missing
+        if speech:
+            target = voice_lufs - under
+        elif voice_lufs is not None and voice_lufs >= MIX_SPEECH_LUFS:
+            target = voice_lufs - MIX_AMBIENCE_UNDER
+        else:
+            target = -16.0
+        gain = min(target - music_lufs, MIX_MAX_GAIN)
+        fades = (f",afade=t=in:d={fade_in:.2f}" if fade_in >= 0.01 else "") + (
+            f",afade=t=out:st={max(0.0, dur - fade_out):.3f}:d={fade_out:.2f}"
+            if fade_out >= 0.01
+            else ""
+        )  # afade with d=0 would fade over its default 44100 samples
         bed = (
             f"[1:a]atrim=start={start:.3f},asetpts=PTS-STARTPTS,atrim=0:{dur:.3f},aresample=48000,"
-            f"volume={gain:.2f}dB,afade=t=in:d={fade_in:.2f},afade=t=out:st={max(0.0, dur - fade_out):.3f}:d={fade_out:.2f}"
+            f"aformat=channel_layouts=stereo,volume={gain:.2f}dB{fades}"
         )
         if voice_lufs is None:
             graph = f"{bed}[mix]"
         else:
-            voice = "[0:a]aresample=48000,asplit=2[voice][key]"
-            duck = str(params.get("duck", "true")).lower() == "true"
-            if duck:  # dips the music by a few dB while the voice is present (80 ms attack, 400 ms release)
-                graph = f"{voice};{bed}[bed];[bed][key]sidechaincompress=threshold=0.02:ratio=4:attack=80:release=400[ducked];[voice][ducked]amix=inputs=2:normalize=0:duration=first[mix]"
+            # stereo, and as long as the picture, so a short or mono sound track does not cut or narrow the mix
+            voice = f"[0:a]aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur={dur:.3f},asplit=2[voice][key]"
+            if duck:
+                # the key is scaled to a -16 LUFS voice, so the music dips by the same amount (about 5 dB) at any
+                # recording level (80 ms attack, 400 ms release)
+                level = min(64.0, max(0.015625, 10 ** ((-16 - voice_lufs) / 20)))
+                graph = (
+                    f"{voice};{bed}[bed];[bed][key]sidechaincompress=threshold=0.05:ratio=2:attack=80:release=400:"
+                    f"level_sc={level:.4f}[ducked];[voice][ducked]amix=inputs=2:normalize=0:duration=first[mix]"
+                )
             else:
                 graph = f"{voice};{bed}[bed];[key]anullsink;[voice][bed]amix=inputs=2:normalize=0:duration=first[mix]"
-        graph += ";[mix]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[out]"
+        inputs = ["-i", str(video), "-stream_loop", "-1", "-i", str(music)]
+        # two-pass loudness: the first pass measures the mix now; the job's command uses that measurement and keeps one
+        # steady gain when the peaks and the loudness range allow it (else loudnorm rides the level as before)
+        stats = loudnorm_stats(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-nostats",
+                *inputs,
+                "-filter_complex",
+                f"{graph};[mix]{MIX_LOUDNORM}:print_format=json[out]",
+                "-map",
+                "[out]",
+                "-t",
+                f"{dur:.3f}",
+                "-f",
+                "null",
+                "-",
+            ]
+        )
+        measured = (
+            f"measured_I={stats['input_i']}:measured_TP={stats['input_tp']}:measured_LRA={stats['input_lra']}:"
+            f"measured_thresh={stats['input_thresh']}:offset={stats['target_offset']}:linear=true"
+        )
+        # an MP4 cannot hold every codec as it is (ProRes): such a picture is encoded again
+        codec = stream_codec(video, "V")
+        if codec in MIX_COPY_CODECS:
+            picture = ["-c:v", "copy", *(["-tag:v", "hvc1"] if codec == "hevc" else [])]
+        else:
+            picture = ["-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p"]
         cmd = [
             "ffmpeg",
             "-v",
             "error",
             "-y",
-            "-i",
-            str(video),
-            "-stream_loop",
-            "-1",
-            "-i",
-            str(music),
+            *inputs,
             "-filter_complex",
-            graph,
+            f"{graph};[mix]{MIX_LOUDNORM}:{measured},aresample=48000[out]",
             "-map",
-            "0:v",
+            "0:V:0",
             "-map",
             "[out]",
-            "-c:v",
-            "copy",
+            *picture,
             "-c:a",
             "aac",
             "-b:a",
@@ -1347,19 +1492,29 @@ def plan(
             "+faststart",
             str(out / "mixed.mp4"),
         ]
-        (out / "notes.json").write_text(
-            json.dumps(
-                {
-                    "mixed.mp4": (
-                        f"voice {voice_lufs:.1f} LUFS, music set {under:.0f} dB under it"
-                        if voice_lufs is not None
-                        else "no voice in the video: music at -16 LUFS"
-                    )
-                    + f"{', ducked under speech' if voice_lufs is not None and str(params.get('duck', 'true')).lower() == 'true' else ''}; final mix -14 LUFS"
-                }
+        if speech:
+            note = (
+                f"speech found ({voice_lufs:.1f} LUFS): music {under:.0f} dB under it, "
+                + ("ducked" if duck else "not ducked")
             )
-        )
-        return Plan([cmd], {})
+        elif voice_lufs is not None and voice_lufs >= MIX_SPEECH_LUFS:
+            note = f"no speech, steady sound ({voice_lufs:.1f} LUFS): music {MIX_AMBIENCE_UNDER:.0f} dB under the sound"
+        elif voice_lufs is not None:
+            note = f"no speech, near-silent sound ({voice_lufs:.1f} LUFS): music at -16 LUFS"
+        else:
+            note = "no sound in the video: music at -16 LUFS"
+        if gain == MIX_MAX_GAIN:
+            note += f"; the music is very quiet: raised by only {MIX_MAX_GAIN:.0f} dB"
+        if codec not in MIX_COPY_CODECS:
+            note += f"; picture ({codec}) encoded again as H.264"
+        # the last step measures the encoded mix and adds its loudness to this note
+        (out / "notes.json").write_text(json.dumps({"mixed.mp4": note}))
+        measure = [
+            sys.executable,
+            str(APP / "runners" / "mix_level.py"),
+            str(out / "mixed.mp4"),
+        ]
+        return Plan([cmd, measure], {})
     raise ValueError(f"Unknown tool {tool!r}")
 
 

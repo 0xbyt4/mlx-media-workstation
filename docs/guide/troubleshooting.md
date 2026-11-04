@@ -64,7 +64,9 @@ Some jobs are refused before they start. The message shows at the top of the for
 | The voice audio must be 1.5-20.0 s long. | Voice to Video: cut the voice to 1.5-20 s. |
 | The video is WxH; LTX extends only sizes that are a multiple of 64 on both sides. | Extend Video: use a clip from the video tools, or crop it. |
 | The clip must be at least 1.1 s long. | Extend Video: use a longer clip, or a later "Use the clip up to (s)". |
-| The music file has no audible sound. | Mix: pick another music file. |
+| The music file has no audible sound. | Mix: pick another music file, or another "Start the music at (s)". |
+| The video file has no picture, or it could not be read. | Mix: pick a video file. An audio file does not work as the video. |
+| The music file has no sound, or it could not be read. | Mix: pick an audio file, for example WAV or MP3. |
 | Could not prepare the input file: ... | The file is damaged or of a type that ffmpeg cannot read. Convert it, for example to PNG, WAV or MP4. |
 | file too large (max 200 MB) | Use a smaller file. |
 
