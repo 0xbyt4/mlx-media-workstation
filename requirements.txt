@@ -4,4 +4,5 @@ httpx2==2.16.0
 uvicorn==0.54.0
 python-multipart==0.0.32
 pywebview==6.2.1
+PyYAML==6.0.3
 mcp==2.3.0

@@ -193,6 +193,10 @@ Agent chat  -->  mcp_tools (Provider)  -->  Manager: one asyncio loop in its own
   macOS Keychain: service `mlx-media-workstation-mcp`, account = the server's name, one JSON object per server. The
   app writes and reads them with `/usr/bin/security` (an argument list, no shell). No API answer and no log holds a
   value. The file lists only the names that have a value (`secrets`).
+- A write passes the value to `security` as an argument (`-w`). While `security` runs (some milliseconds), another
+  process of the same macOS user can read it in the process list (`ps`). Reading the Keychain item later needs no
+  more than that user's rights either. So the Keychain keeps the secret out of files and logs; it does not keep it
+  from other programs of the same user.
 - A server name has 1 to 24 lowercase letters and digits, with single `-` or `_` between them. It has no `__`, so a
   tool name `<server>__<tool>` splits one way.
 - A remote URL must be `https://`. Plain `http://` is only for `127.0.0.1`, `localhost` or `::1`. A user name or

@@ -79,7 +79,7 @@ def decide(
         return Verdict(
             Action.REFUSE,
             f"The tool {tool.name} is off in this chat. Do not call it again; tell the user that they can "
-            "turn it on in this chat's Tools menu.",
+            "turn it on in the Tools menu and start a new chat with it.",
         )
     if tool.folder_needed() and grants.folder is None:
         return Verdict(

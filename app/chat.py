@@ -316,7 +316,7 @@ def workstation_prompt(
         )
         off_line = (
             f" These tools are off in this chat: {', '.join(off)}. Never call them; when the task needs one, ask the "
-            "user to turn it on in this chat's Tools menu."
+            "user to turn it on in the Tools menu and start a new chat with it."
             if off
             else ""
         )
@@ -388,8 +388,8 @@ Statue of Liberty was finished" (pending), "Compare the years" (pending).
 in 1889." Name the pages you used.
 
 Example 2. In a chat where run_python is off, the user writes: "Run print(sum(range(10))) and tell me the output."
-Do not call run_python. Answer: "Python is off in this chat. Turn on run_python in the Tools menu and send the \
-message again. The output would be 45.\""""
+Do not call run_python. Answer: "Python is off in this chat. Turn on run_python in the Tools menu, start a new \
+chat with it and send the message again. The output would be 45.\""""
 
 
 def agent_prompt(lay: "Layout") -> str:
@@ -418,7 +418,7 @@ def agent_prompt(lay: "Layout") -> str:
     )
     off_line = (
         f"\n- These tools are off in this chat: {', '.join(lay.off)}. Never call them. When the task needs one, tell "
-        "the user its name and ask them to turn it on in this chat's Tools menu."
+        "the user its name and ask them to turn it on in the Tools menu and start a new chat with it."
         if lay.off
         else ""
     )
@@ -935,7 +935,7 @@ def notice(
     if off:
         parts.append(
             f"Now off: {', '.join(off)}. Do not call them; when the task needs one, ask the user to turn it on in "
-            "this chat's Tools menu."
+            "the Tools menu and start a new chat with it."
         )
     if (told.get("folder") or None) != now["folder"]:
         parts.append(

@@ -1542,15 +1542,16 @@ function savedFile(path) {
       icon('reveal', 'ic-sm'), 'Show in Finder') : null, err);
 }
 
-// The change a call makes (edit_file, write_file), as the server's unified diff: each line is text in its own span,
-// colored by its first character. The server escapes hiding characters (registry.visible_lines).
-function diffBlock(text) {
+// The change a call makes (edit_file, write_file, memory), as the server's unified diff: each line is text in its own
+// span, colored by its first character. The server escapes hiding characters (registry.visible_lines). run_shortcut's
+// preview is what runs (the shortcut and its input), so its heading says so.
+function diffBlock(text, heading = 'Change') {
   const lines = String(text).split('\n').map((line) => {
     const cls = line.startsWith('@@') ? 'd-hunk' : line.startsWith('+++') || line.startsWith('---') ? 'd-file'
       : line.startsWith('+') ? 'd-add' : line.startsWith('-') ? 'd-del' : line.startsWith('[') ? 'd-note' : null;
     return h('span', {class: cls ? 'd-line ' + cls : 'd-line'}, line);
   });
-  return h('div', {class: 'tool-sec'}, h('span', {class: 'eyebrow'}, 'Change'),
+  return h('div', {class: 'tool-sec'}, h('span', {class: 'eyebrow'}, heading),
     h('pre', {class: 'tool-pre tool-diff', tabindex: '0', 'aria-label': 'The change as a diff'}, h('code', null, lines)));
 }
 
@@ -1734,7 +1735,7 @@ function approvalCard(seg, live) {
   h('p', {class: 'approval-what', id: id + '-d'}, ap.describe ? visible(ap.describe) : argsLine(ap.arguments)),
   ap.host ? h('p', {class: 'approval-host'}, 'Host: ', h('code', null, ap.host)) : null,
   ap.reason ? h('p', {class: 'approval-why'}, ap.reason) : null,
-  ap.preview ? diffBlock(ap.preview) : null,
+  ap.preview ? diffBlock(ap.preview, ap.name === 'run_shortcut' ? 'What runs' : 'Change') : null,
   box ? h('div', {class: 'tool-sec'},
     h('label', {class: 'eyebrow', for: id + '-args'}, 'Arguments (JSON)'), box,
     h('p', {class: 'tool-note', id: id + '-args-help'}, 'The tool checks them before the call runs. The chat keeps the arguments that ran. Escape ends the edit.'))
