@@ -71,7 +71,9 @@ function show(route) {
     root.replaceChildren(ui.errorBox({title: 'This section could not open', text: String(e && e.message ? e.message : e)}));
   }
   // The focus was in the old view (Cmd-1 to Cmd-6 from a field): start the new one from its top, not from the page.
-  if (switching && (!document.activeElement || document.activeElement === document.body)) area.focus({preventScroll: true});
+  // A toast action that opened the view also counts: its toast goes in a moment.
+  const at = document.activeElement;
+  if (switching && (!at || at === document.body || at.closest('#toasts'))) area.focus({preventScroll: true});
 }
 
 // ---------- sidebar: sections ----------
@@ -139,7 +141,7 @@ function renderDock() {
   const known = typeof p.fraction === 'number';
   const pct = known ? Math.round(p.fraction * 100) : null;
   const width = known ? (p.fraction * 100).toFixed(1) + '%' : null;
-  const was = known ? dock.querySelector('.progress-fill') : null; // the new bar moves on from the old one's width
+  const was = known && dock.dataset.job === String(run.id) ? dock.querySelector('.progress-fill') : null; // the bar moves on from its last width
   const fill = h('div', {class: 'progress-fill', style: {width: was && was.style.width ? was.style.width : width}});
   dock.replaceChildren(h('button', {
     type: 'button', class: 'dock', onclick: () => router.go('jobs'),
@@ -150,6 +152,7 @@ function renderDock() {
   h('div', {class: 'progress sm' + (known ? '' : ' indeterminate')}, fill),
   h('span', {class: 'dock-sub'}, h('span', null, p.stage || 'Starting'), h('span', null, fmtLeft(p.eta_s))),
   queued ? h('span', {class: 'dock-sub'}, h('span', null, queued + ' queued')) : null));
+  dock.dataset.job = run.id;
   if (width && fill.style.width !== width) {
     void fill.offsetWidth; // lay out the old width first, so the width transition runs
     fill.style.width = width;

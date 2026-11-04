@@ -576,7 +576,7 @@ function onFormInput(e) {
   if (ctl && ctl.counter) updateCounter(ctl);
   if (ctl && ctl.wrap.classList.contains('invalid') && ctl.validate() === null) {
     showFieldError(ctl, null);
-    showSummary([...s.controls.values()].filter((c) => c.wrap.classList.contains('invalid')).length); // count again
+    recountSummary();
   }
   const key = ctl && s.tool.id + ':' + ctl.field.name;
   if (ctl && ctl.improveBtn && ['empty', 'error', 'cancelled'].includes((improve.get(key) || {}).status)) {
@@ -587,11 +587,20 @@ function onFormInput(e) {
 
 // A value the user left: say at once what is wrong with it. An empty required field waits for Generate.
 function onFormChange(e) {
+  if (!s) return; // a field that loses the focus while the view closes sends its change after unmount()
   scheduleSave();
   const ctl = s.controls.get(e.target.name);
   if (!ctl || ctl.isFile || e.target !== ctl.input || (ctl.get() === '' && !e.target.validity.badInput)) return;
   const msg = ctl.validate();
-  if (msg) showFieldError(ctl, msg);
+  if (msg) {
+    showFieldError(ctl, msg);
+    recountSummary();
+  }
+}
+
+// The count of marked fields, again; the summary shows only after a Generate press.
+function recountSummary() {
+  if (!s.els.summary.hidden) showSummary([...s.controls.values()].filter((c) => c.wrap.classList.contains('invalid')).length);
 }
 
 function updateCounter(ctl) {

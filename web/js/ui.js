@@ -203,6 +203,7 @@ export function toast(msg, opts = {}) {
   };
   if (opts.action) {
     el.appendChild(h('button', {type: 'button', onclick: () => {
+      if (el.classList.contains('is-leaving')) return; // a second Enter during the fade-out
       close();
       opts.action.run();
     }}, opts.action.label));
@@ -375,24 +376,31 @@ export function menu(anchor, items) {
 
 // ---------- media ----------
 
-// Audio and video get their source only when they come near the screen: with preload=metadata, each player asks the
+// Audio, video and text previews load only when they come near the screen: with preload=metadata, each player asks the
 // server for its file at once, and Jobs with 2,000 finished jobs made about 1,000 such requests when it opened.
 let nearScreen = null;
-function lazySrc(el, url) {
+const onNear = new WeakMap(); // element -> its load function
+function whenNear(el, load) {
   if (typeof IntersectionObserver !== 'function') {
-    el.src = url;
+    load();
     return el;
   }
   nearScreen = nearScreen || new IntersectionObserver((entries) => {
     for (const e of entries) {
       if (!e.isIntersecting && e.target.isConnected) continue;
       nearScreen.unobserve(e.target);
-      if (e.isIntersecting) e.target.src = e.target.dataset.src;
+      const run = onNear.get(e.target);
+      onNear.delete(e.target);
+      if (e.isIntersecting && run) run();
     }
   }, {rootMargin: '600px 0px'});
-  el.dataset.src = url;
+  onNear.set(el, load);
   nearScreen.observe(el);
   return el;
+}
+
+function lazySrc(el, url) {
+  return whenNear(el, () => (el.src = url));
 }
 
 const TEXT_PREVIEW = 20000; // characters of a text output that media() shows
@@ -414,15 +422,16 @@ export function media(output, opts = {}) {
     el = lazySrc(h('video', {controls: true, playsinline: true, preload: 'metadata', 'aria-label': name}), url);
   } else if (output.kind === 'text') {
     // a transcript: the file itself is the result, so show its text (the start of a very long one)
-    el = h('pre', {class: 'media-pre', tabindex: '0', 'aria-label': name}, 'Loading the text...');
-    fetch(url, {cache: 'no-store'})
+    // loads like the players: only near the screen
+    const pre = h('pre', {class: 'media-pre', tabindex: '0', 'aria-label': name}, 'Loading the text...');
+    el = whenNear(pre, () => fetch(url, {cache: 'no-store'})
       .then((r) => (r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status))))
       .then((text) => {
-        el.textContent = text.length > TEXT_PREVIEW ? text.slice(0, TEXT_PREVIEW) + '\n...\nDownload the file for the rest.' : text;
+        pre.textContent = text.length > TEXT_PREVIEW ? text.slice(0, TEXT_PREVIEW) + '\n...\nDownload the file for the rest.' : text;
       })
       .catch(() => {
-        el.textContent = 'The text could not load. Download the file to read it.';
-      });
+        pre.textContent = 'The text could not load. Download the file to read it.';
+      }));
   } else {
     el = h('div', {class: 'art r11'}, icon('file', 'ic-lg'));
   }

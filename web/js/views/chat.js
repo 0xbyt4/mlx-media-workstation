@@ -300,11 +300,11 @@ function build() {
   grow(els.input);
 }
 
-function renderAll() {
+function renderAll(toEnd = true) {
   renderList();
   renderHead();
   renderNotices();
-  renderThread(true);
+  renderThread(toEnd);
   renderAttach();
   renderComposer();
 }
@@ -653,7 +653,7 @@ async function reloadChat(id, resumeOk = true) {
       const chat = await me.api.chat(id);
       if (s !== me || seq !== me.openSeq) return;
       s.chat = chat;
-      renderAll();
+      renderAll(false); // a reader who scrolled up during the answer stays where they are
       if (chat.running && resumeOk && !s.live) resume(id);
     } catch (e) {
       if (s === me && seq === me.openSeq) showNote(errText(e));
@@ -805,7 +805,7 @@ async function runStream(chatId, start) {
   }
   live.release();
   if (s !== me || s.live !== live || (error && error.name === 'AbortError')) return {aborted: true};
-  cancelAnimationFrame(live.frame);
+  stopPaint(live);
   s.live = null;
   const focusBack = document.activeElement === s.els.send || document.activeElement === document.body;
   renderComposer();
@@ -825,7 +825,7 @@ function detachLive() {
   if (!s || !s.live) return;
   const live = s.live;
   s.live = null;
-  cancelAnimationFrame(live.frame);
+  stopPaint(live);
   live.ctrl.abort();
   live.release();
   const row = s.chats.find((c) => c.id === live.chatId);
@@ -874,6 +874,12 @@ function schedulePaint(live) {
   }, wait);
 }
 
+function stopPaint(live) {
+  cancelAnimationFrame(live.frame);
+  clearTimeout(live.wait);
+  live.frame = live.wait = 0;
+}
+
 // ---------- the live answer ----------
 
 function newLive(chatId) {
@@ -902,7 +908,7 @@ function newLive(chatId) {
 }
 
 function paintLive(live) {
-  live.frame = 0;
+  stopPaint(live); // a direct paint replaces the scheduled one
   if (!s || s.live !== live) return;
   const t0 = performance.now();
   try {
@@ -1034,7 +1040,7 @@ function onAgentEvent(live, ev) {
   } else if (ev.event === 'plan') {
     const plan = planBlock(ev.items || []);
     // motion only: the first plan fades in, and a step whose state changed marks it (motion.css)
-    const was = live.plan ? [...live.plan.querySelectorAll('.plan-item')].map((li) => li.className) : null;
+    const was = live.plan ? [...live.plan.querySelectorAll('.plan-item')].map((li) => li.className.replace(' is-changed', '')) : null;
     if (!was) plan.classList.add('is-new');
     else plan.querySelectorAll('.plan-item').forEach((li, k) => li.className !== was[k] && li.classList.add('is-changed'));
     if (live.plan) live.plan.replaceWith(plan);
@@ -1576,6 +1582,7 @@ function addCaret(bubble) {
 function renderThread(toEnd) {
   const box = s.els.msgs;
   const stick = toEnd || nearBottom();
+  const top = box.scrollTop;
   box.replaceChildren();
   const msgs = s.chat ? s.chat.messages : [];
   box.classList.toggle('is-empty', !s.loading && !msgs.length && !s.live);
@@ -1615,6 +1622,7 @@ function renderThread(toEnd) {
     paintLive(s.live);
   }
   if (stick) scrollToEnd();
+  else s.msgsTop = box.scrollTop = top;
 }
 
 function emptyChat() {
@@ -1715,6 +1723,7 @@ function scrollToEnd() {
 // A scroll toward the start marks that the user reads back; reaching the end again clears it. Content that grows
 // does not scroll, and content that shrinks at the end lands at the end, so neither of them marks it.
 function onMsgsScroll() {
+  if (!s) return;
   const b = s.els.msgs;
   if (b.scrollHeight - b.scrollTop - b.clientHeight < 2) s.scrolledUp = false;
   else if (b.scrollTop < s.msgsTop) s.scrolledUp = true;
