@@ -604,6 +604,9 @@ uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev
 hand, so run the checks on your Mac before you send a change. To send a change, read
 [CONTRIBUTING.md](CONTRIBUTING.md). Everyone in the project follows the [code of conduct](CODE_OF_CONDUCT.md).
 
+`scripts/run_evals.py` runs the tool-use eval: 30 cases through the app's chat loop with mock tools, scored by fixed
+rules. It runs on the fake worker in seconds, or on the local LLM. See [evals/README.md](evals/README.md).
+
 `scripts/make_icon.py` draws the app icons (`assets/AppIcon.icns` and `assets/icon.png`) from the colours in
 `web/css/tokens.css`.
 

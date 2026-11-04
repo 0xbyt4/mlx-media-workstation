@@ -20,7 +20,8 @@ An agent test scripts a whole answer: the last user message holds "STEPS:" and a
 item is a text answer ("RESULT" answers "Result: <last tool message>", "SLOW" streams until cancelled), a list of
 calls, or {"text": ..., "calls": [...], "think": ..., "think_calls": [...]}: "think" is reasoning, and "think_calls"
 are written at its end, as Qwen sometimes does. A call is {"name": ..., "arguments": {...}}, written as the model
-writes it, or {"raw": "..."}: that text inside the call markers, to test calls that do not parse.
+writes it, or {"raw": "..."}: that text inside the call markers, to test calls that do not parse. A request without
+tools answers a STEPS: script's text item too (the eval's general chats); an item with calls stays "Hello world".
 
 A request with "tool_choice": "none" is the agent's last step: its script item is picked from the user message before
 the app's note, and its calls are left out, as the worker's ban of the call marker would do ("FINAL" when it has no
@@ -351,9 +352,16 @@ def main():
         if reasoning:
             emit({"id": rid, "event": "reasoning", "text": reasoning})
         parts, finish = [], "stop"
-        words = (
-            iter(lambda: "tick ", None) if "SLOW" in text else iter(["Hello", " world"])
+        # a text item of a STEPS: script (the eval's general chats); an item with calls stays "Hello world"
+        script = scripted(req["messages"])
+        said = (
+            script[0]
+            if script is not None
+            and isinstance(script[0], list)
+            and not any("<tool_call>" in c for c in script[0])
+            else ["Hello", " world"]
         )
+        words = iter(lambda: "tick ", None) if "SLOW" in text else iter(said)
         for word in words:
             if cancel.is_set():
                 finish = "cancelled"
