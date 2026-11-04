@@ -1182,9 +1182,32 @@ def test_the_server_port_searches_the_library(state, make_job):
     assert hit["job"] == "20261103-100000-aaaa" and hit["text"] == "a lighthouse"
     assert set(hit) == {"job", "tool", "tool_label", "kind", "name", "created", "text"}
     assert port.search_library("nothing like this", 5) == []
-    # every word must match, in any order and any case
+    # any word matches, in any order and any case
     assert port.search_library("Lighthouse  A", 5) == [hit]
-    assert port.search_library("lighthouse storm", 5) == []
+    assert port.search_library("lighthouse storm", 5) == [hit]
+
+
+def test_library_search_puts_the_most_matched_words_first(state, make_job):
+    for jid, prompt in (
+        ("20261103-100000-aaaa", "a lighthouse in the rain at dusk"),
+        ("20261103-110000-bbbb", "a lighthouse at noon"),
+        ("20261103-120000-cccc", "a cat"),
+    ):
+        make_job(
+            jid,
+            "done",
+            params={"prompt": prompt},
+            outputs=[{"name": "image.png", "kind": "image", "url": ""}],
+        )
+        (state / jid / "image.png").write_bytes(PNG)
+    port = server.Workstation()
+    found = [h["job"] for h in port.search_library("rain lighthouse extended", 5)]
+    assert found == [
+        "20261103-100000-aaaa",
+        "20261103-110000-bbbb",
+    ]  # two words, then one; the cat has none
+    found = [h["job"] for h in port.search_library("lighthouse", 1)]
+    assert found == ["20261103-110000-bbbb"]  # a tie: the newest
 
 
 def test_the_chat_profile_has_no_workstation_tools(monkeypatch):

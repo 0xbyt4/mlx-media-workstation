@@ -836,17 +836,18 @@ class Workstation:
             raise ValueError(str(e.detail)) from None
 
     def search_library(self, query: str, limit: int) -> list[dict[str, Any]]:
-        """Outputs whose prompt, tool or file name holds every word of the query, in any order."""
-        words = query.lower().split()
-        found = []
-        for e in library.entries():  # newest first
+        """Outputs whose prompt, tool or file name holds words of the query: the ones with the most of the words
+        first, then the newest. A query word also matches inside a longer word: "rain" finds "raining", but
+        "extended" does not find "extend"."""
+        words = set(query.lower().split())
+        keys = ("job", "tool", "tool_label", "kind", "name", "created", "text")
+        scored = []
+        for i, e in enumerate(library.entries()):  # newest first
             text = " ".join((e["text"], e["tool"], e["tool_label"], e["name"])).lower()
-            if all(w in text for w in words):
-                keys = ("job", "tool", "tool_label", "kind", "name", "created", "text")
-                found.append({k: e[k] for k in keys})
-                if len(found) >= limit:
-                    break
-        return found
+            score = sum(w in text for w in words)
+            if score:
+                scored.append((-score, i, {k: e[k] for k in keys}))
+        return [hit for _, _, hit in sorted(scored, key=lambda s: s[:2])[:limit]]
 
     def output_file(self, job_id: str, name: str) -> Path | None:
         """A listed output of a done job only (library.output_path refuses inputs, links and paths out of the job
@@ -973,7 +974,7 @@ def get_job(job_id: str) -> dict[str, Any]:
 def library_search(
     q: str = Query(min_length=1, max_length=200), limit: int = Query(10, ge=1, le=100)
 ) -> list[dict[str, Any]]:
-    """Finished outputs whose text, tool or file name holds every word of q, newest first (the agent's search_library)."""
+    """Finished outputs that hold words of q, most words first, then newest (the agent's search_library)."""
     return workstation.search_library(q, limit)
 
 

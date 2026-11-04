@@ -81,7 +81,7 @@ app's port (7870 by default). The app always uses 7870, so you need it only for 
 | `wait_for_job` | `job_id`, `seconds` (1 to 600, default 50) | read-only | Waits until the job ends or the time is over, then shows it as `job_status` does. |
 | `list_jobs` | `limit` (1 to 30, default 10) | read-only | The queued and running jobs and the newest finished ones, one line each. |
 | `cancel_job` | `job_id` | not read-only, destructive, idempotent | Cancels a queued or running job that an MCP client queued. |
-| `search_library` | `query`, `limit` (1 to 30, default 10) | read-only | Finished outputs by prompt text, tool or file name (every word must match), newest first. |
+| `search_library` | `query`, `limit` (1 to 30, default 10) | read-only | Finished outputs by prompt text, tool or file name: the ones with the most query words first, then the newest. |
 | `transcribe_audio` | `audio` or `job_id`, `language` (default `auto`), `seconds` | not read-only, not destructive | Speech to text with Qwen3-ASR: queues a `voice.transcribe` job and waits for its text. |
 
 Every tool has `openWorldHint: false`: no tool reaches past this Mac. The hints come from the tool's risk level in
