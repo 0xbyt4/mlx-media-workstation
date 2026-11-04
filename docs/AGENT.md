@@ -604,6 +604,131 @@ The user adds MCP servers in Settings > MCP servers ([MCP.md](MCP.md#mcp-client)
 - An error of the tool or the server, a timeout (120 s) or a failed start (30 s) becomes the tool's error text. Only
   that server's tools fail.
 
+## Skills
+
+A skill is a folder with a `SKILL.md` file in the [Agent Skills format](https://agentskills.io/specification). It
+teaches the agent one kind of task. The code is in `app/skills.py` (the skills, the catalog, `load_skill`, `/skill`
+and the import) and `app/skills_api.py` (the endpoints of Settings > Skills, see [API.md](API.md#skills)). The
+user's guide is [guide/skills.md](guide/skills.md).
+
+### Sources
+
+The app reads skills from three sources. When two skills have the same name, the first source wins, and the other
+skill gets the error "... skill with the same name replaces it".
+
+| Source | Folder | Default | The app can |
+|---|---|---|---|
+| Imported (`user`) | `outputs/skills/` | on | import, switch, delete |
+| Your folder (`folder`) | set in Settings > Skills (for example `~/.agents/skills`) | off | switch; it only reads the folder |
+| App (`app`) | `skills/` in the repository | on | switch |
+
+The switches and the folder are in `outputs/skills.json`. A folder in "your folder" without a `SKILL.md` is left
+out. A folder in the other sources without one is listed with an error.
+
+### `SKILL.md` rules
+
+The file starts with YAML frontmatter between two `---` lines. The Markdown after it is the body: the guide that the
+agent reads. A skill that breaks a rule is listed with its error and is never used.
+
+| Field | Rule |
+|---|---|
+| `name` | Required. 1-64 characters: `a-z`, `0-9` and single hyphens, not at the start or the end. It must equal the folder's name. |
+| `description` | Required. 1-1024 characters. What the skill does and when to use it. |
+| `license` | Optional text. |
+| `compatibility` | Optional. 1-500 characters. |
+| `metadata` | Optional. Keys and values must be texts (`version: "1.0"`, not `version: 1.0`). |
+| `allowed-tools` | Optional. A text of tool names with spaces between them. |
+| `disable-model-invocation` | Optional, `true` or `false` (a Claude Code field). With `true`, only `/skill <name>` loads the skill. |
+
+- `SKILL.md` must be UTF-8 and at most 256 KB, and the frontmatter at most 16 KB. The body must not be empty.
+- Another field (such as `when_to_use` of other agents) gives a warning, not an error.
+- A body of more than 5,000 tokens gives a warning. `load_skill` returns at most 12,000 characters (`MAX_RESULT`).
+- A text with a colon needs quotes. YAML reads `on`, `off`, `yes` and `no` as true or false, so such a `name` is an
+  error.
+
+### The catalog and `load_skill`
+
+The skills provider (`SkillsProvider`, loaded by `app/agent/providers.py`) gives a chat two things:
+
+- The section "Skills" of the system prompt: one lead line, then one line for each skill that is on, with its name
+  and description. It may hold at most 600 tokens (`BUDGET`). When a skill does not fit, it is left out, and the
+  last line says how many are left out. The three skills of the app take about 280 tokens.
+- The core tool `load_skill(name)`. `name` is an enum of the skills that are on (without `disable-model-invocation`
+  skills). The tool and its schema take about 150 tokens. With no skill on, there is no tool and no section.
+
+`load_skill` is R0: it runs without asking. Its result is the body in `<skill_content name="...">`. When the skill
+has other files, the result also gives the skill folder's full path and a `<skill_resources>` list (scripts are
+marked). The result is untrusted (`untrusted_output`), so it taints the chat like a web page: an imported skill is
+text from outside the app. A skill that was turned off or deleted after the chat started gives an error.
+
+The read tools (`list_files`, `read_file`, `search_files`) read inside a skill folder when the path is the full path
+of a file there. Only the folders of skills that are on count. The rules of the granted folder apply: no hidden or
+secret files, real paths only. The write tools never write there. The policy still asks for a granted folder before
+any R1 tool runs.
+
+Skill scripts never run by themselves. To run one, the agent reads it and gives its code to `run_python` or
+`run_shell`. The user approves each call and sees the code on the approval card. `allowed-tools` never approves a
+call.
+
+### Hidden skills
+
+A skill is left out of a chat's catalog when the chat lacks what it needs:
+
+- A tool that `allowed-tools` names. A name with arguments counts by its base (`Bash(git:*)` is `Bash`). The names of
+  Claude Code map to this app's tools: `Bash` is `run_shell`, `Read` is `read_file`, `Write` is `write_file`, `Edit`
+  is `edit_file`, `Grep` is `search_files`, `Glob` and `LS` are `list_files`, `WebFetch` is `fetch_url`, `WebSearch`
+  is `web_search`. A tool that this app does not have hides the skill.
+- The network, when `compatibility` asks for it ("Requires ... internet", "Needs network access"). A sentence with
+  "no", "not", "without" or "offline" does not count.
+
+The chat's tools are the ones that are on in its Tools menu (`skills.chat_tools()`). When the chat has `"offline":
+true`, its network tools do not count. `load_skill` still accepts a hidden skill by name. Its result then starts with
+a note that names what the chat lacks.
+
+### `/skill <name>`
+
+A message that starts with `/skill <name>` forces that skill. The server handles it (`start_answer` in
+`app/chat.py`), so the page needs no change:
+
+1. The server finds the skill among the skills that are on. When there is none, the message is refused with HTTP 400
+   and the names of the skills that are on.
+2. The user message is stored as typed, with a `skill` key: `{"name", "source", "command", "content"}`. `content` is
+   a note that the user chose the skill, then the same text as `load_skill` gives.
+3. For the model, the command is removed from the text, and `content` goes before the message (before its files).
+4. A skill from another source than the app taints an agent or workstation chat, as an attached file does.
+
+A `disable-model-invocation` skill works with `/skill` too.
+
+### Import
+
+Settings > Skills imports a skill folder or a `.zip` from this Mac. It never downloads.
+
+1. Check: the server copies the skill to `outputs/skills/.staging/<token>/`. It refuses links, paths outside the
+   skill, more than 500 files and more than 20 MB. It leaves out hidden and secret files and names them. A `.zip` may
+   hold the skill at its root or in one folder; the skill takes the `name` of its `SKILL.md`. A broken `SKILL.md`
+   is refused.
+2. Scan: each file (at most 2 MB) is searched for dangerous patterns: a download piped into a shell or an
+   interpreter, base64 decoding and long base64 blobs, "paste in Terminal", `sudo`, turning off macOS protections,
+   `osascript`, keys and the keychain, `.env`, `rm -rf`, network shells, `eval`, `chmod +x`, login items and timers,
+   text that tries to change the agent's rules or hide something from the user, and hidden or bidi characters. A
+   binary file is named, because the scan cannot read it.
+3. The page shows the files, the scripts, the findings and the `SKILL.md`. The user confirms (a dialog when there are
+   findings or scripts).
+4. Confirm: the checked copy moves to `outputs/skills/<name>/` and is on. An unconfirmed copy is removed after an
+   hour.
+
+The scan only helps the user decide. It cannot prove that a skill is safe.
+
+### The app's skills
+
+| Skill | Needs | What it does |
+|---|---|---|
+| `short-film` | `list_workstation_tools`, `create_job`, `job_status` | Plans 3-6 shots, then queues images, Klein Edit for the same character, voice, clips (`video.i2v`, `video.a2v`), the join (when a join tool is installed), music and `edit.mix`, one stage per answer. |
+| `podcast-cleanup` | `run_shell`, `media_info` | Shortens silences longer than 0.5 s with ffmpeg `silenceremove`, sets the loudness to -16 LUFS with a two-pass `loudnorm`, writes show notes from `transcribe_audio`. |
+| `subtitle-video` | `transcribe_audio` | Transcribes, writes an SRT (cues of at most 2 lines of 42 characters and 7 s), and adds a soft `mov_text` track with ffmpeg in `run_shell`. It says which step a missing tool stops. |
+
+Each body is under 1,600 tokens.
+
 ## What is not protected
 
 - Seatbelt (`sandbox-exec`) is deprecated by Apple. It works on current macOS, but Apple may remove it.

@@ -18,6 +18,7 @@ Some changes apply at once. Others apply after a restart, because the app reads 
 | Agent | `[agent]` | After a restart |
 | Chat memory | none (`outputs/memory/settings.json`) | At once |
 | MCP servers | none (`outputs/mcp_servers.json` and the Keychain) | At once, for new agent chats |
+| Skills | none (`outputs/skills.json`) | New chats |
 | Model paths | `[paths]` | After a restart |
 
 If you edit `config.toml` by hand, restart the app. When the file has an error, Settings shows "config.toml cannot
@@ -110,11 +111,17 @@ The memory switches, the entries of the two memory stores and the chat search in
 | Memory in General chats | off | General chats see the memory too. |
 
 A change applies at once. A chat keeps the memory it started with.
+
 ## MCP servers
 
 Add, approve, test and remove MCP servers. Their tools go to the agent of new Agent chats. Each server needs your
 approval of its command line, and each tool needs your approval of its definition. Secrets go to the macOS Keychain.
 The steps are in [MCP servers](mcp-servers.md).
+
+## Skills
+
+The agent's skills: guides for a kind of task. Each skill has a switch. A change applies to new chats, without a
+restart. The section also sets your own skills folder and imports a skill folder or `.zip`. See [Skills](skills.md).
 
 ## Model paths
 

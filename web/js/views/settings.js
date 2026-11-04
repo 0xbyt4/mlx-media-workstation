@@ -7,6 +7,7 @@
 import {h, icon, toast, confirm, errorBox, getTheme, setTheme, onTheme} from '../ui.js';
 import {memorySection} from './settings/memory.js';
 import {mcpServers} from './settings/mcp.js';
+import {skillsSection} from './settings/skills.js';
 
 const THEMES = [['system', 'System', 'monitor'], ['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']];
 const README = [
@@ -126,6 +127,7 @@ function build() {
     agent(),
     memorySection(s.ctx),
     mcpServers(s.ctx),
+    skillsSection(s.ctx, s.abort.signal),
     modelPaths(),
     about(),
   ].filter(Boolean));

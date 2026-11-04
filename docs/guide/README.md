@@ -11,6 +11,7 @@ This guide tells you how to use Workstation, step by step. Each page covers one 
 | [Agent mode](agent-mode.md) | Let the chat call tools: each tool with its risk and approval, the folder grant, Python and Shell. |
 | [Chat memory](memory.md) | Let the agent keep short facts across chats, search earlier chats, and edit the memory. |
 | [MCP servers](mcp-servers.md) | Give the agent the tools of other programs and services: add, approve and test MCP servers. |
+| [Skills](skills.md) | Turn the agent's skills on or off, use one with /skill, import a skill folder or .zip, write your own. |
 | [Models](models.md) | Download weights, accept gated licences, install the runtimes, read the memory fit, remove a model. |
 | [Settings](settings.md) | Every section of the Settings screen and the `config.toml` key behind it. |
 | [Troubleshooting](troubleshooting.md) | Fixes by symptom: model missing, out of memory, a job fails, the LLM does not answer, the window does not open, gated licence. |
