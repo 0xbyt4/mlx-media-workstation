@@ -17,9 +17,10 @@ const MAX_IMAGE = 20 * 1024 * 1024;
 // answers get "Use in" cards.
 const MODE_INFO = {
   workstation: {
-    label: 'Workstation', icon: 'wand', help: 'Knows the app\'s tools. A text written for a tool gets a "Use in" button.',
+    label: 'Workstation', icon: 'wand', help: 'Knows the app\'s tools and queues jobs when you ask it to make something. A text written for a tool gets a "Use in" button.',
+    chatHelp: 'Knows the app\'s tools. A text written for a tool gets a "Use in" button.', // no jobs in the chat profile
     title: 'Ask about a prompt, a shot list or lyrics',
-    text: 'The model runs on this Mac and nothing is uploaded. Attach an image to ask about it.',
+    text: 'The model runs on this Mac and nothing is uploaded. It asks you before it queues a job. Attach an image to ask about it.',
     examples: [
       {title: 'Write a video prompt', text: 'Write a Text to Video prompt for a 5 second shot: a lighthouse keeper climbs a spiral staircase during a storm. Add the sounds.'},
       {title: 'Lyrics for a song', text: 'Write a style caption and lyrics (two short verses and a chorus) for a calm synth-pop song about a city in the rain.'},
@@ -104,6 +105,12 @@ function modeHelp(mode) {
 // "Use in" cards need the media tools: only Workstation chats in the full profile show them.
 function showCards() {
   return chatMode() === 'workstation' && s.ctx.store.profile() !== 'chat';
+}
+
+// The chats whose answers can call tools (app/chat.py uses_tools): agent chats, and Workstation chats in the full
+// profile, which have the Workstation tools. Their answers show steps and tool cards, and they have a Tools menu.
+function hasTools() {
+  return chatMode() === 'agent' || showCards();
 }
 
 // Links in agent chats name their host: a page the agent read can make it write a link that carries private text off
@@ -885,7 +892,7 @@ function stopPaint(live) {
 function newLive(chatId) {
   const live = {
     chatId, ctrl: new AbortController(), release: store.fast('llm'), msg: {role: 'assistant', content: '', reasoning: ''},
-    waiting: null, stopping: false, thinkTouched: false, frame: 0, agent: chatMode() === 'agent',
+    waiting: null, stopping: false, thinkTouched: false, frame: 0, agent: hasTools(),
   };
   if (live.agent) {
     Object.assign(live, {segs: [], step: 0, maxSteps: 0, last: false, plan: null, asking: null, focusAsk: false});
@@ -981,7 +988,8 @@ function agentStatus(live, spin) {
 }
 
 function stepChip(live) {
-  if (!live.step) return null;
+  // a workstation answer that calls no tool is a plain answer: its count shows from the second step on
+  if (!live.step || (live.step === 1 && chatMode() === 'workstation')) return null;
   return h('span', {class: 'step-n num'}, 'Step ' + live.step + ' of ' + live.maxSteps + (live.last ? ', no more tools' : ''));
 }
 
@@ -1428,10 +1436,10 @@ function agentTurn(run, isLast) {
     msgTools(final, isLast));
 }
 
-// ---------- the Tools menu (agent chats) ----------
+// ---------- the Tools menu (agent and Workstation chats; only an agent chat has a folder) ----------
 
 async function openTools() {
-  if (s.tools || chatMode() !== 'agent') return;
+  if (s.tools || !hasTools()) return;
   const me = s;
   let id = memo.activeId;
   me.tools = {state: null, busy: false, error: '', folderError: ''};
@@ -1549,13 +1557,17 @@ function renderTools(focusKey) {
       }}, 'Revoke'))
     : h('div', {class: 'tools-folder-row'}, input,
       h('button', {type: 'button', class: 'btn btn-sm', disabled: t.busy, onclick: grant}, 'Grant'));
+  const agent = chatMode() === 'agent';
   pop.replaceChildren(...[head,
-    h('p', {class: 'tools-intro'}, 'The model uses a tool only when it needs one. Calls marked "Leaves this Mac", "Uses this Mac", "Writes files", "Changes files" or "Runs code" ask you first.'),
-    st.tainted ? h('p', {class: 'tools-taint'}, icon('info', 'ic-sm'),
-      'Web pages, files or program output are in this chat, so tools that send data off this Mac ask before every call.') : null,
+    h('p', {class: 'tools-intro'}, agent
+      ? 'The model uses a tool only when it needs one. Calls marked "Leaves this Mac", "Uses this Mac", "Writes files", "Changes files" or "Runs code" ask you first.'
+      : 'The model queues a job when you ask it to make something. Calls marked "Uses this Mac" ask you first.'),
+    st.tainted ? h('p', {class: 'tools-taint'}, icon('info', 'ic-sm'), agent
+      ? 'Web pages, files or program output are in this chat, so tools that send data off this Mac ask before every call.'
+      : 'Transcripts or Library prompts are in this chat, so tools that queue or cancel jobs ask before every call.') : null,
     t.error ? h('p', {class: 'field-err', role: 'alert'}, t.error) : null,
     h('ul', {class: 'tool-list', role: 'list'}, rows),
-    h('div', {class: 'field tools-folder'},
+    agent && h('div', {class: 'field tools-folder'},
       h('label', {class: 'label', for: 'tools-folder'}, 'Folder the file tools and Shell may use'),
       folder,
       t.folderError ? h('p', {class: 'field-err', id: 'tools-folder-err', role: 'alert'}, t.folderError) : null,
@@ -1770,10 +1782,10 @@ function renderComposer() {
     ? 'At most ' + MAX_IMAGES + ' images per message.'
     : 'Attach PNG, JPEG or WebP images (up to ' + MAX_IMAGES + ', 20 MB each). You can also drop or paste them.';
   renderEffort(f.blocked);
-  const agent = chatMode() === 'agent';
-  els.toolsBtn.hidden = !agent;
+  const tools = hasTools();
+  els.toolsBtn.hidden = !tools;
   els.toolsBtn.disabled = !!(s.sending || s.loading);
-  if (!agent && s.tools) closeTools();
+  if (!tools && s.tools) closeTools();
   const live = s.live;
   if (live) {
     els.send.className = 'btn btn-sm';

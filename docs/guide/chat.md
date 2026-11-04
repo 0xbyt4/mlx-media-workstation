@@ -20,11 +20,29 @@ The mode is fixed after the first message. A new chat starts in the mode of your
 
 | Mode | What it does |
 |---|---|
-| Workstation | Knows the app's tools. When it writes a text for a tool, the answer shows a "Use in" button. |
+| Workstation | Knows the app's tools and every field of their forms. It queues a job when you ask it to make something, after you approve it. When it writes a text for a tool, the answer shows a "Use in" button. |
 | General | A plain assistant for any question. It does not know the app's tools. It has no internet access. |
 | Agent | A general assistant that can use tools: web search, Python in a sandbox, files in a folder you grant. See [Agent mode](agent-mode.md). |
 
 The chat profile has no Workstation mode.
+
+## Let the chat make it
+
+In a Workstation chat, the model can run the media tools itself. It has only the Workstation tools: it lists the
+tools, queues and cancels jobs, reads their status, waits for a job, searches the Library and transcribes speech. It
+has no web, file, Python or shell tools.
+
+1. Ask for a result, for example: `Make a 30 second calm synth-pop song about rain, with lyrics.`
+2. The model fills the tool's fields and calls "Queue a media job". An approval card shows the tool and its fields.
+3. Press "Allow once", or "Allow in this chat" to let it queue jobs without asking in this chat.
+
+The job card in the answer shows the job's progress and its outputs. A job that needs the chat model's memory, such
+as a video, starts after the answer ends.
+
+- When your request is unclear, or you want to read the text first, the model writes the prompt with a "Use in"
+  button and queues nothing. Ask it for the prompt only when you want to change it before you run it.
+- The Tools menu under the message box turns each tool on or off and ends an "Allow in this chat".
+- The approval rules are the ones of Agent mode: see [Agent mode](agent-mode.md).
 
 ## Use a prompt from the chat in a tool
 
@@ -32,7 +50,8 @@ The chat profile has no Workstation mode.
 2. Ask for a prompt, for example: `Write a Text to Video prompt for a 5 second shot of a lighthouse at night.`
 3. Under the prompt in the answer, press "Use in Text to Video".
 
-Create opens that tool with the text in its field. Read it, then press Generate.
+Create opens that tool with the text in its field. Read it, then press Generate. Lyrics for ACE-Step 1.5 also turn
+its Instrumental switch off, so the song is sung.
 
 ## Ask about an image
 
@@ -71,7 +90,7 @@ The thought shows in a block above the answer, folded. Click "Thinking" to open 
 - **Stop**: the Send button changes to Stop while the model answers. Press it to end the answer. The app keeps the
   text so far.
 - **Regenerate**: under the last answer. It answers the last message again.
-- **Copy**: under an answer, and on each code block.
+- **Copy**: under an answer, and on each code block. You can also select any text in the window and press Cmd-C.
 
 An answer can take at most 10 minutes. At the limit it stops and shows a note. The time that the answer waits for
 memory does not count.

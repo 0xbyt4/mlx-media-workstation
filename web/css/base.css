@@ -61,6 +61,14 @@ textarea {
 button {
   cursor: pointer;
 }
+/* Text can be selected and copied (start.py turns on pywebview's text_select). The labels of controls cannot: a
+   double click or a drag over a button, a switch or a fold must not select its label. */
+button,
+summary,
+.switch {
+  -webkit-user-select: none;
+  user-select: none;
+}
 ul,
 ol.plain {
   margin: 0;

@@ -267,7 +267,7 @@ TOOLS: list[dict[str, Any]] = [
                 default=2,
                 min=1,
                 max=4,
-                help="Different seeds; keep the best.",
+                help="Results of one job, each with another seed; keep the best.",
             ),
             field(
                 "ref0",
@@ -372,7 +372,8 @@ TOOLS: list[dict[str, Any]] = [
                 "textarea",
                 assist=True,
                 default="",
-                help="Only when not instrumental. Use [verse], [chorus] tags.",
+                needs_off="instrumental",
+                help="Sung only with Instrumental off. Use [verse], [chorus] tags.",
             ),
             field("duration", "Duration (s)", "number", default=30, min=10, max=240),
             field(
@@ -393,7 +394,16 @@ TOOLS: list[dict[str, Any]] = [
                 advanced=True,
                 help="e.g. D minor. Empty = automatic.",
             ),
-            field("takes", "Takes", "number", default=2, min=1, max=4, advanced=True),
+            field(
+                "takes",
+                "Takes",
+                "number",
+                default=2,
+                min=1,
+                max=4,
+                advanced=True,
+                help="Results of one job, each with another seed; keep the best.",
+            ),
             SEED | {"advanced": True},
         ],
     },
@@ -842,6 +852,17 @@ def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) ->
             f"Not installed: {', '.join(map(str, missing))}. Open Models to install it, "
             "or set its folder in Settings > Model paths."
         )
+    # a text field with needs_off is used only while that checkbox is off (ACE-Step sings no lyrics in an
+    # instrumental): the job is refused instead of dropping the text
+    fields = {f["name"]: f for f in BY_ID[tool]["fields"]} if tool in BY_ID else {}
+    for f in fields.values():
+        box = fields.get(f.get("needs_off", ""))
+        text = str(params.get(f["name"]) or "").strip()
+        if box and text and str(params.get(box["name"])).lower() == "true":
+            raise ValueError(
+                f"{f['label']}: used only when {box['label']} is off. Turn {box['label']} off, or clear "
+                f"{f['label']}."
+            )
     if tool == "voice.drama3":
         for i in (0, 1):
             if (
