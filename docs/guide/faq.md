@@ -75,6 +75,11 @@ The file tools cannot delete a file. "Write a file" never overwrites one. "Chang
 shows the change, and keeps a copy of the old file in the chat's work folder. Shell can only read the granted folder.
 See [Agent mode](agent-mode.md).
 
+## Can Claude Code or Claude Desktop use the media tools?
+
+Yes. Workstation has an MCP server. Add `start.py --mcp` to your client as a stdio server, with absolute paths. The
+app must run. The jobs go to the app's queue, with the same memory rules. See [MCP.md](../MCP.md).
+
 ## How do I use the app in a browser?
 
 Run `.venv/bin/python start.py --browser` and open the link that it prints. Prefer the app window: in a browser, the

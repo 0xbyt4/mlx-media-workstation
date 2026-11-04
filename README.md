@@ -248,6 +248,7 @@ section of `config.toml`.
 .venv/bin/python start.py            # opens the app window
 .venv/bin/python start.py --browser  # server only: open the link it prints in a browser
 .venv/bin/python start.py --chat     # the chat profile: Chat, Models and Settings only
+.venv/bin/python start.py --mcp      # the MCP server for local agents; the app must run
 ```
 
 The app uses port 7870. When the app already runs and you start the other profile, `start.py` opens only a window on
@@ -255,6 +256,13 @@ the running app. It does not start a second server, so the local LLM loads only 
 port is in use, `start.py` says so and stops.
 
 Closing the app's own window, or Ctrl-C in `--browser` mode, cancels the queue and stops every model process.
+
+### Use the tools from other agents (MCP)
+
+Claude Code, Claude Desktop and other MCP clients on this Mac can use the media tools: read the memory and the queue,
+queue jobs, wait for them and get the output files. The client starts `start.py --mcp`, which talks to the running
+app on `127.0.0.1`. The jobs keep the app's memory and queue rules. [docs/MCP.md](docs/MCP.md) has the setup for each
+client and the tools.
 
 ## Tools
 
@@ -556,6 +564,7 @@ ends.
 - `app/llm.py` and `app/llm_worker.py` run the local LLM. The worker runs in the LLM environment and keeps the model
   loaded between requests.
 - `app/agent/` has the tools, the approval policy and the sandboxes of agent mode ([docs/AGENT.md](docs/AGENT.md)).
+- `app/mcp_server.py` offers the Workstation tools of agent mode to local MCP clients ([docs/MCP.md](docs/MCP.md)).
 - `app/runners/` has small scripts that run inside a model's own environment.
 - `web/` has the interface: plain HTML, CSS and JavaScript modules, with no build step and no network requests
   ([web/README.md](web/README.md)). [docs/DESIGN.md](docs/DESIGN.md) has the design notes of the interface.

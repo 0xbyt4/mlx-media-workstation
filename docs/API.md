@@ -51,11 +51,18 @@ added to it.
   (`tools.validate`, which `POST /api/jobs` and the agent's `create_job` share). The Create form turns the checkbox
   off when text comes into the field, and marks the field at Generate while the checkbox is on.
 
+`GET /api/tools?installed=true` adds `"installed"` to each tool: `true` when its model files are on disk
+(`tools.REQUIRES`). The MCP server ([MCP.md](MCP.md)) uses it.
+
 ## Jobs
 
 `POST /api/jobs` takes `multipart/form-data` with `tool` (the tool id) and one part per field (files as file parts,
 checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Errors return HTTP 400 with
 `{"detail": "message"}`.
+
+An optional `client` part with the value `mcp` marks a job from the MCP server ([MCP.md](MCP.md)). The job gets the
+checks of an agent's job (see docs/AGENT.md, "Input files": a file must have a media type that its field accepts) and
+`"chat": "mcp"` in its `job.json`. Another `client` value is HTTP 400.
 
 `GET /api/jobs` returns all jobs, newest first:
 
@@ -96,8 +103,12 @@ checkboxes as `true`/`false`). It returns `{"id": "20261023-231500-ab12"}`. Erro
   It leaves out the report that `/usr/bin/time -l` writes after each command; `peak_gb` comes from that report.
 - Only one job runs at a time (each model needs most of the memory of a 32-48 GB Mac).
 - `kind: "text"` is a `.txt` output: the transcript of a `voice.transcribe` job.
-- A job that an agent chat queued has `"chat": "<chat id>"` in its `job.json`. `GET /api/jobs` lists the job like
-  any other job, without this key.
+- A job that an agent chat queued has `"chat": "<chat id>"` in its `job.json`; a job from the MCP server has
+  `"chat": "mcp"`. `GET /api/jobs` lists the job like any other job, without this key.
+
+`GET /api/jobs?limit=<1 to 100>` returns the queued and running jobs, then the newest finished ones, up to `limit` jobs
+in all, newest first. `GET /api/jobs/{id}` returns one job. Both add `"chat"` (the chat id, `"mcp"` or `null`) to each
+job. An unknown id is HTTP 404. The agent's `list_jobs` and `job_status` show these lists.
 
 `POST /api/jobs/{id}/cancel` cancels a queued or running job and returns `{"status": "cancelled"}`, or the job's
 status when it has already ended. `DELETE /api/jobs/{id}` removes a finished job from the list and deletes its folder
@@ -152,6 +163,10 @@ for another `to`.
   header; it runs ffprobe for other files. It reads each file once and keeps the result in memory until the file
   changes.
 
+`GET /api/library/search?q=<text>&limit=<1 to 100, default 10>` returns the outputs whose text, tool or file name
+contains `q` (1 to 200 characters, any case), newest first, as `{"job", "tool", "tool_label", "kind", "name",
+"created", "text"}`. The agent's `search_library` shows this list.
+
 `POST /api/library/reveal` takes JSON `{"job": "<job id>", "name": "<file name>"}` and shows the file in Finder
 (`open -R`). It returns `{"status": "shown"}`. The file must be a listed output of that job: HTTP 404 for any other
 name, a symbolic link or an unknown job, HTTP 400 for an input file, and HTTP 409 while the job is queued or
@@ -175,6 +190,30 @@ server's token as the key. At start the server writes a new random token to `out
 an atomic write) and removes it at a clean shutdown. `start.py` reads the file, sends a random nonce and opens a
 window only when the proof matches, so another program on the port cannot get a window. The token itself is never
 sent. Without the session cookie the answer has only `proof` and `profile`. A bad nonce is HTTP 400.
+
+`GET /api/status` returns what the `system_status` tool shows (`app/server.py`, `Workstation.system_status`):
+
+```json
+{
+  "memory": {"mem_total_gb": 48.0, "mem_free_gb": 37.5, "swap_used_gb": 2.8, "reserve_gb": 8.0},
+  "running": {"id": "20261023-231500-ab12", "tool": "video.t2v", "tool_label": "Text to Video", "status": "running",
+              "created": "2026-10-23T23:15:00", "position": 0, "waiting": null,
+              "progress": {"stage": "Stage 2: 1/3", "fraction": 0.52, "eta_s": 95}, "elapsed": 42.5, "chat": null},
+  "queue": [],
+  "chat_model": {"label": "Qwen3.8 27B (4-bit)", "installed": true, "state": "off | loading | ready", "busy": false,
+                 "peak_gb": 18.0, "held_gb": 0.0},
+  "tools": [{"id": "image.klein", "label": "FLUX.3 Klein", "installed": true, "peak_gb": 14.0, "fit": "fits"}],
+  "profile": "full"
+}
+```
+
+- `memory` has the numbers of `GET /api/system` and `reserve_gb`, the memory a tool leaves for macOS.
+- `running` is the running job or `null`. `queue` has the queued jobs in the order they run. Each job has the keys
+  above, with the values of `GET /api/jobs`.
+- `held_gb` is the chat model's peak while it is loaded or loading, else 0.
+- `fit` uses the queue's rule (`models.fits`, `llm.fits_with`): `"fits"` (the tool fits next to the chat model, or
+  the model is off), `"unloads_chat_model"` (the job unloads the model before it starts) or `"too_big"` (its peak
+  plus `reserve_gb` is more than `mem_total_gb`).
 
 ## Models
 
@@ -633,9 +672,9 @@ The chat's agent state is in `chat.json` under `agent`:
 
 ```json
 {"tools": ["update_plan", "list_workstation_tools", "job_status", "search_library", "create_job", "list_jobs",
-           "wait_for_job", "cancel_job", "transcribe_audio", "list_files", "read_file", "search_files", "write_file",
-           "edit_file", "copy_to_workspace", "export_from_workspace", "media_info", "view_image", "web_search",
-           "fetch_url"],
+           "wait_for_job", "cancel_job", "transcribe_audio", "system_status", "list_files", "read_file",
+           "search_files", "write_file", "edit_file", "copy_to_workspace", "export_from_workspace", "media_info",
+           "view_image", "web_search", "fetch_url"],
  "folder": null, "grants": [], "tainted": false}
 ```
 
@@ -737,8 +776,8 @@ Rules of the loop (`app/chat.py`, `Turn`):
 5. The same call (name and arguments) a second time in one answer, after the first one returned `ok`, does not run:
    its tool message (`status: "repeat"`) says that the call already ran and its result is above. A third time ends
    the answer with a note. The rule does not apply to the tools whose result can change (`job_status`, `list_jobs`,
-   `wait_for_job`, `transcribe_audio`, `search_library`, `list_files`, `read_file`, `search_files`, `media_info`,
-   `view_image`, `fetch_url`). After a call that changes state ran (a tool that writes files, `run_python`,
+   `wait_for_job`, `transcribe_audio`, `system_status`, `search_library`, `list_files`, `read_file`, `search_files`,
+   `media_info`, `view_image`, `fetch_url`). After a call that changes state ran (a tool that writes files, `run_python`,
    `run_shell`, `copy_to_workspace`, `create_job`, `cancel_job`, `transcribe_audio`), the rule forgets the earlier
    calls; that call itself still counts.
 6. An approval waits at most 10 minutes (less when the answer's time runs out). No answer counts as a denial.

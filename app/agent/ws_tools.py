@@ -9,10 +9,15 @@ only after the answer (it waits for the turn's memory lease), so the port does n
 A file field of a job takes file references (REF_HELP): a Library output, a file in the chat's work folder, or a file
 in the granted folder. The rules of the file tools apply (no hidden or secret files, real-path checks, O_NOFOLLOW).
 The file is opened here and the port copies it into the job folder as an upload is copied, with the upload's checks.
+
+system_status (R0) shows the Mac's memory, the running job, the queue, the chat model and which media tools fit now.
+The MCP server (app/mcp_server.py) offers the same tools with its own Host: local file paths, other words, longer waits.
 """
 
 import os
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +42,31 @@ REF_HELP = (
     '"work:<path>" (a file in this chat\'s work folder, where run_python writes) or "folder:<path>" (a file in the '
     "folder the user granted)"
 )
+
+
+@dataclass(frozen=True)
+class Host:
+    """What differs between the callers of these tools: the in-app agent (CHAT, the defaults) and an MCP client
+    (app/mcp_server.py). The tools, their checks, the port calls and the other texts are the same for both."""
+
+    ref_help: str = REF_HELP  # the file references that a file field takes
+    # opens one file reference: an open descriptor (the caller closes it) and its InputFile; None = REF_HELP's forms
+    open_ref: Callable[[str, Context], tuple[int, InputFile]] | None = None
+    # how a text names one output of a finished job (job id, file name), so that a file field can take it
+    ref: Callable[[str, str], str] = lambda job, name: (
+        f"file reference library:{job}/{name}"
+    )
+    by: str = "by this chat"  # who queued the jobs whose "chat" is Context.chat_id
+    mine: str = "this chat queued"  # the same, for cancel_job's description
+    seen: str = "the job list and in this chat"  # where the user sees a queued job
+    now: str = "in this answer"  # when a result is needed
+    approval: str = " The user approves it first."  # what comes before create_job runs
+    stop: str = " It returns early when the user stops the answer."
+    wait: int = 120  # seconds of a wait when `seconds` is not given
+    max_wait: int = MAX_WAIT
+
+
+CHAT = Host()
 
 
 def _accepts(f: dict[str, Any]) -> str:
@@ -67,7 +97,7 @@ def _field_line(f: dict[str, Any], label: bool = False) -> str:
     return f"{f['name']}{shown} ({', '.join(bits)})"
 
 
-def format_tools(items: list[dict[str, Any]]) -> str:
+def format_tools(items: list[dict[str, Any]], ref_help: str = REF_HELP) -> str:
     lines = []
     for t in items:
         state = "installed" if t.get("installed", True) else "NOT installed"
@@ -78,15 +108,17 @@ def format_tools(items: list[dict[str, Any]]) -> str:
             lines.append("  fields: " + "; ".join(_field_line(f) for f in t["fields"]))
     if any(f["type"] in UPLOADS for t in items for f in t.get("fields", [])):
         lines.append(
-            f"A file field takes a file reference, a files field a list of them: {REF_HELP}."
+            f"A file field takes a file reference, a files field a list of them: {ref_help}."
         )
     return "\n".join(lines) or "No media tools."
 
 
-def format_job(job: dict[str, Any], chat_id: str | None = None) -> str:
+def format_job(
+    job: dict[str, Any], chat_id: str | None = None, host: Host = CHAT
+) -> str:
     lines = [f"Job {job.get('id')}: {job.get('tool_label') or job.get('tool')}"]
     if chat_id is not None and job.get("chat") == chat_id:
-        lines.append("queued by this chat")
+        lines.append(f"queued {host.by}")
     lines.append(f"status: {job.get('status')}")
     if job.get("position"):
         lines.append(f"place in the queue: {job['position']}")
@@ -106,13 +138,13 @@ def format_job(job: dict[str, Any], chat_id: str | None = None) -> str:
         lines.append(f"error: {job['error']}")
     for o in job.get("outputs") or []:
         lines.append(
-            f"output: {o.get('name')} ({o.get('kind')}), file reference "
-            f"library:{job.get('id')}/{o.get('name')}"
+            f"output: {o.get('name')} ({o.get('kind')}), "
+            + host.ref(str(job.get("id")), str(o.get("name")))
         )
     return "\n".join(lines)
 
 
-def job_line(job: dict[str, Any], chat_id: str) -> str:
+def job_line(job: dict[str, Any], chat_id: str, host: Host = CHAT) -> str:
     """One short line of list_jobs."""
     bits = [str(job.get("status"))]
     if job.get("position"):
@@ -127,7 +159,7 @@ def job_line(job: dict[str, Any], chat_id: str) -> str:
     if job.get("error"):
         error = " ".join(str(job["error"]).split())
         bits.append("error: " + (error if len(error) <= 120 else error[:120] + "..."))
-    mine = ", queued by this chat" if job.get("chat") == chat_id else ""
+    mine = f", queued {host.by}" if job.get("chat") == chat_id else ""
     label = job.get("tool_label") or job.get("tool")
     return f"- {job.get('id')} {label} ({job.get('created')}{mine}): {'; '.join(bits)}"
 
@@ -173,14 +205,77 @@ def _copier(fd: int, size: int):
     return write
 
 
-def _refs(name: str, value: Any) -> list[str]:
+def _refs(name: str, value: Any, ref_help: str = REF_HELP) -> list[str]:
     refs = [value] if isinstance(value, str) else value
     if not isinstance(refs, list) or not all(isinstance(r, str) for r in refs):
-        raise ToolError(f"{name}: give a file reference: {REF_HELP}.")
+        raise ToolError(f"{name}: give a file reference: {ref_help}.")
     return refs
 
 
-def build(port: WorkstationPort) -> list[Tool]:
+def _gb(value: Any) -> str:
+    return f"{float(value or 0):g} GB"
+
+
+FITS = {
+    "fits": "fits now",
+    "unloads_chat_model": (
+        "fits after the chat model unloads (the job waits until no chat answer runs, then unloads it)"
+    ),
+    "too_big": "needs more than this Mac's memory with the reserve, so it may swap or fail",
+}
+
+
+def format_status(
+    status: dict[str, Any], chat_id: str | None = None, host: Host = CHAT
+) -> str:
+    """system_status's text, from GET /api/status (app/server.py Workstation.system_status)."""
+    mem = status.get("memory") or {}
+    memory = (
+        f"Memory: {_gb(mem.get('mem_total_gb'))} in all, {_gb(mem.get('mem_free_gb'))} free, "
+        f"{_gb(mem.get('swap_used_gb'))} of swap in use. A media tool fits when its peak memory plus "
+        f"{_gb(mem.get('reserve_gb'))} for macOS is at most the memory in all."
+    )
+    lines = [memory]
+    model = status.get("chat_model") or {}
+    if not model.get("installed", True):
+        lines.append(f"Chat model: {model.get('label')}, not installed.")
+    elif model.get("state") == "off":
+        lines.append(
+            f"Chat model: {model.get('label')}, not loaded (it holds no memory)."
+        )
+    else:
+        busy = ", answering" if model.get("busy") else ""
+        lines.append(
+            f"Chat model: {model.get('label')}, {model.get('state')}{busy}, holds about "
+            f"{_gb(model.get('held_gb'))}."
+        )
+    running = status.get("running")
+    lines.append("Running job:" if running else "Running job: none.")
+    if running:
+        lines.append(job_line(running, str(chat_id), host))
+    queue = status.get("queue") or []
+    lines.append(
+        f"Queue ({len(queue)} jobs, in the order they run):"
+        if queue
+        else "Queue: empty."
+    )
+    for job in queue:
+        line = job_line(job, str(chat_id), host)
+        lines.append(f"{line} ({job['waiting']})" if job.get("waiting") else line)
+    lines.append("Media tools (peak memory: fit now):")
+    for t in status.get("tools") or []:
+        fit = FITS.get(str(t.get("fit")), str(t.get("fit")))
+        if not t.get("installed", True):
+            fit = "NOT installed"
+        elif not t.get("peak_gb"):
+            fit = "loads no model, fits now"
+        lines.append(
+            f"- {t.get('id')} ({t.get('label')}): {_gb(t.get('peak_gb'))}: {fit}."
+        )
+    return "\n".join(lines)
+
+
+def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
     def open_ref(ref: str, ctx: Context) -> tuple[int, InputFile]:
         """An open descriptor of the referenced file and its InputFile. The caller closes the descriptor."""
         source, sep, rest = ref.partition(":")
@@ -224,10 +319,11 @@ def build(port: WorkstationPort) -> list[Tool]:
         fds: list[int] = []
         try:
             inputs: dict[str, list[InputFile]] = {}
+            opener = host.open_ref or open_ref
             for name, given in refs.items():
                 inputs[name] = []
                 for ref in given:
-                    fd, inp = open_ref(ref, ctx)
+                    fd, inp = opener(ref, ctx)
                     fds.append(fd)
                     inputs[name].append(inp)
             try:
@@ -263,32 +359,35 @@ def build(port: WorkstationPort) -> list[Tool]:
             return "[This answer has no time left to wait. Tell the user that the job goes on in the background.]"
         return (
             f"[Still {job.get('status')} after {round(waited)} s. It goes on in the background; tell the user, or "
-            "wait again only when they need the result in this answer.]"
+            f"wait again only when they need the result {host.now}.]"
         )
 
     def list_tools(args: dict[str, Any], ctx: Context) -> str:
-        return format_tools(port.list_tools())
+        return format_tools(port.list_tools(), host.ref_help)
 
     def job_status(args: dict[str, Any], ctx: Context) -> str:
         job = port.job_status(args["job_id"])
         if job is None:
             raise ToolError(f"No job with the id {args['job_id']}.")
-        return format_job(job, ctx.chat_id)
+        return format_job(job, ctx.chat_id, host)
 
     def list_jobs(args: dict[str, Any], ctx: Context) -> str:
         found = port.list_jobs(args["limit"])
         if not found:
             return "No jobs."
-        return "\n".join(job_line(j, ctx.chat_id) for j in found)
+        return "\n".join(job_line(j, ctx.chat_id, host) for j in found)
+
+    def system_status(args: dict[str, Any], ctx: Context) -> str:
+        return format_status(port.system_status(), ctx.chat_id, host)
 
     def wait_for_job(args: dict[str, Any], ctx: Context) -> str:
         job = port.job_status(args["job_id"])
         if job is None:
             raise ToolError(f"No job with the id {args['job_id']}.")
         if job.get("status") in ENDED:
-            return format_job(job, ctx.chat_id)
+            return format_job(job, ctx.chat_id, host)
         job, waited = wait(args["job_id"], args["seconds"], ctx)
-        text = format_job(job, ctx.chat_id)
+        text = format_job(job, ctx.chat_id, host)
         return text if job.get("status") in ENDED else f"{text}\n{still(job, waited)}"
 
     def cancel_job(args: dict[str, Any], ctx: Context) -> str:
@@ -298,7 +397,7 @@ def build(port: WorkstationPort) -> list[Tool]:
         label = job.get("tool_label") or job.get("tool")
         if job.get("chat") != ctx.chat_id:
             raise ToolError(
-                f"Job {job['id']} ({label}) was not queued by this chat, so you cannot cancel it. The user can "
+                f"Job {job['id']} ({label}) was not queued {host.by}, so you cannot cancel it. The user can "
                 "cancel it in the Jobs view."
             )
         if job.get("status") not in ("queued", "running"):
@@ -319,8 +418,8 @@ def build(port: WorkstationPort) -> list[Tool]:
             text = text if len(text) <= 200 else text[:200] + "..."
             lines.append(
                 f"- {i.get('created')} {i.get('tool_label') or i.get('tool')}: "
-                f"{i.get('name')} ({i.get('kind')}), job {i.get('job')}, file reference "
-                f"library:{i.get('job')}/{i.get('name')}"
+                f"{i.get('name')} ({i.get('kind')}), job {i.get('job')}, "
+                + host.ref(str(i.get("job")), str(i.get("name")))
                 + (f"\n  text: {text}" if text else "")
             )
         return "\n".join(lines)
@@ -344,7 +443,7 @@ def build(port: WorkstationPort) -> list[Tool]:
                     f"{tool['id']} has no field {name!r}. Fields: {', '.join(fields)}."
                 )
             if f["type"] in UPLOADS:
-                refs[name] = _refs(name, value)
+                refs[name] = _refs(name, value, host.ref_help)
                 continue
             if isinstance(value, list):
                 raise ToolError(f"{name}: give one value, not a list.")
@@ -354,16 +453,15 @@ def build(port: WorkstationPort) -> list[Tool]:
         for name, f in fields.items():
             if f["type"] in UPLOADS and f.get("required") and not refs.get(name):
                 raise ToolError(
-                    f"{tool['label']} needs a file in its field {name!r} ({_accepts(f)}): {REF_HELP}."
+                    f"{tool['label']} needs a file in its field {name!r} ({_accepts(f)}): {host.ref_help}."
                 )
         job_id = queue(tool["id"], values, refs, ctx)
         given = "; ".join(f"{n} = {', '.join(r)}" for n, r in refs.items() if r)
         return Output(
             f"Queued job {job_id} ({tool['label']})"
             + (f" with the input files {given}" if given else "")
-            + ". It runs in the background; the user sees it in the job list and in this chat. Do not wait for it "
-            "unless the user needs its result in this answer: then call wait_for_job. Use job_status to check it "
-            "later.",
+            + f". It runs in the background; the user sees it in {host.seen}. Do not wait for it unless the user "
+            f"needs its result {host.now}: then call wait_for_job. Use job_status to check it later.",
             job=job_id,
         )
 
@@ -451,8 +549,8 @@ def build(port: WorkstationPort) -> list[Tool]:
     seconds_arg = {
         "type": "integer",
         "minimum": 1,
-        "maximum": MAX_WAIT,
-        "default": 120,
+        "maximum": host.max_wait,
+        "default": host.wait,
     }
     return [
         Tool(
@@ -515,7 +613,7 @@ def build(port: WorkstationPort) -> list[Tool]:
             description=(
                 "Queue a media job with one of the app's tools (see list_workstation_tools for ids and fields). "
                 "A file field takes a file reference, a files field a list of them: "
-                f"{REF_HELP}. The user approves it first. It returns the job id at once."
+                f"{host.ref_help}.{host.approval} It returns the job id at once."
             ),
             parameters={
                 "type": "object",
@@ -561,9 +659,8 @@ def build(port: WorkstationPort) -> list[Tool]:
         Tool(
             name="wait_for_job",
             description=(
-                f"Wait until a media job ends (at most `seconds`, up to {MAX_WAIT}), then show it as job_status does. "
-                "Use it only when the user needs the job's result in this answer. It returns early when the user "
-                "stops the answer."
+                f"Wait until a media job ends (at most `seconds`, up to {host.max_wait}), then show it as job_status "
+                f"does. Use it only when the user needs the job's result {host.now}.{host.stop}"
             ),
             parameters={
                 "type": "object",
@@ -577,7 +674,7 @@ def build(port: WorkstationPort) -> list[Tool]:
         ),
         Tool(
             name="cancel_job",
-            description="Cancel a queued or running media job that this chat queued.",
+            description=f"Cancel a queued or running media job that {host.mine}.",
             parameters={
                 "type": "object",
                 "properties": {"job_id": job_id_arg},
@@ -595,7 +692,7 @@ def build(port: WorkstationPort) -> list[Tool]:
             name="transcribe_audio",
             description=(
                 "Turn speech into text (Qwen3-ASR on this Mac): the words of an audio or video file with a time "
-                f"for about every 30 s, and the language. audio is a file reference: {REF_HELP}. It queues a job "
+                f"for about every 30 s, and the language. audio is a file reference: {host.ref_help}. It queues a job "
                 "and waits for it (at most `seconds`). When the job is still running, call it again later with "
                 "job_id to read the text."
             ),
@@ -615,5 +712,21 @@ def build(port: WorkstationPort) -> list[Tool]:
             side_effects=True,
             untrusted_output=True,  # the transcript is text from outside the app
             explain=explain_transcribe,
+        ),
+        Tool(
+            name="system_status",
+            description=(
+                "Show this Mac's memory, the running media job and its progress, the queue, whether the chat model "
+                "is loaded and how much it holds, and for each media tool whether it fits in memory now. Read it "
+                "before a large job, or when a job waits."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            risk=Risk.R0,
+            run=system_status,
+            repeatable=True,
         ),
     ]

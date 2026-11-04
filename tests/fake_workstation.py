@@ -200,6 +200,36 @@ class FakeWorkstation:
         ]
         return hits[:limit]
 
+    def system_status(self) -> dict[str, Any]:
+        running = self.jobs["20261103-120000-abcd"]
+        return {
+            "memory": {
+                "mem_total_gb": 48.0,
+                "mem_free_gb": 21.5,
+                "swap_used_gb": 0.0,
+                "reserve_gb": 8.0,
+            },
+            "running": running if running["status"] == "running" else None,
+            "queue": [j for j in self.jobs.values() if j["status"] == "queued"],
+            "chat_model": {
+                "label": "Qwen3.8 27B",
+                "installed": True,
+                "state": "ready",
+                "busy": True,
+                "peak_gb": 18.0,
+                "held_gb": 18.0,
+            },
+            "tools": [
+                {"id": "image.klein", "label": "FLUX.3 Klein", "installed": True}
+                | {"peak_gb": 14.0, "fit": "fits"},
+                {"id": "video.i2v", "label": "Image to video", "installed": True}
+                | {"peak_gb": 30.0, "fit": "unloads_chat_model"},
+                {"id": "music.ace", "label": "ACE-Step", "installed": False}
+                | {"peak_gb": 22.0, "fit": "fits"},
+            ],
+            "profile": "full",
+        }
+
     def create_job(
         self,
         tool: str,

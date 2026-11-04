@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+MCP = "mcp"  # the "chat" of a job queued by an MCP client (app/mcp_server.py); a chat id is a time stamp, never this
+
 
 @dataclass(frozen=True)
 class InputFile:
@@ -72,4 +74,9 @@ class WorkstationPort(Protocol):
         """Queue a job with these form values (strings, as the form sends them) and input files (by file field), and
         return its id. The files are copied into the job folder as an upload is; `chat` is stored with the job.
         Raises ValueError with the reason when the tool, a value or a file is refused."""
+        ...
+
+    def system_status(self) -> dict[str, Any]:
+        """The Mac's memory, the running job, the queue, the chat model and whether each media tool fits now, as
+        GET /api/status shows them."""
         ...

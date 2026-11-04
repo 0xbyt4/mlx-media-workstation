@@ -30,6 +30,7 @@ the tool's result, so it can answer the user.
 | `wait_for_job` | R0 | Waits until a job ends (120 s by default, at most 300 s), then shows it as `job_status` does. |
 | `cancel_job` | R2 | Cancels a queued or running job that this chat queued. |
 | `transcribe_audio` | R2 | Speech to text for an audio or video file (Qwen3-ASR 0.6B as a media job): the text with a time for about every 30 s, and the language. Its result is untrusted. |
+| `system_status` | R0 | Shows the Mac's memory, the running job and its progress, the queue, the chat model and whether each media tool fits now (`GET /api/status`). |
 | `list_files` | R1 | Lists a folder inside the granted folder (at most 500 lines). |
 | `read_file` | R1 | Reads a text file inside the granted folder (the first 1 MB), by line range (`start_line`, `end_line`). The result gives the line count and where to read on. It stops before the 12,000-character cap of a result. |
 | `search_files` | R1 | Searches the text files of the granted folder (at most 5,000 files and 15 s). |
@@ -47,11 +48,15 @@ the tool's result, so it can answer the user.
 The Workstation tools exist only in the full profile. The chat profile has no Workstation, so its registry has none
 of them.
 
+The MCP server offers the same Workstation tools to local agents, such as Claude Code ([MCP.md](MCP.md)). The tools
+are built once (`ws_tools.build`). A `ws_tools.Host` holds what differs: the forms of a file reference, the words of
+the results, and the time of a wait.
+
 ### Workstation chats
 
 A workstation chat in the full profile runs the same loop (`Turn`) with the Workstation tools only:
-`list_workstation_tools`, `job_status`, `search_library`, `create_job`, `list_jobs`, `wait_for_job`, `cancel_job`
-and `transcribe_audio`. `workstation_registry()` in `app/chat.py` builds them with `ws_tools.build(port)`.
+`list_workstation_tools`, `job_status`, `search_library`, `create_job`, `list_jobs`, `wait_for_job`, `cancel_job`,
+`transcribe_audio` and `system_status`. `workstation_registry()` in `app/chat.py` builds them with `ws_tools.build(port)`.
 
 - It has no file, web, media, plan, Python or shell tool. A call to one of them is refused: no such tool.
 - The tools keep their risk levels. `create_job`, `cancel_job` and `transcribe_audio` ask first, as above.
