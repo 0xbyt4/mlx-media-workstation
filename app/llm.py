@@ -642,8 +642,9 @@ def release() -> None:
 
 def reload_after_jobs() -> bool:
     """The queue is empty: load the model again in the background when a media job unloaded it and its last request
-    is within the idle time (it would still be loaded without the job). The next chat answer then starts at once
-    instead of after the load. A job queued during the load unloads it again. True when a load started."""
+    is within the idle time (it would still be loaded without the job). The next chat answer then does not wait for
+    the load (it still reads its chat again: the prompt cache went with the process). A job queued during the load
+    unloads it again. True when a load started."""
     global reload_after_job
     limit = idle_stop()
     with lock:
