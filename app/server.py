@@ -465,6 +465,10 @@ def run_next(job: dict[str, Any]) -> None:
         llm.release()
     if go:
         ended(job)
+    with lock:
+        idle = not queued_jobs()
+    if idle:
+        llm.reload_after_jobs()
 
 
 def shutdown() -> None:

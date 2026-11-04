@@ -455,3 +455,41 @@ def test_a_chat_turn_keeps_the_token_ids_the_model_saw():
     )  # nothing new to read
     assert llm_worker.extend_ids("cab", None, encode, decode) is None
     assert llm_worker.extend_ids("cab", [], encode, decode) is None
+
+
+# ---------- the reload after media jobs ----------
+
+
+def wait_for(cond, timeout=5.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_the_model_loads_again_when_the_queue_empties_after_a_job_unloaded_it():
+    assert kinds("hi")[-1] == "done"  # the model was in use
+    assert in_thread(lambda: llm.claim(35.0)).wait(5)
+    assert llm.status()["state"] == "off"
+    assert llm.reload_after_jobs() is False  # the job still holds the memory
+    llm.release()
+    assert llm.reload_after_jobs() is True
+    assert wait_for(lambda: llm.status()["state"] == "ready")
+    assert llm.reload_after_jobs() is False  # once only
+
+
+def test_no_reload_when_the_model_was_off_or_idle_long(monkeypatch):
+    monkeypatch.setattr(
+        config, "APP", config.App(**{**config.APP_DEFAULTS, "llm_idle_minutes": 10})
+    )
+    assert in_thread(lambda: llm.claim(35.0)).wait(5)  # no model was loaded
+    llm.release()
+    assert llm.reload_after_jobs() is False
+    assert kinds("hi")[-1] == "done"
+    assert in_thread(lambda: llm.claim(35.0)).wait(5)
+    llm.release()
+    monkeypatch.setattr(llm, "last_used", time.time() - 11 * 60)  # past the idle time
+    assert llm.reload_after_jobs() is False
+    assert llm.status()["state"] == "off"

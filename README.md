@@ -306,6 +306,8 @@ The local LLM shares the memory with the jobs:
   unloads and the job starts.
 - A prompt help or chat request that you send while such a job runs waits. It runs when the job ends, before the next
   job starts.
+- When the queue is empty again, an LLM that such a job unloaded loads again in the background, if its last request
+  was within the idle time.
 
 ## Install the models
 

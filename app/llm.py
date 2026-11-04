@@ -167,6 +167,7 @@ cancels: dict[
 waiting: set[str] = set()  # the requests waiting for memory
 closed = False  # set when the app closes: no new worker starts
 leases: set["Session"] = set()  # the sessions that hold the memory
+reload_after_job = False  # a media job unloaded the model while it was in use: load it again when the queue empties
 local = threading.local()  # .session: the session of the thread's with-block
 
 
@@ -558,9 +559,10 @@ def stop(reason: str = "The model was unloaded.") -> None:
 def close(reason: str = CLOSED) -> None:
     """The app closes: cancel every request, also the waiting ones, end the leases, stop the worker and start none
     again."""
-    global closed
+    global closed, reload_after_job
     with room:
         closed = True
+        reload_after_job = False
         for flag in cancels.values():
             flag.set()
         for s in leases:
@@ -589,7 +591,7 @@ def claim(peak: float, abort: Callable[[], bool] = lambda: False) -> bool:
     the model unloads if the job does not fit next to it, once the running requests and sessions end. New requests
     wait until release (a held session's requests do not). Returns False when abort (the job was cancelled, or the
     app closes) ended the wait; the memory is then free again."""
-    global job_peak
+    global job_peak, reload_after_job
     end = time.time() + JOB_WAIT
     with room:
         if wait_room(lambda: not waiting, abort, end) is None:
@@ -605,6 +607,8 @@ def claim(peak: float, abort: Callable[[], bool] = lambda: False) -> bool:
         for s in leases:  # after JOB_WAIT: a session's next request waits for the job
             s.held = False
         leases.clear()
+        if worker is not None:
+            reload_after_job = True
     stop(
         "Unloaded to free the memory for a media job."
         if drained
@@ -619,6 +623,37 @@ def release() -> None:
     with room:
         job_peak = 0.0
         room.notify_all()
+
+
+def reload_after_jobs() -> bool:
+    """The queue is empty: load the model again in the background when a media job unloaded it and its last request
+    is within the idle time (it would still be loaded without the job). The next chat answer then starts at once
+    instead of after the load. A job queued during the load unloads it again. True when a load started."""
+    global reload_after_job
+    limit = idle_stop()
+    with lock:
+        go = (
+            reload_after_job
+            and not closed
+            and worker is None
+            and job_peak == 0.0
+            and (limit is None or time.time() - last_used < limit)
+        )
+        if (
+            job_peak == 0.0
+        ):  # decided: a job that still holds the memory leaves it for later
+            reload_after_job = False
+    if go:
+        threading.Thread(target=preload, daemon=True).start()
+    return go
+
+
+def preload() -> None:
+    """Load the model without a request; a failure shows on the next request."""
+    try:
+        start()
+    except LLMError:
+        pass
 
 
 def stop_if_idle() -> bool:

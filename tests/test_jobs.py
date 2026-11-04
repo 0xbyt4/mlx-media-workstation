@@ -573,3 +573,23 @@ def test_group_alive(
 
     monkeypatch.setattr(server.os, "killpg", killpg)
     assert server.group_alive(os.getpid()) is alive
+
+
+def test_the_chat_model_reload_waits_for_an_empty_queue(
+    make_job: Job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reloads: list[str] = []
+
+    def fake_run(job: dict[str, Any]) -> None:
+        job["status"] = "done"
+
+    monkeypatch.setattr(llm, "claim", lambda peak, abort=None: True)
+    monkeypatch.setattr(llm, "reload_after_jobs", lambda: reloads.append("reload"))
+    monkeypatch.setattr(server, "run_job", fake_run)
+    monkeypatch.setattr(server, "ended", lambda job: None)
+    make_job("a", "queued", order=1)
+    make_job("b", "queued", order=2)
+    server.run_next(server.jobs["a"])
+    assert reloads == []  # "b" still waits
+    server.run_next(server.jobs["b"])
+    assert reloads == ["reload"]
