@@ -166,6 +166,35 @@ def test_live_tail_reads_only_the_end(
     assert server.live_tail(log) == "ab\ncd"
 
 
+TIME_REPORT = """       18.07 real         0.00 user         0.01 sys
+             2572288  maximum resident set size
+                   0  average shared memory size
+                2609  page reclaims
+                  10  page faults
+            37225838  instructions retired
+             1671552  peak memory footprint
+"""
+
+
+def test_tails_leave_out_the_time_reports(state: Path) -> None:
+    """/usr/bin/time -l adds about 18 lines after each command; they must not push the model's error out of the
+    25 lines a failed job shows. peak_gb still reads them from the whole log."""
+    model = [f"Traceback line {i}" for i in range(24)] + ["ValueError: bad shape"]
+    log = (
+        "$ step one\nloaded\n"
+        + TIME_REPORT
+        + "$ step two\n"
+        + "\n".join(model)
+        + "\n"
+        + TIME_REPORT
+    )
+    assert server.tail(log).splitlines() == model
+    assert server.peak_gb(log) == 0.0  # 1671552 bytes
+    path = state / "job.log"
+    path.write_text("$ step one\nloaded\n" + TIME_REPORT + "$ step two\nworking 3/10\n")
+    assert server.live_tail(path) == "$ step one\nloaded\n$ step two\nworking 3/10"
+
+
 def test_view_of_queued_and_finished_jobs(state: Path, make_job: Job) -> None:
     make_job("late", "queued", created="2026-11-02T10:00:05")
     make_job("early", "queued", created="2026-11-02T10:00:01")
@@ -223,7 +252,11 @@ def test_run_job_success(run: Callable[..., dict[str, Any]], state: Path) -> Non
     log = (state / "j1" / "job.log").read_text()
     assert log.startswith(f"$ {sys.executable} -c import os")
     assert "step one" in log
-    assert job["log_tail"].endswith("peak memory footprint")  # /usr/bin/time -l
+    assert "peak memory footprint" in log  # /usr/bin/time -l, which peak_gb reads
+    # the tail leaves the time reports out, so the model's own lines fill it
+    assert job["log_tail"].splitlines()[1] == "step one"
+    assert job["log_tail"].splitlines()[-1].startswith(f"$ {sys.executable} -c from")
+    assert "real" not in job["log_tail"] and "footprint" not in job["log_tail"]
     assert saved(state, "j1")["status"] == "done"
     assert server.procs == {}
 
@@ -237,10 +270,7 @@ def test_run_job_stops_at_a_failed_command(
         "from pathlib import Path; Path('image.png').write_bytes(b'png')",
     )
     assert job["status"] == "failed"
-    assert (
-        job["error"]
-        == "RuntimeError: The model process exited with code 3. See the log."
-    )
+    assert job["error"] == "The model process exited with code 3. See the log."
     assert not (state / "j1" / "image.png").exists()
     assert saved(state, "j1")["status"] == "failed"
 
@@ -249,7 +279,7 @@ def test_run_job_stops_at_a_failed_command(
 def test_run_job_without_output(run: Callable[..., dict[str, Any]]) -> None:
     job = run("pass")
     assert job["status"] == "failed"
-    assert job["error"] == "RuntimeError: The model finished but wrote no output."
+    assert job["error"] == "The model finished but wrote no output."
 
 
 def test_run_job_bad_input(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:

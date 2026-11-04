@@ -68,6 +68,7 @@ export default {
 | `assist` | `GET /api/assist` | every 60 s, and when the model is installed or removed |
 | `models` | `GET /api/models` | every 60 s, every 2 s while a download runs |
 | `offline` | `true` or `false` | when the server stops or comes back |
+| `signedout` | `true` or `false` | when the server refuses the session cookie (HTTP 401, as after a restart) or takes it again |
 | `profile` | `'full'` or `'chat'` | with the first `GET /api/system` answer, and when the profile changes |
 | `job:finished` | the job | a job goes from queued or running to done, failed or cancelled |
 | `tick` | none | every second, for live clocks |

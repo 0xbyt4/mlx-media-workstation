@@ -71,6 +71,7 @@
 /* ---------- form ---------- */
 .v-create .tool-form {
   display: grid;
+  grid-template-columns: minmax(0, 1fr); /* a long one-line summary (Advanced settings) must not widen the form */
   gap: 20px;
   min-width: 0;
 }

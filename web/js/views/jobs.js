@@ -401,8 +401,10 @@ function updateWhen(run, queued) {
     const t = store.toolTime(j.tool);
     let text;
     if (j.waiting) text = j.waiting;  // first in line, held by prompt help or chat answers
-    else if (acc === null) text = run ? 'after ' + (run.tool_label || run.tool) : 'waiting';
-    else text = acc < 30 ? 'starts next' : 'starts in ' + fmtAbout(acc);
+    else if (acc === null) {
+      const before = i ? queued[i - 1] : run; // with no estimate, name the job it waits for
+      text = before ? 'after ' + (before.tool_label || before.tool) : 'waiting';
+    } else text = acc < 30 ? 'starts next' : 'starts in ' + fmtAbout(acc);
     if (t) text += ' · takes ' + fmtAbout(t.seconds);
     if (card) card.refs.when.textContent = text;
     acc = acc !== null && t ? acc + t.seconds : null;

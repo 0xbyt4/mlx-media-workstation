@@ -361,6 +361,8 @@ export function menu(anchor, items) {
 
 // ---------- media ----------
 
+const TEXT_PREVIEW = 20000; // characters of a text output that media() shows
+
 // A job output ({url, kind, name, note}) as real media. opts.onOpen(output) runs when an image is clicked;
 // opts.actions are nodes placed in the caption (Send to, Download). Returns null for a URL off this origin.
 export function media(output, opts = {}) {
@@ -376,6 +378,17 @@ export function media(output, opts = {}) {
     el = h('div', {class: 'media-audio'}, h('audio', {controls: true, preload: 'metadata', src: url, 'aria-label': name}));
   } else if (output.kind === 'video') {
     el = h('video', {controls: true, playsinline: true, preload: 'metadata', src: url, 'aria-label': name});
+  } else if (output.kind === 'text') {
+    // a transcript: the file itself is the result, so show its text (the start of a very long one)
+    el = h('pre', {class: 'media-pre', tabindex: '0', 'aria-label': name}, 'Loading the text...');
+    fetch(url, {cache: 'no-store'})
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((text) => {
+        el.textContent = text.length > TEXT_PREVIEW ? text.slice(0, TEXT_PREVIEW) + '\n...\nDownload the file for the rest.' : text;
+      })
+      .catch(() => {
+        el.textContent = 'The text could not load. Download the file to read it.';
+      });
   } else {
     el = h('div', {class: 'art r11'}, icon('file', 'ic-lg'));
   }

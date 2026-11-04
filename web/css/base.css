@@ -16,8 +16,8 @@
    Progress    .progress > .progress-fill (+ .progress.sm), .meter > span segments, .fitbar (> span, .limit)
    Files       .drop (drop zone, .drop.over while dragging), .files > .file-chip (.file-thumb, .file-info,
                .file-name, .file-meta, .ref-tag), .file-chip.bad
-   Media       .media (real <img>/<video>/<audio> from ui.media()), .media-img, .media-audio, .media-note,
-               .art (placeholder box) + .r916 | .r169 | .r11 | .r45
+   Media       .media (real <img>/<video>/<audio> from ui.media()), .media-img, .media-audio, .media-pre (text),
+               .media-note, .art (placeholder box) + .r916 | .r169 | .r11 | .r45
    Overlays    .toasts > .toast, dialog.dialog (ui.confirm()), .lightbox */
 
 *,
@@ -931,6 +931,19 @@ details.tech[open] > summary {
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--surface-2);
+}
+.media-pre {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .media-cap {
   display: flex;

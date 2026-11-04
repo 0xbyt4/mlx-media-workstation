@@ -195,10 +195,13 @@ function renderTheme(mode) {
   btn.title = 'Theme: ' + name;
 }
 
-function renderOffline(off) {
+function renderOffline() {
   const el = $('offline');
-  el.hidden = !off;
-  el.replaceChildren(...(off ? [icon('alert'), 'Server offline. Retrying...'] : []));
+  const off = store.get('offline');
+  const out = !off && store.get('signedOut');
+  el.hidden = !off && !out;
+  el.replaceChildren(...(off ? [icon('alert'), 'Server offline. Retrying...'] : out ? [icon('alert'),
+    'This page is signed out: the app started again. Open it with Workstation.app, or with the link that start.py prints.'] : []));
 }
 
 function renderTitle() {
@@ -281,10 +284,11 @@ function boot() {
   });
   store.on('system', renderMem);
   store.on('llm', renderMem);
-  store.on('offline', (off) => {
-    renderOffline(off);
+  store.on('offline', () => {
+    renderOffline();
     renderMem();
   });
+  store.on('signedout', renderOffline);
   store.on('job:finished', (job) => {
     if (chatOnly() || (active && active.id === 'jobs')) return;
     const label = job.tool_label || job.tool;
