@@ -166,8 +166,9 @@ The [user guide](docs/guide/README.md) explains each screen step by step:
 The sidebar has six sections. Cmd-1 to Cmd-6 open them.
 
 - **Create**: pick a tool, fill in its form and press Generate. The "On this Mac" card shows the tool's peak memory,
-  whether it fits this Mac, the expected time and the wait in the queue. "Improve" under a prompt field asks the
-  local LLM to rewrite your draft. Undo brings your own text back.
+  whether it fits this Mac, the time it takes and the wait in the queue. The time is the median of the tool's
+  finished jobs on this Mac ("No time yet" before the first one), so it does not change with the settings yet.
+  "Improve" under a prompt field asks the local LLM to rewrite your draft. Undo brings your own text back.
 - **Jobs**: the running job with its progress and time left, the queue, and the finished jobs with their results.
   Move a queued job up or down. "Use these settings" fills the form again. "Send to" puts an output into a file field
   of another tool.
@@ -267,8 +268,9 @@ Closing the app's own window, or Ctrl-C in `--browser` mode, cancels the queue a
 | Edit | Mix (video + music) | ffmpeg only: music under a video's own sound, ducked, -14 LUFS | a few seconds | none |
 
 The peak memory is the value that the app plans with: the highest peak of the tools that use the same model. Most
-jobs use less. We measured these ranges: MOSS-Image 20-22 GB, FLUX.3 Klein 12-14 GB, Fish Drama 3 30-39 GB, Text to
-Video 25-29 GB, Voice to Video about 28 GB and Extend Video 29-35 GB.
+jobs use less. We measured these ranges: MOSS-Image 20-22 GB, FLUX.3 Klein 11-14 GB, Fish Drama 3 26-39 GB (short
+lines use less), Text to Video 23-29 GB, Image to Video about 28 GB, Voice to Video about 28 GB and Extend Video
+29-35 GB.
 
 Prompt help ("Improve") and Chat use the local LLM: Qwen3.8 27B, 4-bit (`mlx-community/Qwen3.8-27B-4bit`, run with
 [mlx-vlm](https://github.com/Blaizzy/mlx-vlm)). It is a download of about 16 GB, and its peak is about 18 GB. It
@@ -567,7 +569,8 @@ uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev
 .venv/bin/python -m pytest -q
 ```
 
-`.github/workflows/ci.yml` has the same checks for GitHub Actions on macOS.
+`.github/workflows/ci.yml` has the same checks for GitHub Actions on macOS. To send a change, read
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 `scripts/make_icon.py` draws the app icons (`assets/AppIcon.icns` and `assets/icon.png`) from the colours in
 `web/css/tokens.css`.
@@ -581,6 +584,7 @@ uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev
 - Uploaded files get fixed names, and the server sends back only media files.
 - Agent mode runs model-written code only in a sandbox without network, and only after you approve each run.
   [docs/AGENT.md](docs/AGENT.md) lists what the sandbox does not protect.
+- To report a vulnerability in private, see [SECURITY.md](SECURITY.md).
 
 ## Licence
 
