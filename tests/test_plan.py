@@ -1043,6 +1043,26 @@ def test_mix_real_ffmpeg_ducks_only_under_speech_like_sound(
     )
 
 
+def test_silent_windows_count_as_pauses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ffmpeg can print "nan" or "-inf" for a window of exact zeros (TTS gaps): such a window is a pause."""
+    lines = [
+        f"[Parsed_ebur128_0 @ 0x1] t: {t / 10:.6f}   TARGET:-23 LUFS    M: {m} S: -22.0     I: -22.0 LUFS"
+        for t, m in enumerate(
+            ["-22.0", "-22.0", "-22.0", "-22.0", "nan", " -inf", "nan", "-22.0"] * 3, 1
+        )
+    ]
+    log = (
+        "\n".join(lines)
+        + "\n  Integrated loudness:\n    I:         -22.0 LUFS\n    LRA:         2.0 LU\n"
+    )
+    monkeypatch.setattr(tools, "ebur128", lambda path, *a: log)
+    lufs, lra, dips = tools.sound_levels(Path("voice.wav"))
+    assert (lufs, lra) == (-22.0, 2.0)
+    assert dips == pytest.approx(
+        9 / 21
+    )  # the windows from 0.4 s on: 9 of 21 are silent
+
+
 def test_transcribe_makes_16k_mono_speech_and_a_job_file(
     tmp_path: Path, media: FakeMedia
 ) -> None:

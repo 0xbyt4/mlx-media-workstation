@@ -778,11 +778,11 @@ def sound_levels(path: Path) -> tuple[float, float, float] | None:
     if lufs is None or lufs <= -70:
         return None
     lra = float(re.findall(r"LRA:\s+(-?[\d.]+) LU", err)[-1])
-    # the first windows (before 0.4 s) are not full yet
+    # the first windows (before 0.4 s) are not full yet; a window of digital silence reads "nan" or "-inf"
     windows = [
-        float(m)
+        float(m) if m != "nan" else float("-inf")
         for t, m in re.findall(
-            r"t:\s*([\d.]+)\s+TARGET:\S+ LUFS\s+M:\s*(-?[\d.]+)", err
+            r"t:\s*([\d.]+)\s+TARGET:\S+ LUFS\s+M:\s*(-?[\d.]+|nan|-inf)", err
         )
         if float(t) >= 0.39
     ]
