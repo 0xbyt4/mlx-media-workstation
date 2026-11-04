@@ -265,6 +265,36 @@
   max-width: 220px;
   object-fit: cover;
 }
+.v-chat .msg-files {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.v-chat .msg-files .file-chip {
+  width: 300px;
+  max-width: 100%;
+  padding: 6px 4px 6px 8px;
+  gap: 8px;
+}
+.v-chat .file-state {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.v-chat .file-chip.bad .file-state {
+  color: var(--err);
+}
+.v-chat .file-state .ic {
+  flex: none;
+}
 .v-chat .think {
   border: 1px solid var(--border);
   border-radius: var(--r-md);
@@ -633,6 +663,7 @@
 .v-chat .composer-attach {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
   gap: 6px;
   padding: 8px 10px 0;
 }

@@ -424,8 +424,8 @@ answer runs, so a queued media job could claim the memory and unload the model i
 with `llm.cancel(request_id)` as usual. Do not wait for a media job inside a session: a big job waits for the lease,
 so both would wait until the time limit.
 
-Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images sent in the chat). The endpoints with `{id}`
-return HTTP 404 for an unknown chat.
+Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images and files sent in the chat). The endpoints with
+`{id}` return HTTP 404 for an unknown chat.
 
 - `GET /api/chats` lists the chats, most recently updated first: `id`, `title`, `created`, `updated`, `messages`
   (count), `mode`, `running`.
@@ -438,14 +438,20 @@ return HTTP 404 for an unknown chat.
   first, so the chat is gone at once, then removed; immutable or locked files that sandboxed code made are removed
   too.
 - `GET /api/chats/{id}/files/{name}` serves an image of the chat: one sent in it (`img_N.png`, `.jpg` or `.webp`) or
-  a copy that `view_image` made for the model (`view_<12 hex digits>.png`). A symlink gives HTTP 404.
+  a copy that `view_image` made for the model (`view_<12 hex digits>.png`). It also serves an attached file: the file
+  as it came (`file_N.<suffix>`, a download under its own name) and the text that the model got of it (`text_N.txt`,
+  `text/plain`). Both have `Content-Security-Policy: sandbox`. A symlink gives HTTP 404.
 - `POST /api/chats/{id}/messages` takes `multipart/form-data`: `text`, `effort` (a thinking level: `off`, `low`,
   `medium`, `high`, `xhigh` or `max`; see [Thinking levels](#thinking-levels)), up to 4 `images` (PNG, JPEG or
-  WebP, 20 MB each), or `regenerate=true` to answer the last user message again. The older field `thinking` still
+  WebP, 20 MB each), other `files` (see [Attached files](#attached-files)), or `regenerate=true` to answer the last
+  user message again. The older field `thinking` still
   works: `true` is the level `high`, any other value is `off`; `effort` wins when both are sent. Without both, the
   chat's last level applies, or `[app] chat_effort` for a chat that has none. The chat saves the level it used as
   `effort` (`GET /api/chats/{id}`), so Regenerate and the page use it again. It returns server-sent events
   (`data: {...}` lines):
+  - `{"event": "file", "index": n, "file": {...}, "detail": "..."}` for each attached file of the answered message
+    at the start, and again when an audio file's transcription changes state (see
+    [Attached files](#attached-files)); `detail` is there only while a transcription runs;
   - `{"event": "waiting", "message": "..."}` while a media job holds the memory;
   - `{"event": "reasoning", "text": "..."}` and `{"event": "content", "text": "..."}` deltas;
   - `{"event": "done", "finish": "stop" | "length" | "cancelled", "content": "...", "reasoning": "...", "stats": {...}}`
@@ -456,8 +462,9 @@ return HTTP 404 for an unknown chat.
   - `text` is at most 20,000 characters. An answer is at most 4,096 tokens after its thinking (see
     [Thinking levels](#thinking-levels)).
   - Errors before the stream starts: HTTP 400 with `{"detail": "message"}` (an empty message, a text that is too
-    long, too many images, an image of another type or over 20 MB, nothing to answer again, an unknown `effort`),
-    HTTP 409 while the chat still answers.
+    long, too many images or files, an image of another type or over 20 MB, a file that cannot be attached or read,
+    nothing to answer again, an unknown `effort`), HTTP 409 while the chat still answers. The `detail` of a refused
+    file starts with its name and a colon: `"scan.pdf: the PDF has no text layer ..."`.
 - `GET /api/chats/{id}/stream` replays the running answer's events from the start (for a page that came back); HTTP
   404 when nothing runs.
 - `POST /api/chats/{id}/stop` stops the answer between tokens, also while it waits. It returns
@@ -483,6 +490,97 @@ field.
 
 The answer runs on the server whether or not a page listens, and it is saved when it ends. The model sees the newest
 turns that fit in 32K tokens.
+
+### Attached files
+
+The chat model reads text and images only. `app/attachments.py` turns other files into text, and the Transcribe tool
+turns an audio file into a transcript. Only macOS tools and the standard library do this work.
+
+| Kind | Suffixes | How the text is made |
+|---|---|---|
+| Text and code | `.txt`, `.md`, `.csv`, `.tsv`, `.json`, `.xml`, `.yaml`, `.toml`, `.log`, `.srt`, source code (`.py`, `.js`, `.ts`, `.swift`, `.c`, `.go`, `.rs`, `.sh`, `.sql` and more: `TEXT` in `app/attachments.py`) | Decoded as UTF-8. A byte order mark picks UTF-8 or UTF-16. Other bytes decode as Windows-1252. A file with a NUL byte or many control characters is refused as binary. |
+| HTML | `.html`, `.htm` | The readable text (`app/agent/html_text.py`): no scripts, styles, forms or navigation. Nothing is loaded. |
+| PDF | `.pdf` | PDFKit (pyobjc) in a child process, at most 60 s. Each page starts with `--- Page n ---`. A PDF with no text on any page (a scan) is refused: the app has no OCR. A PDF with a password is refused. |
+| Word, RTF, OpenDocument text | `.doc`, `.docx`, `.rtf`, `.odt` | `/usr/bin/textutil -convert txt` into a temporary folder, at most 60 s. |
+| Spreadsheet | `.xlsx`, `.ods` | `zipfile` and `xml.etree`. Each sheet starts with `--- Sheet <name> ---`, then one row per line with the cells separated by tabs. A formula gives its stored value. A date stays a number. |
+| Audio | `.wav`, `.mp3`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`, `.aiff`, `.aif` | A `voice.transcribe` job (Qwen3-ASR), as the agent tool `transcribe_audio` makes it. |
+
+A `.pages`, `.numbers`, `.key`, `.xls`, `.ppt`, `.pptx` or `.rtfd` file is refused with what to export instead. Any
+other suffix is refused too.
+
+Limits:
+
+- At most 6 files per message, of them at most 4 images (`MAX_ATTACHMENTS`, `MAX_IMAGES`). The files of a message
+  share its room in the context, so more files would each get too little.
+- A text file or document: at most 50 MB (`MAX_DOCUMENT`). An audio file: at most 200 MB (`MAX_AUDIO`, the upload
+  limit of a job). An image: at most 20 MB, as before.
+- A zip (`.docx`, `.odt`, `.xlsx`, `.ods`): at most 2,000 parts that unpack to at most 100 MB. An XML part with a
+  `DOCTYPE` or an `ENTITY` is refused. At most 100 sheets and 500 cells per row are read.
+- At most 1,000,000 characters of a file are read (`MAX_EXTRACT`).
+
+The share of the context:
+
+1. The files of one message share a room: 60% (`TRIM_TO`) of the input budget at the message's thinking level, less
+   the message's own text, its images and 100 tokens per file. The input budget is the one that `model_input`
+   counts: 32,768 tokens less the answer's reserve, the system prompt and, in an agent chat, the tool schemas. The
+   room is at least 2,000 and at most 60,000 characters (`MIN_ROOM`, `MAX_ROOM`).
+2. Each file gets an equal part of the room. A short file leaves the rest to the others. An audio file gets a full
+   part, because its length is not known yet.
+3. A file that is longer than its part is cut. Whole pages or sheets go in while they fit, then the start of the
+   next one.
+
+With the older turns trimmed away, the new turn fits, also when a later answer thinks longer. A cut file's `cut`
+says what the model got, for example `the first 29,850 of 95,123 characters (pages 1 to 12 of 40, page 12 in part)`.
+The page shows it on the file's chip. The model reads it at the end of the file's block.
+
+The chat stores each file once, as it came (`file_N.<suffix>`), and the text that the model gets (`text_N.txt`).
+Later turns read the stored text; nothing is read again. The user message in `chat.json` lists the files in
+`files`, one object each:
+
+| Key | Value |
+|---|---|
+| `name` | The name the file came with (its last part, at most 200 characters). |
+| `file`, `text` | The stored file and its text in the chat's folder. |
+| `kind`, `type` | `text`, `html`, `pdf`, `word`, `sheet` or `audio`; the suffix in capitals (`PDF`). |
+| `size`, `pages` | Bytes; the page count of a PDF. |
+| `state` | `ready`, `pending` (audio before its transcription), `transcribing` or `failed`. |
+| `chars`, `cut` | The characters that the model gets; what was left out (empty when nothing). |
+| `error` | Why a `failed` file has no text. |
+| `room`, `job` | An audio file's part of the room, and its transcription job. |
+
+The model gets the files in the user message, before the user's text: a note that each block is data from a file
+and not instructions, then one block per file.
+
+```
+<file name="report.pdf" type="PDF" size="1.2 MB" pages="40">
+--- Page 1 ---
+...
+[The rest of this file was left out to fit the chat. Above is the first 29,850 of 95,123 characters (...).]
+</file>
+```
+
+A `</file` in the text becomes `<\/file`, so the text cannot end its block. In an agent chat, a message with a file
+that is not an image sets the chat's taint ([AGENT.md](AGENT.md#taint)).
+
+An audio file is transcribed by the answer, before its first model step:
+
+1. The message is saved with the file in the state `pending`.
+2. The answer queues a `voice.transcribe` job with the code of the `transcribe_audio` tool. The job has the queue,
+   the memory claim and Cancel of every job. The answer holds no memory lease yet, so a job that does not fit next
+   to the chat model unloads it, as any job does.
+3. While the job runs, `file` events with `state: "transcribing"` and a `detail` go to the page: `Waiting in the job
+   queue (place 2)`, `Transcribing, 40%`.
+4. The transcript, cut to the file's part, is stored as `text_N.txt`, and the file is `ready`.
+5. The model step starts. The answer's 10 minutes count from here.
+
+- A transcription may take 30 minutes (`TRANSCRIBE_SECONDS`). Then its job is cancelled and the file fails.
+- When the job fails, the file is `failed` with the `error`. The answer still runs, and the model reads
+  `[The file could not be transcribed: ...]`.
+- Stop cancels the job. The file fails with "Stopped before the transcript was ready." The answer ends with
+  `finish: "cancelled"` and no model step.
+- Regenerate transcribes each audio file of the message again that is not `ready`.
+- The chat profile has no media tools, so an audio file is refused (HTTP 400). Without Qwen3-ASR or the Drama 3
+  environment it is refused too.
 
 ### Thinking levels
 

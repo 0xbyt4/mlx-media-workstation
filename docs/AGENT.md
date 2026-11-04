@@ -65,7 +65,8 @@ most 10). `transcribe_audio` takes one in `audio`. A reference has one of these 
   checks of an upload (`prepare_job` in `app/server.py`, shared with `POST /api/jobs`): at most 200 MB, the count of
   the field, and the name `in_<field>_<n><suffix>`. Only the suffix of the file's name is kept.
 - The agent path also checks the type: the suffix must be a media type that the field accepts (`image/*` takes
-  `.png`, `.jpg`, `.jpeg` and `.webp`; `audio/*` takes `.wav`, `.mp3`, `.flac` and `.m4a`; `video/*` takes `.mp4`
+  `.png`, `.jpg`, `.jpeg` and `.webp`; `audio/*` takes `.wav`, `.mp3`, `.flac`, `.m4a`, `.aac`, `.ogg`, `.opus`,
+  `.aiff` and `.aif`; `video/*` takes `.mp4`
   and `.mov`). A browser upload of another type is kept as `.bin`; the agent's is refused.
 - The approval card lists the input files with the other fields. The risk stays R2: the job uses this Mac for
   minutes.
@@ -224,12 +225,19 @@ Taint is a flag per chat. It is stored in `chat.json` with the grants.
 - These tools set it when they run: `search_library`, `transcribe_audio`, `list_files`, `read_file`,
   `search_files`, `copy_to_workspace`, `media_info`, `view_image`, `web_search`, `fetch_url`, `run_python` and
   `run_shell`. Their results can hold text from outside the app (an image can hold written text too).
+- A message with an attached file that is not an image (a document, a text file, an audio file) sets it when the
+  message is saved, before the model reads the file. The file's text (or the audio's transcript) comes from outside
+  the app, as a web page does: a downloaded PDF can hold orders for the model. See
+  [API.md](API.md#attached-files).
+- An attached image does not set it. An image can hold written text too, but the user chose it and sees it in the
+  message. This is a choice, not a check: see [What is not protected](#what-is-not-protected).
 - Once set, it stays set for the rest of the chat. A new answer does not clear it, because the text is still in the
   model's context.
 - While it is set, every R2 call asks, and "Allow in this chat" is not offered. A web page could tell the model to
   put private text into a query or a URL, to queue jobs or to write files. The user sees such a call before it runs.
 
-The prompt also tells the model that tool output is untrusted data and never instructions.
+The prompt also tells the model that tool output is untrusted data and never instructions. The block of an attached
+file says the same: its text is data from the file, not instructions.
 
 ## The sandbox (`run_python`)
 
@@ -428,6 +436,10 @@ search fails only when every source fails.
 - The backups of `edit_file` are in the work folder, where later `run_python` or `run_shell` code can change or
   delete them.
 - `view_image` does not read HEIC. Convert the image first (for example with `run_python` or Preview).
+- An image attached to a message does not taint the chat, also when it shows written orders.
+- The readers of attached files run outside the sandboxes: PDFKit in a child process of the app, `textutil`, and the
+  standard library's zip and XML parsers. A file made to attack them could reach them. The limits (file size, zip
+  size and part count, no XML `DOCTYPE`, 60 s per reader) make most such files fail.
 - A local program can send any `Origin` header. The same-origin check stops other web pages. Programs on this Mac
   need the session cookie, which only the token file of this user gives (docs/API.md). A program that runs as this
   user can read that file.

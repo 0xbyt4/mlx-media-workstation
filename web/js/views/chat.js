@@ -13,13 +13,38 @@ import {h, icon, toolIcon, grow, fmtBytes, fmtLeft, fmtTime, timeAgo, toast, inl
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 const MAX_IMAGES = 4; // per message (app/chat.py MAX_IMAGES)
 const MAX_IMAGE = 20 * 1024 * 1024;
+// Other files: the model gets their text, or an audio file's transcript (app/attachments.py KINDS and limits).
+const FILE_KINDS = {
+  text: ('.txt .text .md .markdown .rst .org .csv .tsv .json .jsonl .ndjson .xml .yaml .yml .toml .ini .cfg .conf .log '
+    + '.srt .vtt .tex .bib .py .js .mjs .cjs .ts .tsx .jsx .java .kt .kts .scala .swift .m .mm .c .h .cc .cpp .cxx .hpp '
+    + '.cs .go .rs .rb .php .pl .lua .r .jl .dart .sh .bash .zsh .fish .ps1 .bat .sql .css .scss .less .vue .svelte '
+    + '.gradle .cmake .diff .patch').split(' '),
+  html: ['.html', '.htm'],
+  pdf: ['.pdf'],
+  word: ['.doc', '.docx', '.rtf', '.odt'],
+  sheet: ['.xlsx', '.ods'],
+  audio: ['.wav', '.mp3', '.m4a', '.aac', '.flac', '.ogg', '.opus', '.aiff', '.aif'],
+};
+const MAX_FILES = 6; // per message, images included (MAX_ATTACHMENTS)
+const MAX_DOCUMENT = 50 * 1024 * 1024;
+const MAX_AUDIO = 200 * 1024 * 1024;
+// files people often try that cannot be read, with what to do instead (REFUSED)
+const REFUSED = {
+  '.pages': 'export it from Pages as PDF or Word first',
+  '.numbers': 'export it from Numbers as Excel (xlsx) first',
+  '.key': 'export it from Keynote as PDF first',
+  '.xls': 'save it as xlsx or CSV first',
+  '.ppt': 'save it as PDF first',
+  '.pptx': 'save it as PDF first',
+  '.rtfd': 'save it as RTF or Word first',
+};
 // A chat's mode picks its system prompt (app/chat.py MODES) and is fixed after the first message. Only workstation
 // answers get "Use in" cards.
 const MODE_INFO = {
   workstation: {
     label: 'Workstation', icon: 'wand', help: 'Knows the app\'s tools. A text written for a tool gets a "Use in" button.',
     title: 'Ask about a prompt, a shot list or lyrics',
-    text: 'The model runs on this Mac and nothing is uploaded. Attach an image to ask about it.',
+    text: 'The model runs on this Mac and nothing is uploaded. Attach images, documents or audio to ask about them.',
     examples: [
       {title: 'Write a video prompt', text: 'Write a Text to Video prompt for a 5 second shot: a lighthouse keeper climbs a spiral staircase during a storm. Add the sounds.'},
       {title: 'Lyrics for a song', text: 'Write a style caption and lyrics (two short verses and a chorus) for a calm synth-pop song about a city in the rain.'},
@@ -31,7 +56,7 @@ const MODE_INFO = {
     label: 'General', icon: 'chat', help: 'A plain assistant for any question. It does not know the app\'s tools.',
     chatHelp: 'A plain assistant for any question.', // the chat profile has no media tools to compare with
     title: 'Ask anything',
-    text: 'The model runs on this Mac and nothing is uploaded. It has no internet access. Attach an image to ask about it.',
+    text: 'The model runs on this Mac and nothing is uploaded. It has no internet access. Attach images, documents or audio to ask about them.',
     examples: [
       {title: 'Explain something', text: 'Explain how a heat pump works, in plain words and in under 150 words.'},
       {title: 'Make a text clearer', text: 'Make this text shorter and clearer. Keep the meaning and the tone:\n\n'},
@@ -238,7 +263,7 @@ function build() {
 
   els.notices = h('div', {class: 'chat-notices'});
   els.note = h('div', {class: 'composer-note', role: 'alert', hidden: true});
-  els.attach = h('div', {class: 'composer-attach', hidden: true});
+  els.attach = h('div', {class: 'composer-attach', role: 'list', 'aria-label': 'Files to send', hidden: true});
   els.input = h('textarea', {id: 'chat-input', rows: '1', 'aria-describedby': 'chat-hint'});
   els.input.value = memo.draft;
   els.input.addEventListener('input', () => {
@@ -248,14 +273,14 @@ function build() {
   els.input.addEventListener('keydown', onInputKey);
   els.input.addEventListener('paste', onPaste);
   els.file = h('input', {
-    type: 'file', accept: IMAGE_TYPES.join(','), multiple: true, hidden: true, tabindex: '-1',
+    type: 'file', accept: [...IMAGE_TYPES, ...Object.values(FILE_KINDS).flat()].join(','), multiple: true, hidden: true, tabindex: '-1',
     onchange: () => {
       addFiles([...els.file.files]);
       els.file.value = '';
     },
   });
   els.attachBtn = h('button', {type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => els.file.click()},
-    icon('clip', 'ic-sm'), 'Image');
+    icon('clip', 'ic-sm'), 'Attach');
   els.toolsBtn = h('button', {
     type: 'button', class: 'btn btn-ghost btn-sm tools-btn', 'aria-haspopup': 'dialog', 'aria-expanded': 'false',
     'aria-controls': 'chat-tools', title: 'The tools this chat may use, the folder it may read, and what it may do without asking.',
@@ -479,7 +504,7 @@ function askDelete(c) {
   }
   s.confirmFor = c.id;
   s.confirmEl = inlineConfirm({
-    text: 'Delete this chat and its images?',
+    text: 'Delete this chat and its images and files?',
     confirmLabel: 'Delete',
     onConfirm: () => deleteChat(c),
     onCancel: () => {
@@ -669,8 +694,12 @@ async function send() {
   if (s.live || s.sending || s.loading || s.modeBusy || modelFacts().blocked) return;
   const text = els.input.value.trim();
   const files = memo.attach.slice();
+  if (files.some((a) => a.error)) {
+    showNote('Remove the files that cannot be sent first.');
+    return;
+  }
   if (!text && !files.length) {
-    showNote('Write a message or attach an image first.');
+    showNote('Write a message or attach a file first.');
     els.input.focus();
     return;
   }
@@ -694,9 +723,16 @@ async function send() {
   const fd = new FormData();
   fd.append('text', text);
   fd.append('effort', effortLevel());
-  for (const a of files) fd.append('images', a.file, a.name);
-  const local = files.map((a) => ({url: a.url, name: a.name}));
-  s.chat.messages.push({role: 'user', content: text, images: [], local, time: new Date().toISOString()});
+  for (const a of files) fd.append(a.kind === 'image' ? 'images' : 'files', a.file, a.name);
+  const images = files.filter((a) => a.kind === 'image');
+  const others = files.filter((a) => a.kind !== 'image');
+  const local = images.map((a) => ({url: a.url, name: a.name}));
+  // the files as the page shows them until the server's events (app/chat.py prepare_files) replace them
+  const sent = others.map((a) => ({name: a.name, kind: a.kind, type: typeOf(a.name), size: a.size,
+    state: a.kind === 'audio' ? 'uploading' : 'reading'}));
+  const msg = {role: 'user', content: text, images: [], local, time: new Date().toISOString()};
+  if (sent.length) msg.files = sent;
+  s.chat.messages.push(msg);
   if (s.chat.title === 'New chat' && text) {
     s.chat.title = text.split('\n')[0].slice(0, 60);
     const row = s.chats.find((c) => c.id === id);
@@ -714,12 +750,17 @@ async function send() {
       grow(els.input);
     }
     if (!memo.attach.length) memo.attach = files;
+    const error = errText(res.error);
+    // a refusal names the file first ("notes.pdf: the PDF has no text layer"): that chip shows why
+    const bad = memo.attach.find((a) => error.startsWith(a.name + ': '));
+    if (bad) bad.error = error.slice(bad.name.length + 2);
     renderAttach();
-    showNote(errText(res.error));
+    renderComposer();
+    showNote(bad ? bad.name + ' cannot be sent. Remove it, then send again.' : error);
   }
   if (!res.aborted) await reloadChat(id); // resumes when the server said 409: this chat answers elsewhere
   // The saved chat shows the server's copies now; free the local previews that are not back in the composer.
-  if (!memo.attach.includes(files[0])) files.forEach((a) => URL.revokeObjectURL(a.url));
+  if (!memo.attach.includes(files[0])) files.forEach((a) => a.url && URL.revokeObjectURL(a.url));
 }
 
 // Creates the chat that the page shows as new (on the first message, or when the Tools menu opens) and returns its id.
@@ -834,6 +875,10 @@ function detachLive() {
 
 function onEvent(live, ev) {
   const m = live.msg;
+  if (ev.event === 'file') {
+    onFileEvent(live, ev);
+    return;
+  }
   if (live.agent && onAgentEvent(live, ev)) {
     schedulePaint(live);
     return;
@@ -855,6 +900,31 @@ function onEvent(live, ev) {
     live.waiting = null;
     Object.assign(m, {finish: 'error', error: ev.message});
   }
+  schedulePaint(live);
+}
+
+// The state of a file of the answered message: read, waiting, transcribing, ready or failed. Its chip changes in place;
+// the status line under the answer says what runs, and the live region says when a file is ready or failed.
+function onFileEvent(live, ev) {
+  if (!s || s.live !== live || !s.chat) return;
+  const msgs = s.chat.messages;
+  let i = msgs.length - 1;
+  while (i >= 0 && msgs[i].role !== 'user') i--;
+  if (i < 0) return;
+  const m = msgs[i];
+  const files = m.files || (m.files = []);
+  const before = files[ev.index] || {};
+  files[ev.index] = Object.assign({}, ev.file, {detail: ev.detail || ''});
+  const f = files[ev.index];
+  if (f.state === 'transcribing') live.transcribing = Object.assign({index: ev.index}, f);
+  else if (live.transcribing && live.transcribing.index === ev.index) live.transcribing = null;
+  if (f.state !== before.state) {
+    if (f.state === 'transcribing') announce('Transcribing ' + f.name + '.');
+    else if (f.state === 'ready' && before.state === 'transcribing') announce(f.name + ' is transcribed.');
+    else if (f.state === 'failed') announce(f.name + ': ' + (f.error || 'failed') + '.');
+  }
+  const box = fileBoxes.get(m);
+  if (box && box.isConnected) box.replaceWith(fileList(m));
   schedulePaint(live);
 }
 
@@ -943,6 +1013,13 @@ function liveStatus(live) {
   const llm = store.get('llm') || {};
   const spin = () => h('span', {class: 'spinner sm', 'aria-hidden': 'true'});
   if (live.stopping) return [spin(), 'Stopping'];
+  if (live.transcribing && !m.finish) {
+    const f = live.transcribing;
+    const pct = /\d+%/.exec(f.detail || '');
+    const queued = (f.detail || '').startsWith('Waiting') ? f.detail + '. ' : '';
+    return [spin(), h('span', null, h('b', null, 'Transcribing ' + f.name + (pct ? ' (' + pct[0] + ')' : '') + '. '),
+      queued + 'The answer starts when the text is ready. Stop works while it runs.')];
+  }
   if (live.agent && live.asking) {
     return [icon('lock', 'ic-sm'), h('span', null, stepChip(live), h('b', null, 'Waiting for your answer above. '), 'Stop also works.')];
   }
@@ -955,6 +1032,10 @@ function liveStatus(live) {
       ' Stop works while it waits.')];
   }
   if (m.content || m.reasoning || m.finish) return [];
+  const asked = s.chat && s.chat.messages[s.chat.messages.length - 1];
+  if (asked && asked.role === 'user' && (asked.files || []).some((f) => f.state === 'reading' || f.state === 'uploading')) {
+    return [spin(), 'Reading the attached files'];
+  }
   if (llm.state === 'loading' || llm.state === 'off') {
     return [spin(), 'Loading ' + modelName() + ' into memory (about ' + Math.round(llm.peak_gb || 18) + ' GB). The first answer takes longer.'];
   }
@@ -1655,7 +1736,48 @@ function userMessage(m) {
       type: 'button', class: 'att', 'aria-label': 'Enlarge image ' + (k + 1) + ' of ' + imgs.length,
       onclick: () => lightbox(imgs, k),
     }, h('img', {src: im.url, alt: '', loading: 'lazy'})))) : null,
+    m.files && m.files.length ? fileList(m) : null,
     m.content ? h('div', {class: 'bubble'}, m.content) : null);
+}
+
+// The attached files of a user message: a chip each with its state, a download of the file as it came and of the
+// text the model read. The live answer's file events replace the list (onFileEvent).
+const fileBoxes = new WeakMap();
+function fileList(m) {
+  const box = h('ul', {class: 'msg-files', role: 'list', 'aria-label': 'Attached files'}, m.files.map((f) => {
+    const stored = s.chat && f.file ? s.api.chatFileUrl(s.chat.id, f.file) : null;
+    const text = s.chat && f.text && f.state === 'ready' ? s.api.chatFileUrl(s.chat.id, f.text) : null;
+    const facts = [f.type, fmtBytes(f.size || 0)];
+    if (f.pages) facts.push(f.pages + (f.pages === 1 ? ' page' : ' pages'));
+    return h('li', {class: 'file-chip' + (f.state === 'failed' ? ' bad' : '')},
+      fileThumb(f.kind),
+      h('span', {class: 'file-info'},
+        h('span', {class: 'file-name', title: f.name}, f.name),
+        h('span', {class: 'file-meta'}, facts.join(' · ')),
+        h('span', {class: 'file-state'}, ...fileState(f))),
+      text ? h('a', {href: text, download: f.name + '.txt', class: 'btn btn-ghost btn-sm btn-icon',
+        title: 'Download the text the model read', 'aria-label': 'Download the text the model read of ' + f.name}, icon('file', 'ic-sm')) : null,
+      stored ? downloadLink({url: stored, name: f.name}) : null);
+  }));
+  fileBoxes.set(m, box);
+  return box;
+}
+
+function fileThumb(kind) {
+  if (kind === 'audio') return h('span', {class: 'file-thumb audio'}, icon('voice', 'ic-sm'));
+  return h('span', {class: 'file-thumb'}, icon('file', 'ic-sm'));
+}
+
+// A file's state in words: what runs now, what the model got, or why it failed.
+function fileState(f) {
+  const spin = () => h('span', {class: 'spinner sm', 'aria-hidden': 'true'});
+  if (f.state === 'reading') return [spin(), 'Reading...'];
+  if (f.state === 'uploading') return [spin(), 'Uploading...'];
+  if (f.state === 'pending') return ['Waiting to transcribe'];
+  if (f.state === 'transcribing') return [spin(), (f.detail || 'Transcribing') + '...'];
+  if (f.state === 'failed') return [icon('alert', 'ic-sm'), 'Failed: ' + (f.error || 'unknown error')];
+  if (f.cut) return ['Cut to fit: the model got ' + f.cut];
+  return [f.kind === 'audio' ? 'Transcribed' : 'Read in full'];
 }
 
 function aiMessage(m, isLast) {
@@ -1683,7 +1805,10 @@ function msgTools(m, isLast) {
 }
 
 function finishNote(m) {
-  if (m.finish === 'cancelled') return h('p', {class: 'msg-end'}, icon('stop', 'ic-sm fill'), 'Stopped. The answer above is incomplete.');
+  if (m.finish === 'cancelled') {
+    return h('p', {class: 'msg-end'}, icon('stop', 'ic-sm fill'),
+      m.content || m.reasoning ? 'Stopped. The answer above is incomplete.' : 'Stopped before the answer started.');
+  }
   if (m.finish === 'length') return h('p', {class: 'msg-end'}, icon('alert', 'ic-sm'), 'The answer reached the length limit and ends early. Ask it to continue.');
   if (m.note) return h('p', {class: 'msg-end'}, icon('alert', 'ic-sm'), m.note); // an agent answer that hit a limit
   if (m.finish === 'error') {
@@ -1765,10 +1890,9 @@ function renderComposer() {
   els.input.disabled = f.blocked;
   els.input.placeholder = f.tooLarge ? 'Chat is not available on this Mac'
     : f.missing ? 'Install ' + modelName() + ' in Models to chat' : 'Message ' + modelName();
-  els.attachBtn.disabled = f.blocked || memo.attach.length >= MAX_IMAGES;
-  els.attachBtn.title = memo.attach.length >= MAX_IMAGES
-    ? 'At most ' + MAX_IMAGES + ' images per message.'
-    : 'Attach PNG, JPEG or WebP images (up to ' + MAX_IMAGES + ', 20 MB each). You can also drop or paste them.';
+  els.attachBtn.disabled = f.blocked || memo.attach.length >= MAX_FILES;
+  els.attachBtn.title = memo.attach.length >= MAX_FILES ? 'At most ' + MAX_FILES + ' files per message.' : attachHelp();
+  els.attachBtn.setAttribute('aria-label', 'Attach files. ' + els.attachBtn.title);
   renderEffort(f.blocked);
   const agent = chatMode() === 'agent';
   els.toolsBtn.hidden = !agent;
@@ -1797,7 +1921,7 @@ function onInputKey(e) {
 }
 
 function onPaste(e) {
-  const files = [...(e.clipboardData ? e.clipboardData.files : [])].filter((f) => f.type.startsWith('image/'));
+  const files = [...(e.clipboardData ? e.clipboardData.files : [])];
   if (!files.length) return;
   if (!e.clipboardData.types.includes('text/plain')) e.preventDefault();
   addFiles(files);
@@ -1829,16 +1953,51 @@ function dropTarget(el) {
   });
 }
 
+// What the attach button takes, for its tooltip and label.
+function attachHelp() {
+  const audio = s.ctx.store.profile() !== 'chat' ? ', audio (WAV, MP3, M4A, AAC, FLAC, OGG, AIFF; 200 MB)' : '';
+  return 'Attach up to ' + MAX_FILES + ' files: images (PNG, JPEG, WebP; up to ' + MAX_IMAGES + ', 20 MB each), text '
+    + 'and code files, PDF, Word, RTF, OpenDocument or Excel (50 MB)' + audio + '. You can also drop or paste them.';
+}
+
+function suffixOf(name) {
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot).toLowerCase() : '';
+}
+
+function typeOf(name) {
+  return suffixOf(name).slice(1).toUpperCase();
+}
+
+// The kind of a chosen file (image, text, html, pdf, word, sheet, audio), or why it cannot be attached.
+function kindOf(f) {
+  if (IMAGE_TYPES.includes(f.type)) return {kind: 'image'};
+  const suffix = suffixOf(f.name || '');
+  const kind = Object.keys(FILE_KINDS).find((k) => FILE_KINDS[k].includes(suffix));
+  if (kind === 'audio' && s.ctx.store.profile() === 'chat') {
+    return {error: 'audio needs the Transcribe media tool, which the chat profile does not have.'};
+  }
+  if (kind) return {kind};
+  if (REFUSED[suffix]) return {error: 'this type cannot be read; ' + REFUSED[suffix] + '.'};
+  const audio = s.ctx.store.profile() !== 'chat' ? ', Excel or audio files' : ' or Excel files';
+  return {error: 'this type cannot be attached. Attach images, text or code, PDF, Word, RTF, OpenDocument' + audio + '.'};
+}
+
 function addFiles(files) {
   const errs = [];
   for (const f of files) {
-    if (memo.attach.length >= MAX_IMAGES) {
-      errs.push('At most ' + MAX_IMAGES + ' images per message.');
+    const name = f.name || 'pasted.png';
+    if (memo.attach.length >= MAX_FILES) {
+      errs.push('At most ' + MAX_FILES + ' files per message.');
       break;
     }
-    if (!IMAGE_TYPES.includes(f.type)) errs.push((f.name || 'This file') + ': use a PNG, JPEG or WebP image.');
-    else if (f.size > MAX_IMAGE) errs.push((f.name || 'This image') + ': too large (max 20 MB).');
-    else memo.attach.push({file: f, name: f.name || 'pasted.png', size: f.size, url: URL.createObjectURL(f)});
+    const {kind, error} = kindOf(f);
+    const limit = kind === 'image' ? MAX_IMAGE : kind === 'audio' ? MAX_AUDIO : MAX_DOCUMENT;
+    if (error) errs.push(name + ': ' + error);
+    else if (kind === 'image' && memo.attach.filter((a) => a.kind === 'image').length >= MAX_IMAGES) {
+      errs.push('At most ' + MAX_IMAGES + ' images per message.');
+    } else if (f.size > limit) errs.push(name + ': too large (max ' + Math.round(limit / 1024 / 1024) + ' MB).');
+    else memo.attach.push({file: f, name, size: f.size, kind, url: kind === 'image' ? URL.createObjectURL(f) : null});
   }
   showNote(errs.join(' '));
   renderAttach();
@@ -1850,16 +2009,21 @@ function renderAttach() {
   box.replaceChildren();
   box.hidden = !memo.attach.length;
   memo.attach.forEach((a, i) => {
-    box.append(h('div', {class: 'file-chip'},
-      h('span', {class: 'file-thumb'}, h('img', {src: a.url, alt: ''})),
-      h('span', {class: 'file-info'}, h('span', {class: 'file-name', title: a.name}, a.name), h('span', {class: 'file-meta'}, fmtBytes(a.size))),
+    const meta = a.kind === 'image' ? fmtBytes(a.size) : typeOf(a.name) + ' · ' + fmtBytes(a.size);
+    box.append(h('div', {class: 'file-chip' + (a.error ? ' bad' : ''), role: 'listitem'},
+      a.url ? h('span', {class: 'file-thumb'}, h('img', {src: a.url, alt: ''})) : fileThumb(a.kind),
+      h('span', {class: 'file-info'},
+        h('span', {class: 'file-name', title: a.name}, a.name),
+        h('span', {class: 'file-meta'}, meta),
+        a.error ? h('span', {class: 'file-state'}, icon('alert', 'ic-sm'), 'Failed: ' + a.error) : null),
       h('button', {
         type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': 'Remove ' + a.name,
         onclick: () => {
-          URL.revokeObjectURL(a.url);
+          if (a.url) URL.revokeObjectURL(a.url);
           memo.attach.splice(i, 1);
           renderAttach();
           renderComposer();
+          if (!memo.attach.some((x) => x.error)) showNote('');
           s.els.input.focus();
         },
       }, icon('x', 'ic-sm'))));
