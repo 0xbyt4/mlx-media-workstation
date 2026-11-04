@@ -14,9 +14,9 @@ import {toast} from './ui.js';
 
 // "Send to" targets per output kind, in menu order: [tool id, file field]. Missing tools or fields are skipped.
 export const SEND_TARGETS = {
-  image: [['video.i2v', 'image'], ['video.a2v', 'image'], ['image.klein_edit', 'references']],
+  image: [['video.i2v', 'image'], ['video.a2v', 'image'], ['image.klein_edit', 'references'], ['edit.concat', 'clips']],
   audio: [['video.a2v', 'audio'], ['edit.mix', 'music'], ['voice.drama3', 'ref0'], ['voice.drama3', 'ref1']],
-  video: [['video.extend', 'video'], ['edit.mix', 'video']],
+  video: [['video.extend', 'video'], ['edit.mix', 'video'], ['edit.concat', 'clips'], ['edit.subtitle', 'video']],
 };
 
 const pending = new Map();

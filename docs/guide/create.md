@@ -1,7 +1,8 @@
 # Create
 
 On the Create screen you pick a tool, fill in its form and start a job. Jobs that load a model run one at a time, so
-each model gets the memory it needs. A Mix job loads no model, so it starts next to a running model job.
+each model gets the memory it needs. The Edit tools (Mix, Join clips, Add Subtitles) load no model, so their jobs
+start next to a running model job.
 
 ![The Create screen with the Text to Video form](../images/create.png)
 
@@ -84,6 +85,8 @@ The times and peaks below come from an M5 Pro with 48 GB. "Peak" is the number t
 | Video | Voice to Video (talking) | A person from an image speaks your audio | 7 s in about 3.5 min | 35 GB |
 | Video | Extend Video | More seconds after a clip | 5 s more in about 2.5 min | 35 GB |
 | Edit | Mix (video + music) | Music under a video's own sound | a few seconds | under 1 GB (ffmpeg only) |
+| Edit | Join clips | One video from 2-10 videos and still images | 10 s at 704x1280 in under 1 s | about 1 GB at 704x1280 (ffmpeg only) |
+| Edit | Add Subtitles | A video with a subtitle track | a few seconds | under 1 GB (ffmpeg only) |
 
 ### MOSS-Image
 
@@ -186,9 +189,20 @@ Speech to text with Qwen3-ASR 0.6B. It writes one line of text for about every 3
 |---|---|---|
 | Audio or video | | The file's sound track is transcribed. Music under the voice makes the text worse. |
 | Language | Detect (per 30 s part) | Or one of 30 languages. |
+| Subtitles (SRT and VTT) | off | Also writes `transcript.srt` and `transcript.vtt`. |
 
 The output is `transcript.txt`: a `Language:` line, then one line per part with its time, for example
 `[0:00-0:28] ...`. It has no times for single words.
+
+With Subtitles on, the tool cuts the audio into parts of about 6 s at quiet points, instead of 30 s parts. Then
+`transcript.txt` has one line for each short part. The tool also writes `transcript.srt` and `transcript.vtt`:
+
+- A subtitle has at most 2 lines of 42 characters (16 characters in Chinese, Cantonese and Japanese).
+- A subtitle shows for 1-6 s. A pause of 0.8 s or the end of a sentence starts a new subtitle.
+- Qwen3-ASR gives no time for each word. The words of a part share the time from its first to its last loud sound,
+  by their length. So a subtitle can start or end about 1 s early or late.
+
+Use `transcript.srt` in Add Subtitles, or open it with the video in a player.
 
 ### ACE-Step 1.5
 
@@ -357,15 +371,72 @@ To put music under a video:
 2. On the video job, press "Send to" and pick Mix. Do the same with the music take.
 3. Press Generate.
 
+### Join clips
+
+Joins 2-10 videos and still images into one video with ffmpeg. It needs no model.
+
+| Field | Default | Notes |
+|---|---|---|
+| Videos and still images | | 2-10 files. The tool joins them in upload order. |
+| Transition | Cut | Cut or Crossfade. |
+| Crossfade length (s) | 0.5 | 0.1 to 3. Only with Crossfade. At most half the shortest clip. |
+| Still image length (s) | 3 | One number for all still images, or one number for each still image in upload order, for example `3, 2.5, 4`. 0.5 to 60 s. |
+| Size | Same as the first clip | Or one of the video sizes, 1080x1920 or 1920x1080. |
+| Fit (advanced) | Whole picture, black bars | Or "Fill the frame, cut the edges". For a clip with another shape than the video. |
+| Even loudness (advanced) | on | Sets the joined sound to about -14 LUFS. Off: the sound keeps its level. |
+
+How the tool makes the video:
+
+- The size is the first clip's size, turned upright for a phone clip. The first clip can be at most 4096 pixels on
+  each side. For a larger clip, pick a size.
+- The frame rate is the frame rate of the first video. With still images only, it is 24 fps.
+- A still image with transparent parts is put on white.
+- A clip without sound gets silence, so the sound track covers the whole video. The sound is stereo, 48 kHz.
+- Each crossfade makes the video shorter by the crossfade length. The sound crossfades with the picture.
+- With Even loudness on, the tool measures the joined sound and sets it to -14 LUFS in a second pass, as Mix does.
+  Sound quieter than -34 LUFS stays as it is (the tool does not raise it by more than 20 dB).
+
+The output is `joined.mp4`: H.264 and AAC, with the colour tags of the LTX videos and the index at the start of the
+file. The job note shows the clips, the size, the frame rate, the length and the measured loudness.
+
+### Add Subtitles
+
+Adds a subtitle file to a video as a subtitle track. The viewer turns the subtitles on or off in the player. It needs no
+model.
+
+| Field | Default | Notes |
+|---|---|---|
+| Video | | Its picture and sound are copied. |
+| Subtitle file | | An SRT or WebVTT file in UTF-8. |
+| Language | Not set | The language tag of the track (an ISO 639-2 code, for example `tur`). Players show it in the subtitle menu. |
+
+How the tool reads the subtitle file:
+
+- It keeps the `<i>`, `<b>` and `<u>` tags and removes other tags, for example `<font>` and WebVTT voice tags.
+- It leaves out a subtitle that starts after the video ends. A subtitle that runs past the end stops at the end.
+- It refuses a file that is not UTF-8 or UTF-16 text. Save the file as UTF-8 and try again.
+
+The picture is copied when an MP4 file can hold it, as in Mix. A sound track that an MP4 file cannot hold, for example
+PCM, is encoded as AAC. The output is `subtitled.mp4`.
+
+The subtitles are a separate track, not part of the picture. This tool cannot burn subtitles into the picture.
+
+To subtitle a video:
+
+1. Open Transcribe. Choose the video, set the language and turn Subtitles on. Press Generate.
+2. When the job is done, download `transcript.srt` from the job card. Check the text and fix it in a text editor.
+3. On the video job, press "Send to" and pick Add Subtitles.
+4. Choose the `.srt` file as the subtitle file. Set the language. Press Generate.
+
 ## Use outputs in other tools
 
 "Send to" on a job card or in the Library puts an output into a file field of another tool:
 
 | Output | Send to |
 |---|---|
-| Image | Image to Video, Voice to Video (talking), Klein Edit (references) |
+| Image | Image to Video, Voice to Video (talking), Klein Edit (references), Join clips |
 | Audio | Voice to Video (talking), Mix (video + music), Fish Drama 3 (voice reference of speaker 0 or 1) |
-| Video | Extend Video, Mix (video + music) |
+| Video | Extend Video, Mix (video + music), Join clips, Add Subtitles (video) |
 
 "Use these settings" fills the tool's form with the settings of a job. It does not bring back the files: add them
 again.

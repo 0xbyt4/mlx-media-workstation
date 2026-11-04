@@ -207,3 +207,46 @@ def test_the_transcribe_tool_needs_a_sound_track(
         port.create_job("voice.transcribe", {}, {"audio": [given("silent.mp4")]})
     tool = {t["id"]: t for t in port.list_tools()}["voice.transcribe"]
     assert tool["group"] == "Voice" and tool["installed"] is True
+
+
+def test_a_field_can_take_file_suffixes_and_several_kinds(
+    port: server.Workstation, state: Path, media: FakeMedia
+) -> None:
+    """Add Subtitles takes a .srt or .vtt file (a text kind, named by its suffix); Join clips takes videos and images."""
+    media.seconds = {"in_video_0.mp4": 5.0, "in_clips_0.mp4": 2.0}
+    srt = b"1\n00:00:01,000 --> 00:00:02,000\nHello\n"
+    job_id = port.create_job(
+        "edit.subtitle",
+        {"language": "eng"},
+        {"video": [given("clip.mp4")], "subtitles": [given("Talk.SRT", srt)]},
+    )
+    assert server.jobs[job_id]["files"] == {
+        "video": ["in_video_0.mp4"],
+        "subtitles": ["in_subtitles_0.srt"],
+    }
+    assert server.lane_of(server.jobs[job_id]) == "light"
+    for name in ("transcript.txt", "still.png"):
+        with pytest.raises(ValueError, match=r"takes \.srt or \.vtt files"):
+            port.create_job(
+                "edit.subtitle",
+                {},
+                {"video": [given("clip.mp4")], "subtitles": [given(name, srt)]},
+            )
+    # a bad subtitle file is refused when the job is made
+    with pytest.raises(ValueError, match="has no time line"):
+        port.create_job(
+            "edit.subtitle",
+            {},
+            {
+                "video": [given("clip.mp4")],
+                "subtitles": [given("a.vtt", b"WEBVTT\n\nhi\n")],
+            },
+        )
+    job_id = port.create_job(
+        "edit.concat", {}, {"clips": [given("a.mp4"), given("b.png")]}
+    )
+    assert server.jobs[job_id]["files"] == {
+        "clips": ["in_clips_0.mp4", "in_clips_1.png"]
+    }
+    with pytest.raises(ValueError, match="takes image or video files"):
+        port.create_job("edit.concat", {}, {"clips": [given("a.mp4"), given("b.wav")]})

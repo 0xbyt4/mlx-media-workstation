@@ -22,8 +22,8 @@ No. The models run with MLX, which needs Apple Silicon.
 Each model needs most of the memory of a 48 GB Mac. Two model jobs at once would make macOS swap. The queue runs the
 model jobs in order. You can reorder it in Jobs.
 
-A Mix job is the exception: it loads no model and takes a few seconds. It runs next to the running model job, one
-Mix job at a time.
+An Edit job (Mix, Join clips or Add Subtitles) is the exception: it loads no model and takes a few seconds. It runs
+next to the running model job, one Edit job at a time.
 
 ## Why did Chat stop answering while a job ran?
 

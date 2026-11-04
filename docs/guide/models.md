@@ -22,7 +22,7 @@ Each model has two parts:
 | ltx-2-mlx (video runtime) | LTX-2.5 (q8) (gated) | Text to Video, Image to Video, Voice to Video, Extend Video | about 54.1 GB | 35 GB |
 | Local LLM environment (mlx-vlm) | Qwen3.8 27B (4-bit) | Prompt help, Chat | about 16.1 GB | 18 GB |
 
-Mix needs no model. It uses `ffmpeg` from Homebrew.
+The Edit tools (Mix, Join clips and Add Subtitles) need no model. They use `ffmpeg` from Homebrew.
 
 ## Set up the models
 

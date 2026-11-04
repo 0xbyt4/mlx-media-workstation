@@ -1135,6 +1135,8 @@ def test_transcribe_makes_16k_mono_speech_and_a_job_file(
     assert json.loads(spec.read_text()) == {
         "audio": str(speech),
         "language": None,
+        "subtitles": False,
+        "aligner": None,
         "out": str(tmp_path),
     }
     tools.plan(
@@ -1162,3 +1164,327 @@ def test_the_transcription_input_is_read_only_as_one_media_file(
     assert "mov" in allowed and "wav" in allowed
     assert not {"hls", "concat", "image2", "tee"} & set(allowed)
     assert cmd.index("-format_whitelist") < cmd.index("-i")
+
+
+def test_transcribe_subtitles_and_the_aligner_in_the_job_file(
+    tmp_path: Path, media: FakeMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Subtitles go to the runner; the aligner only when one is named and in the Hugging Face cache (the job runs
+    offline)."""
+    clip, spec = tmp_path / "in_audio_0.mp4", tmp_path / "transcribe_job.json"
+
+    def job(**values: Any) -> dict[str, Any]:
+        tools.plan(
+            "voice.transcribe",
+            params("voice.transcribe", **values),
+            {"audio": [clip]},
+            tmp_path,
+        )
+        return json.loads(spec.read_text())
+
+    assert (job()["subtitles"], job()["aligner"]) == (False, None)
+    assert (job(subtitles="true")["subtitles"], job()["aligner"]) == (True, None)
+    name = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
+    monkeypatch.setattr(tools, "SUB_ALIGNER", name)
+    monkeypatch.setattr(tools, "HF_HUB", tmp_path / "hub")
+    assert job(subtitles="true")["aligner"] is None  # not downloaded
+    (tmp_path / "hub" / "models--mlx-community--Qwen3-ForcedAligner-0.6B-8bit").mkdir(
+        parents=True
+    )
+    assert job(subtitles="true")["aligner"] == name
+    assert job(subtitles="false")["aligner"] is None
+
+
+# Join clips and Add Subtitles with the real ffmpeg, on small synthetic clips
+
+
+def note(out: Path, name: str) -> str:
+    return json.loads((out / "notes.json").read_text())[name]
+
+
+def ffmpeg(*args: str) -> None:
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *args], check=True)
+
+
+ENTRIES = (
+    "stream=codec_name,codec_type,width,height,r_frame_rate,channels,sample_rate,duration,color_primaries,"
+    "color_transfer,color_space,color_range:stream_tags=language:stream_disposition=default"
+)
+
+
+def streams(path: Path) -> list[dict[str, Any]]:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", ENTRIES, "-of", "json", str(path)],
+        capture_output=True, text=True, check=True,
+    ).stdout  # fmt: skip
+    return json.loads(out)["streams"]
+
+
+def pixel(path: Path, at: float, x: int, y: int) -> tuple[int, ...]:
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1",
+         "-vf", f"crop=2:2:{x}:{y},scale=1:1,format=rgb24", "-f", "rawvideo", "-"],
+        capture_output=True, check=True,
+    ).stdout  # fmt: skip
+    return tuple(raw)
+
+
+@pytest.fixture
+def clips(tmp_path: Path) -> list[Path]:
+    """A 64x48 30 fps clip with mono 44.1 kHz sound (2 s), an 80x80 24 fps clip without sound (1.5 s) and a 40x60
+    still image that is all see-through."""
+    paths = [
+        tmp_path / "in_clips_0.mp4",
+        tmp_path / "in_clips_1.mp4",
+        tmp_path / "in_clips_2.png",
+    ]
+    ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x48:rate=30:duration=2", "-f", "lavfi",
+           "-i", "sine=frequency=220:duration=2:sample_rate=44100", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-ac", "1", str(paths[0]))  # fmt: skip
+    ffmpeg("-f", "lavfi", "-i", "testsrc2=size=80x80:rate=24:duration=1.5", "-c:v", "libx264",
+           "-pix_fmt", "yuv420p", str(paths[1]))  # fmt: skip
+    ffmpeg("-f", "lavfi", "-i", "color=c=black@0.0:size=40x60,format=rgba", "-frames:v", "1", str(paths[2]))  # fmt: skip
+    return paths
+
+
+def run_plan(plan: tools.Plan) -> None:
+    for cmd in plan.commands:
+        r = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert r.returncode == 0, r.stderr
+
+
+@needs_ffmpeg
+def test_concat_real_ffmpeg_cut_one_size_rate_and_sound(
+    tmp_path: Path, clips: list[Path]
+) -> None:
+    files = {"clips": clips}
+    p = params("edit.concat", still_seconds="1.2")
+    tools.validate("edit.concat", p, files)
+    plan = tools.plan("edit.concat", p, files, tmp_path)
+    run_plan(plan)
+    joined = tmp_path / "joined.mp4"
+    video, audio = streams(joined)
+    # the first clip's size and rate; BT.709 primaries and transfer, the BT.601 matrix, limited range (LTX_COLOURS)
+    assert (video["width"], video["height"], video["r_frame_rate"]) == (64, 48, "30/1")
+    assert (video["color_primaries"], video["color_transfer"]) == ("bt709", "bt709")
+    assert (video["color_space"], video["color_range"]) == ("smpte170m", "tv")
+    assert float(video["duration"]) == pytest.approx(4.7, abs=0.04)
+    # stereo 48 kHz AAC for the whole video, silence for the clips without sound
+    assert (audio["codec_name"], audio["channels"], audio["sample_rate"]) == (
+        "aac",
+        2,
+        "48000",
+    )
+    assert float(audio["duration"]) == pytest.approx(4.7, abs=0.05)
+    assert tools.loudness(joined, 2.1, 2.5) is None
+    # the see-through still is laid on white and padded with black to the video's shape
+    assert min(pixel(joined, 4.0, 31, 23)) > 240 and max(pixel(joined, 4.0, 1, 23)) < 16
+    # the index first (+faststart)
+    data = joined.read_bytes()
+    assert data.index(b"moov") < data.index(b"mdat")
+    assert note(tmp_path, "joined.mp4").startswith(
+        "3 clips, cuts, 64x48 at 30 fps, 4.7 s; silence for clip 2, 3; final mix "
+    )
+    assert plan.commands[1][-1] == str(joined)  # the loudness of the encoded file
+    assert tools.loudness(joined) == pytest.approx(-14.0, abs=1.0)
+
+
+@needs_ffmpeg
+def test_concat_real_ffmpeg_crossfades_and_a_turned_first_clip(
+    tmp_path: Path, clips: list[Path]
+) -> None:
+    turned = tmp_path / "in_clips_9.mp4"
+    ffmpeg("-display_rotation", "90", "-i", str(clips[0]), "-c", "copy", str(turned))
+    files = {"clips": [turned, *clips[1:]]}
+    p = params("edit.concat", transition="crossfade", fade="0.5", still_seconds="2")
+    run_plan(tools.plan("edit.concat", p, files, tmp_path))
+    video, audio = streams(tmp_path / "joined.mp4")
+    # upright: 48x64; 2 + 1.5 + 2 s with two crossfades of 0.5 s
+    assert (video["width"], video["height"]) == (48, 64)
+    assert float(video["duration"]) == pytest.approx(4.5, abs=0.04)
+    assert float(audio["duration"]) == pytest.approx(4.5, abs=0.05)
+    assert note(tmp_path, "joined.mp4").startswith(
+        "3 clips, crossfades of 0.5 s, 48x64 at 30 fps"
+    )
+
+
+def test_concat_graph_size_fit_and_inputs(
+    tmp_path: Path, media: FakeMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A chosen size, the crop fit, a still image looped for its length, and the input whitelist before every
+    input."""
+    monkeypatch.setattr(tools, "video_shape", lambda path: (64, 48, "30000/1001"))
+    media.seconds = {"in_clips_0.mov": 2.0}
+    files = {"clips": [tmp_path / "in_clips_0.mov", tmp_path / "in_clips_1.jpg"]}
+    p = params("edit.concat", size="1080x1920", fit="crop", still_seconds="2.5")
+    plan = tools.plan("edit.concat", p, files, tmp_path)
+    cmd = plan.commands[0]
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert "scale=1080:1920:force_original_aspect_ratio=increase" in graph
+    assert "crop=1080:1920" in graph and "pad=1080" not in graph
+    assert "fps=30000/1001" in graph
+    # the still: made at the size in a prep step, then looped for its length at the video's rate
+    still = str(tmp_path / "in_clips_1_still.png")
+    assert media.prepped[0][-1] == still
+    i = cmd.index(still)
+    assert cmd[i - 7 : i] == ["-loop", "1", "-framerate", "30000/1001", "-t", f"{75 / (30000 / 1001):.6f}", "-i"]  # fmt: skip
+    for at, arg in enumerate(cmd):
+        if arg == "-i":
+            assert (
+                GUARD[1] == "file"
+                and cmd[cmd.index(GUARD[0], max(0, at - 12)) + 1] == "file"
+            )
+    assert cmd.count("-protocol_whitelist") == cmd.count("-i") == 2
+    assert media.first_pass  # loudness in two passes, as in the mix
+    assert "measured_I=-17.50" in graph
+
+
+def test_concat_without_loudness_or_without_any_sound(
+    tmp_path: Path, media: FakeMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tools, "video_shape", lambda path: (64, 48, "24/1"))
+    media.seconds = {"in_clips_0.mp4": 2.0, "in_clips_1.mp4": 2.0}
+    files = {"clips": [tmp_path / "in_clips_0.mp4", tmp_path / "in_clips_1.mp4"]}
+    plan = tools.plan(
+        "edit.concat", params("edit.concat", loudness="false"), files, tmp_path
+    )
+    assert len(plan.commands) == 1 and not media.first_pass
+    assert "loudnorm" not in plan.commands[0][plan.commands[0].index("-filter_complex") + 1]  # fmt: skip
+    media.audio = {"in_clips_0.mp4": False, "in_clips_1.mp4": False}
+    plan = tools.plan("edit.concat", params("edit.concat"), files, tmp_path)
+    assert len(plan.commands) == 1 and not media.first_pass
+    assert note(tmp_path, "joined.mp4").endswith("; silence for clip 1, 2; no sound")
+
+
+@pytest.mark.parametrize(
+    ("names", "values", "error"),
+    [
+        (["a.mp4"], {}, "Add at least 2 clips"),
+        (
+            ["a.mp4", "b.png", "c.png"],
+            {"still_seconds": "2, 3, 4"},
+            "one for each of the 2 still images",
+        ),
+        (
+            ["a.mp4", "b.png"],
+            {"still_seconds": "0.2"},
+            r"0.2 s is out of range \(0.5-60 s\)",
+        ),
+        (["a.mp4", "b.png"], {"still_seconds": "two"}, "give numbers of seconds"),
+        (
+            ["a.mp4", "b.mp4"],
+            {"transition": "crossfade", "fade": "1.5"},
+            r"at most half the shortest clip \(clip 2 is 2.0 s\)",
+        ),
+        (
+            ["a.mp4", "b.png"],
+            {"transition": "crossfade", "fade": "1", "still_seconds": "1.5"},
+            "clip 2 is 1.5 s",
+        ),
+    ],
+)
+def test_concat_refuses_at_submit(
+    tmp_path: Path,
+    media: FakeMedia,
+    names: list[str],
+    values: dict[str, str],
+    error: str,
+) -> None:
+    media.seconds = {"a.mp4": 4.0, "b.mp4": 2.0}
+    files = {"clips": [tmp_path / n for n in names]}
+    with pytest.raises(ValueError, match=error):
+        tools.validate("edit.concat", params("edit.concat", **values), files)
+
+
+def test_concat_refuses_a_clip_without_a_picture(
+    tmp_path: Path, media: FakeMedia
+) -> None:
+    media.codecs = {"b.mp4": None}
+    media.seconds = {"a.mp4": 4.0}
+    files = {"clips": [tmp_path / "a.mp4", tmp_path / "b.mp4"]}
+    with pytest.raises(ValueError, match="Clip 2 has no picture"):
+        tools.validate("edit.concat", params("edit.concat"), files)
+
+
+SRT = (
+    "﻿1\r\n00:00:00,200 --> 00:00:01,000\r\n<font color=red>Merhaba</font> dünya\r\n\r\n"
+    "2\r\n00:00:01,100 --> 00:00:03,500\r\n<i>İkinci</i> satır\r\n\r\n"
+    "3\r\n00:00:05,000 --> 00:00:06,000\r\nafter the end\r\n"
+)
+
+
+@needs_ffmpeg
+def test_subtitle_real_ffmpeg_adds_a_mov_text_track(
+    tmp_path: Path, clips: list[Path]
+) -> None:
+    sub = tmp_path / "in_subtitles_0.srt"
+    sub.write_bytes(SRT.encode())
+    files = {"video": [clips[0]], "subtitles": [sub]}
+    p = params("edit.subtitle", language="tur")
+    tools.validate("edit.subtitle", p, files)
+    run_plan(tools.plan("edit.subtitle", p, files, tmp_path))
+    out = tmp_path / "subtitled.mp4"
+    video, audio, text = streams(out)
+    assert (video["codec_name"], audio["codec_name"]) == ("h264", "aac")  # copied
+    assert text["codec_name"] == "mov_text"
+    assert (text["tags"]["language"], text["disposition"]["default"]) == ("tur", 1)
+    track = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(out), "-map", "0:s:0", "-f", "srt", "-"],
+        capture_output=True, text=True, check=True,
+    ).stdout  # fmt: skip
+    # the cue that starts after the 2 s video is left out, the one that runs past its end is cut there
+    assert track.replace("\r\n", "\n") == (
+        "1\n00:00:00,200 --> 00:00:01,000\nMerhaba dünya\n\n"
+        "2\n00:00:01,100 --> 00:00:02,000\n<i>İkinci</i> satır\n\n"
+    )
+    assert note(tmp_path, "subtitled.mp4") == (
+        "2 subtitles, language Turkish; 1 after the video's end left out"
+    )
+    data = out.read_bytes()
+    assert data.index(b"moov") < data.index(b"mdat")
+
+
+@needs_ffmpeg
+def test_subtitle_real_ffmpeg_encodes_pcm_sound_and_reads_webvtt(
+    tmp_path: Path,
+) -> None:
+    video, sub = tmp_path / "in_video_0.mov", tmp_path / "in_subtitles_0.vtt"
+    ffmpeg("-f", "lavfi", "-i", "testsrc=size=64x48:rate=24:duration=1", "-f", "lavfi",
+           "-i", "sine=duration=1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", str(video))  # fmt: skip
+    sub.write_text("WEBVTT\n\n00:00.000 --> 00:00.800\n<v Ana>Hi</v>\n")
+    files = {"video": [video], "subtitles": [sub]}
+    run_plan(
+        tools.plan("edit.subtitle", params("edit.subtitle"), files, tmp_path)
+    )  # fmt: skip
+    _, audio, text = streams(tmp_path / "subtitled.mp4")
+    assert audio["codec_name"] == "aac"  # an MP4 does not take PCM
+    assert text["tags"]["language"] == "und"
+    track = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(tmp_path / "subtitled.mp4"), "-map", "0:s:0", "-f", "srt", "-"],
+        capture_output=True, text=True, check=True,
+    ).stdout  # fmt: skip
+    assert track.replace("\r\n", "\n") == "1\n00:00:00,000 --> 00:00:00,800\nHi\n\n"
+
+
+def test_subtitle_refuses_a_bad_file_or_a_video_it_does_not_cover(
+    tmp_path: Path, media: FakeMedia
+) -> None:
+    video, sub = tmp_path / "in_video_0.mp4", tmp_path / "in_subtitles_0.srt"
+    files = {"video": [video], "subtitles": [sub]}
+    sub.write_bytes("1\n00:00:01,000 --> 00:00:02,000\nİyi\n".encode("cp1254"))
+    with pytest.raises(ValueError, match="not UTF-8"):
+        tools.validate("edit.subtitle", params("edit.subtitle"), files)
+    sub.write_text("1\n00:00:09,000 --> 00:00:10,000\nlate\n")
+    tools.validate("edit.subtitle", params("edit.subtitle"), files)
+    media.seconds = {"in_video_0.mp4": 5.0}
+    with pytest.raises(
+        ValueError, match=r"Every subtitle starts after the video ends \(5.0 s\)"
+    ):
+        tools.plan("edit.subtitle", params("edit.subtitle"), files, tmp_path)
+    media.codecs = {"in_video_0.mp4": None}
+    with pytest.raises(ValueError, match="no picture"):
+        tools.validate("edit.subtitle", params("edit.subtitle"), files)
+    with pytest.raises(ValueError, match="Unknown subtitle language"):
+        media.codecs = {}
+        sub.write_text("1\n00:00:01,000 --> 00:00:02,000\nok\n")
+        tools.plan("edit.subtitle", params("edit.subtitle", language="xx"), files, tmp_path)  # fmt: skip

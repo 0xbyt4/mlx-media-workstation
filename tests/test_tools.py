@@ -40,7 +40,11 @@ def test_every_description_gives_a_time() -> None:
 
 
 def test_every_model_tool_lists_what_it_needs() -> None:
-    assert set(tools.REQUIRES) == set(tools.BY_ID) - {"edit.mix"}
+    assert set(tools.REQUIRES) == set(tools.BY_ID) - {
+        "edit.mix",
+        "edit.concat",
+        "edit.subtitle",
+    }
 
 
 @pytest.mark.parametrize("tool", tools.TOOLS, ids=lambda t: t["id"])

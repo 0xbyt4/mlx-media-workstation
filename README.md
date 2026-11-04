@@ -7,8 +7,9 @@ service.
 
 ![The Create screen with the Text to Video form](docs/images/create.png)
 
-- **11 tools in 5 groups**: images (MOSS-Image, FLUX.3 Klein, Klein Edit), voice (Fish Drama 3, Transcribe), music
-  (ACE-Step 1.5), video with sound (LTX-2.5: text, image, voice and extend) and a video + music mix.
+- **13 tools in 5 groups**: images (MOSS-Image, FLUX.3 Klein, Klein Edit), voice (Fish Drama 3, Transcribe), music
+  (ACE-Step 1.5), video with sound (LTX-2.5: text, image, voice and extend) and edits (video + music mix, join
+  clips, add subtitles).
 - **Prompt help**: "Improve" under a prompt field asks the local LLM to rewrite your draft for that tool.
 - **Chat**: talk with a local Qwen3.8 27B. Attach images, documents (PDF, Word, Excel, text and code) or audio,
   pick a thinking level, and let it write prompts for the tools or queue the jobs itself.
@@ -76,7 +77,7 @@ a time, so only the peak of one tool must fit.
 
 | Tool | Peak memory | Smallest Mac |
 |---|---|---|
-| Mix (video + music) | none (ffmpeg only) | any |
+| Mix (video + music), Join clips, Add Subtitles | none (ffmpeg only) | any |
 | Transcribe | 3 GB | 16 GB |
 | FLUX.3 Klein, Klein Edit (references) | 14 GB | 24 GB |
 | Local LLM (Chat and "Improve") | 18 GB | 32 GB |
@@ -87,7 +88,7 @@ a time, so only the peak of one tool must fit.
 
 In short:
 
-- **16 GB**: Transcribe and Mix.
+- **16 GB**: Transcribe and the Edit tools.
 - **24 GB**: also FLUX.3 Klein and Klein Edit.
 - **32 GB or 36 GB**: also MOSS-Image, ACE-Step 1.5, Chat and prompt help.
 - **48 GB or more**: every tool.
@@ -284,13 +285,15 @@ client and the tools.
 | Image | FLUX.3 Klein | FLUX.3 Klein (mflux, 8-bit) | about 40 s | 14 GB |
 | Image | Klein Edit (references) | FLUX.3 Klein with 1-10 reference images | about 1-4 min | 14 GB |
 | Voice | Fish Drama 3 | Fish Audio Drama 3 (mlx-audio, 4-bit); Qwen3-ASR checks each take | about 2x real time | 39 GB |
-| Voice | Transcribe | Qwen3-ASR 0.6B (mlx-audio, 8-bit): speech to text, with a time for about every 30 s | a few seconds for a minute of speech | 3 GB |
+| Voice | Transcribe | Qwen3-ASR 0.6B (mlx-audio, 8-bit): speech to text, with a time for about every 30 s; SRT and VTT subtitles as an option | a few seconds for a minute of speech | 3 GB |
 | Music | ACE-Step 1.5 | ACE-Step 1.5 turbo (MLX DiT and LM) | two takes in about 30 s | 23 GB |
 | Video | Text to Video | LTX-2.5 distilled (ltx-2-mlx, q8), with sound | 5 s at 704x1280 in about 3 min, at 576x1024 in about 2 min | 35 GB |
 | Video | Image to Video | LTX-2.5 from a start image | 4 s in about 2 min | 35 GB |
 | Video | Voice to Video (talking) | LTX-2.5 audio-to-video: a person from an image speaks the audio | 7 s in about 3.5 min | 35 GB |
 | Video | Extend Video | LTX-2.5 extend: continues a clip from its last second | 5 s more in about 2.5 min | 35 GB |
 | Edit | Mix (video + music) | ffmpeg only: music under a video's own sound, ducked under speech, about -14 LUFS | a few seconds | none |
+| Edit | Join clips | ffmpeg only: 2-10 videos and still images in one video, cuts or crossfades, one size and frame rate, about -14 LUFS | under 1 s for 10 s at 704x1280 | none |
+| Edit | Add Subtitles | ffmpeg only: an SRT or WebVTT file as a subtitle track (mov_text) with a language tag | a few seconds | none |
 
 The peak memory is the value that the app plans with: the highest peak of the tools that use the same model. Most
 jobs use less. We measured these ranges: MOSS-Image 20-22 GB, FLUX.3 Klein 11-14 GB, Fish Drama 3 26-39 GB (short
