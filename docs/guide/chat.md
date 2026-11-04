@@ -11,20 +11,65 @@ which reads about 16 GB from disk. It unloads after 10 minutes without use. See
 ## Start a chat
 
 1. Open Chat (Cmd-3).
-2. Press "New chat". To pick the mode at once, open the "New chat in a mode" menu next to it.
-3. On the empty chat, pick a mode: Workstation, General or Agent.
+2. Press "New chat". To pick the preset at once, open the menu next to it.
+3. On the empty chat, pick a preset: General, Agent or Workstation.
 4. Type your message.
 5. Press Return to send. Press Shift-Return for a new line.
 
-The mode is fixed after the first message. A new chat starts in the mode of your last new chat.
+A preset sets what the chat can do: its system prompt and its tools. A new chat starts with the preset of your last new
+chat.
 
-| Mode | What it does |
-|---|---|
-| Workstation | Knows the app's tools and every field of their forms. It queues a job when you ask it to make something, after you approve it. When it writes a text for a tool, the answer shows a "Use in" button. |
-| General | A plain assistant for any question. It does not know the app's tools. It has no internet access. |
-| Agent | A general assistant that can use tools: web search, Python in a sandbox, files in a folder you grant. See [Agent mode](agent-mode.md). |
+| Preset | In short | What it does |
+|---|---|---|
+| General | No tools, fastest | A plain assistant for any question. It does not know the app's tools. It has no internet access. |
+| Agent | Files, code, web | A general assistant that can use tools: web search, Python in a sandbox, files in a folder you grant. See [Agent mode](agent-mode.md). |
+| Workstation | Media jobs | Knows the app's tools and every field of their forms. It queues a job when you ask it to make something, after you approve it. When it writes a text for a tool, the answer shows a "Use in" button. |
 
-The chat profile has no Workstation mode.
+The chat profile has no Workstation preset.
+
+### Change the preset or the tools of a chat
+
+The model gets the chat's tools with the first message. The app keeps them for the whole chat, so the model can reuse
+what it already read (its prompt cache). A change in the middle of a chat would make it read the whole chat again.
+
+- On an empty chat, the preset and the tools change at once.
+- After the first message, the chat keeps its preset and its tools.
+
+To use other tools or another preset, start a new chat with them:
+
+1. Open the preset menu in the chat header, or open the Tools menu under the message box.
+2. Pick another preset ("New Agent chat"), or change the switches in the Tools menu.
+3. In the Tools menu, press "Start a new chat with these tools". Press Undo to keep the tools as they are.
+
+The new chat gets the chat's folder and thinking level. It does not get the messages or the "Allow in this chat"
+approvals. The chat before stays as it is, unless it is a temporary chat.
+
+In a chat that has messages, these changes still apply at once: "Revoke" of an "Allow in this chat" approval, and the
+grant or revoke of the folder.
+
+The Tools menu shows the tools in two groups:
+
+- **Always loaded**: the model sees these tools in every step.
+- **Found by search**: the model finds these tools with a search when it needs one. Until then they take no room in its
+  prompt.
+
+### Temporary chat
+
+A temporary chat is not kept.
+
+1. Open the menu next to "New chat".
+2. Pick "Temporary chat".
+
+You can also turn on "Temporary chat" on an empty chat, under the presets.
+
+- The chat header and the chat list show a clock mark and "Temporary".
+- The app deletes the chat when you leave it: when you open another chat or start a new one. An answer that still runs
+  stops first.
+- When the app could not delete it (you closed the window, or the app quit), it deletes the chat when the app starts
+  again.
+- Memory and the model's search of past chats skip a temporary chat. "Search chats" in the chat list still finds
+  it until the app deletes it.
+- A new chat that you start from a temporary chat (another preset or other tools) is temporary too.
 
 ## Let the chat make it
 
@@ -41,12 +86,13 @@ as a video, starts after the answer ends.
 
 - When your request is unclear, or you want to read the text first, the model writes the prompt with a "Use in"
   button and queues nothing. Ask it for the prompt only when you want to change it before you run it.
-- The Tools menu under the message box turns each tool on or off and ends an "Allow in this chat".
+- The Tools menu under the message box turns each tool on or off and ends an "Allow in this chat". After the first
+  message, other tools start a new chat (see [Change the preset or the tools of a chat](#change-the-preset-or-the-tools-of-a-chat)).
 - The approval rules are the ones of Agent mode: see [Agent mode](agent-mode.md).
 
 ## Use a prompt from the chat in a tool
 
-1. Start a chat in Workstation mode.
+1. Start a chat with the Workstation preset.
 2. Ask for a prompt, for example: `Write a Text to Video prompt for a 5 second shot of a lighthouse at night.`
 3. Under the prompt in the answer, press "Use in Text to Video".
 
@@ -149,6 +195,8 @@ changes an answer: the LLM then reads the whole chat again.
 ## Manage chats
 
 - To find a chat, type in "Search chats".
+- A chat whose answer waits for your approval shows a lock and "Waits for your approval" in the chat list. Open it
+  to answer the card.
 - To delete a chat, press its delete button, then press Delete. This deletes the chat and its images and files.
 - To free the LLM's memory now, press the unload button in the chat header. The model loads again with the next
   message.

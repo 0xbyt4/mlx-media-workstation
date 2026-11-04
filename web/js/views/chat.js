@@ -40,11 +40,13 @@ const REFUSED = {
   '.pptx': 'save it as PDF first',
   '.rtfd': 'save it as RTF or Word first',
 };
-// A chat's mode picks its system prompt (app/chat.py MODES) and is fixed after the first message. Only workstation
+// A chat's mode picks its system prompt (app/chat.py MODES) and is fixed after the first message. The page calls the
+// modes presets: each is one chat with its own tools. `line` says in a few words what a preset can do. Only workstation
 // answers get "Use in" cards.
 const MODE_INFO = {
   workstation: {
-    label: 'Workstation', icon: 'wand', help: 'Knows the app\'s tools and queues jobs when you ask it to make something. A text written for a tool gets a "Use in" button.',
+    label: 'Workstation', icon: 'wand', line: 'Media jobs', chatLine: 'Prompts for the media tools',
+    help: 'Knows the app\'s tools and queues jobs when you ask it to make something. A text written for a tool gets a "Use in" button.',
     chatHelp: 'Knows the app\'s tools. A text written for a tool gets a "Use in" button.', // no jobs in the chat profile
     title: 'Ask about a prompt, a shot list or lyrics',
     text: 'The model runs on this Mac and nothing is uploaded. It asks you before it queues a job. Attach images, documents or audio to ask about them.',
@@ -56,7 +58,8 @@ const MODE_INFO = {
     ],
   },
   general: {
-    label: 'General', icon: 'chat', help: 'A plain assistant for any question. It does not know the app\'s tools.',
+    label: 'General', icon: 'chat', line: 'No tools, fastest',
+    help: 'A plain assistant for any question. It does not know the app\'s tools.',
     chatHelp: 'A plain assistant for any question.', // the chat profile has no media tools to compare with
     title: 'Ask anything',
     text: 'The model runs on this Mac and nothing is uploaded. It has no internet access. Attach images, documents or audio to ask about them.',
@@ -68,7 +71,8 @@ const MODE_INFO = {
     ],
   },
   agent: {
-    label: 'Agent', icon: 'chip', help: 'A general assistant that can use tools: web search, Python in a sandbox, files in a folder you grant.',
+    label: 'Agent', icon: 'chip', line: 'Files, code, web',
+    help: 'A general assistant that can use tools: web search, Python in a sandbox, files in a folder you grant.',
     title: 'Ask, and let it use tools',
     text: 'The model runs on this Mac. It asks you before it sends anything off this Mac or runs code. Choose its tools in the Tools menu below.',
     examples: [
@@ -79,8 +83,11 @@ const MODE_INFO = {
     ],
   },
 };
-const MODES = ['workstation', 'general', 'agent']; // the picker and the New chat menu offer these
+const MODES = ['general', 'agent', 'workstation']; // the picker and the New chat menu offer these
+const DEFAULT_MODE = 'workstation'; // a new chat's preset before one was picked in this browser (app/chat.py)
 const MODE_KEY = 'ws.chatMode'; // the mode of the last new chat, per browser
+// A temporary chat (app/chat.py "temporary") is deleted when the page leaves it and at the next app start.
+const TEMP_HELP = 'Not kept: the app deletes it when you leave it or when the app starts again. Memory and the model\'s search of past chats skip it.';
 // Thinking levels (app/effort.py): id, label, hint. The times are the upper limits at about 17 tokens a second; in an
 // agent answer they apply to each step, and steps after the first get less.
 const EFFORTS = [
@@ -129,6 +136,23 @@ function modeHelp(mode) {
   return s.ctx.store.profile() === 'chat' && info.chatHelp ? info.chatHelp : info.help;
 }
 
+// What a preset can do, in a few words (the chat profile has no media jobs).
+function presetLine(mode) {
+  const info = MODE_INFO[mode] || MODE_INFO.workstation;
+  return s.ctx.store.profile() === 'chat' && info.chatLine ? info.chatLine : info.line;
+}
+
+// A chat whose tools and preset are fixed: it has a message (the model got its tools with the first one).
+function chatStarted() {
+  return !!(s.chat && (s.chat.messages.length || s.chat.running || (s.live && s.live.chatId === s.chat.id)));
+}
+
+// The open chat is temporary, or the chat that the first message creates will be.
+function isTemporary() {
+  if (s.chat) return !!s.chat.temporary;
+  return !memo.activeId && !!memo.temporary;
+}
+
 // "Use in" cards need the media tools: only Workstation chats in the full profile show them.
 function showCards() {
   return chatMode() === 'workstation' && s.ctx.store.profile() !== 'chat';
@@ -147,10 +171,11 @@ function showHosts() {
 }
 
 // Kept across mounts for this session: the open chat, the composer draft, the chosen images, the thinking level picked
-// per chat ('' = the chat the first message creates) and the mode for the next new chat.
-const memo = {activeId: null, draft: '', attach: [], efforts: {}, mode: null};
+// per chat ('' = the chat the first message creates), the mode for the next new chat and whether that chat is temporary.
+const memo = {activeId: null, draft: '', attach: [], efforts: {}, mode: null, temporary: false};
 
 let s = null; // the mounted view
+const dropping = new Set(); // temporary chats that the page deletes now (dropTemporary)
 
 // ---------- mount ----------
 
@@ -226,7 +251,6 @@ function onModelState() {
 // The profile changed (web/README.md): the modes on offer, the "Use in" cards and the examples follow it.
 function onProfile() {
   closeMenu();
-  s.els.newMode.hidden = offered().length < 2;
   renderHead();
   renderComposer();
   if (!s.loading) renderThread(false);
@@ -244,13 +268,16 @@ function build() {
     },
   });
   els.newBtn = h('button', {type: 'button', class: 'btn new-chat-main', onclick: () => newChat()}, icon('plus', 'ic-sm'), 'New chat');
+  // the presets, each with what it can do, and a temporary chat in the preset of the next new chat
   els.newMode = h('button', {
     type: 'button', class: 'btn btn-icon new-chat-mode', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
-    'aria-label': 'New chat in a mode', title: 'New chat in a mode',
-    hidden: offered().length < 2,
-    onclick: () => menu(els.newMode, offered().map((m) => ({
-      label: 'New ' + MODE_INFO[m].label + ' chat', icon: MODE_INFO[m].icon, run: () => newChat(m),
-    }))),
+    'aria-label': 'New chat with a preset, or a temporary chat', title: 'New chat with a preset, or a temporary chat',
+    onclick: () => menu(els.newMode, [
+      ...offered().map((m) => ({
+        label: MODE_INFO[m].label, sub: presetLine(m), icon: MODE_INFO[m].icon, run: () => newChat(m),
+      })),
+      {label: 'Temporary chat', sub: 'Deleted when you leave it', icon: 'clock', run: () => newChat(null, true)},
+    ]),
   }, icon('chev-down', 'ic-sm'));
   els.list = h('ul', {class: 'convo-list', role: 'list', 'aria-label': 'Chats'});
   els.convos = h('aside', {class: 'convos', id: 'chat-convos', 'aria-label': 'Conversations'},
@@ -264,7 +291,10 @@ function build() {
     onclick: () => showConvos(!convosOpen()),
   }, icon('menu'));
   els.title = h('h2', {id: 'chat-title'});
-  els.modeChip = h('span', {class: 'chip mode-chip'});
+  els.modeChip = h('button', {
+    type: 'button', class: 'chip mode-chip', 'aria-haspopup': 'menu', 'aria-expanded': 'false', onclick: presetMenu,
+  });
+  els.tempChip = h('span', {class: 'chip temp-chip', hidden: true, title: TEMP_HELP}, icon('clock', 'ic-sm'), 'Temporary');
   els.chip = h('span', {class: 'model-chip', role: 'status'});
   els.unload = h('button', {type: 'button', class: 'btn btn-ghost btn-sm', hidden: true, onclick: unload}, 'Unload');
   els.msgs = h('div', {class: 'msgs', role: 'region', 'aria-labelledby': 'chat-title', tabindex: '0', onscroll: onMsgsScroll});
@@ -326,7 +356,7 @@ function build() {
       els.send));
 
   els.thread = h('section', {class: 'thread', 'aria-label': 'Conversation'},
-    h('div', {class: 'thread-head'}, els.toggle, h('div', {class: 'thread-title'}, els.title, els.modeChip), els.chip, els.unload),
+    h('div', {class: 'thread-head'}, els.toggle, h('div', {class: 'thread-title'}, els.title, els.modeChip, els.tempChip), els.chip, els.unload),
     els.msgs,
     h('div', {class: 'composer-wrap'}, els.jump, els.toolsPop, els.notices, els.note, composer),
     els.status);
@@ -411,9 +441,11 @@ function renderHead() {
   els.modeChip.hidden = !mode;
   if (mode) {
     const info = MODE_INFO[mode] || MODE_INFO.workstation;
-    els.modeChip.title = info.label + ' mode: ' + modeHelp(mode);
-    els.modeChip.replaceChildren(icon(info.icon, 'ic-sm'), h('span', {class: 'sr-only'}, 'Mode: '), info.label);
+    els.modeChip.title = info.label + ' preset (' + presetLine(mode) + '): ' + modeHelp(mode);
+    els.modeChip.replaceChildren(icon(info.icon, 'ic-sm'), h('span', {class: 'sr-only'}, 'Preset: '), info.label,
+      icon('chev-down', 'ic-sm'));
   }
+  els.tempChip.hidden = !mode || !isTemporary();
   const f = modelFacts();
   const [pill, label, sub] = chipState(f);
   els.chip.replaceChildren(icon('chip', 'ic-sm'), h('b', null, f.llm ? f.llm.model : 'Local model'),
@@ -471,7 +503,7 @@ async function loadList() {
     throw e;
   }
   if (s !== me) return chats;
-  s.chats = chats;
+  s.chats = chats.filter((c) => !dropping.has(c.id));
   s.chatsLoaded = true;
   s.listError = '';
   renderList();
@@ -488,9 +520,12 @@ function renderList() {
   const q = s.query.trim().toLowerCase();
   const items = s.chats.filter((c) => !q || c.title.toLowerCase().includes(q));
   const running = (c) => !!(c.running || (s.live && s.live.chatId === c.id));
+  // a call waits for the user's approval (the server's mark, or this page's own answer)
+  const waits = (c) => s.live && s.live.chatId === c.id ? !!s.live.asking : !!c.waiting;
   const sub = (c) => timeAgo(c.updated) + ' · ' + c.messages + (c.messages === 1 ? ' message' : ' messages');
   // Redraw only when something shown changed: a redraw between mousedown and mouseup loses the click.
-  const sig = JSON.stringify([q, memo.activeId, s.confirmFor, s.chatsLoaded, s.listError, items.map((c) => [c.id, c.title, running(c), sub(c)])]);
+  const sig = JSON.stringify([q, memo.activeId, s.confirmFor, s.chatsLoaded, s.listError,
+    items.map((c) => [c.id, c.title, running(c), waits(c), !!c.temporary, sub(c)])]);
   if (sig === s.listSig) return;
   s.listSig = sig;
   list.replaceChildren();
@@ -508,8 +543,10 @@ function renderList() {
         if (c.id !== memo.activeId) openChat(c.id);
       },
     },
-    h('span', {class: 'convo-title'}, c.title),
-    h('span', {class: 'convo-sub'}, running(c) ? [h('span', {class: 'spinner sm', 'aria-hidden': 'true'}), 'Answering'] : sub(c)));
+    h('span', {class: 'convo-title'}, c.temporary ? h('span', {class: 'convo-temp', title: TEMP_HELP}, icon('clock', 'ic-sm'),
+      h('span', {class: 'sr-only'}, 'Temporary: ')) : null, c.title),
+    h('span', {class: 'convo-sub' + (waits(c) ? ' is-waiting' : '')}, waits(c) ? [icon('lock', 'ic-sm'), 'Waits for your approval']
+      : running(c) ? [h('span', {class: 'spinner sm', 'aria-hidden': 'true'}), 'Answering'] : sub(c)));
     const del = h('button', {
       type: 'button', class: 'btn btn-ghost btn-icon btn-sm convo-del', 'data-chat': c.id, 'data-part': 'del',
       'aria-label': 'Delete chat ' + c.title, title: 'Delete', onclick: () => askDelete(c),
@@ -553,7 +590,10 @@ async function deleteChat(c) {
   const at = s.chats.findIndex((x) => x.id === c.id);
   s.confirmFor = s.confirmEl = null;
   s.chats = s.chats.filter((x) => x.id !== c.id);
-  if (memo.activeId === c.id) openChat(null);
+  if (memo.activeId === c.id) {
+    s.chat = null; // deleted already: openChat must not delete a temporary chat again
+    openChat(null);
+  }
   renderList();
   toast('Chat deleted.');
   const next = s.chats[Math.min(at, s.chats.length - 1)];
@@ -566,17 +606,44 @@ function focusRow(id, part) {
   if (el) el.focus();
 }
 
-// A new chat in the given mode, or in the mode of the last new chat.
-function newChat(mode) {
+// A new chat in the given mode, or in the mode of the last new chat; temporary or kept.
+function newChat(mode, temporary = false) {
   showConvos(false);
   if (mode) rememberMode(mode);
+  memo.temporary = temporary;
   if (memo.activeId || s.chat) openChat(null);
-  else if (mode) {
+  else {
     renderHead();
     renderThread(true);
     renderComposer();
   }
   s.els.input.focus();
+}
+
+// The page leaves a temporary chat: delete it (app/chat.py). An answer that still runs is stopped first. When the
+// delete fails, the next app start deletes the chat.
+async function dropTemporary(id, running) {
+  const me = s;
+  dropping.add(id); // the list poll must not bring its row back while the delete waits for the answer to stop
+  s.chats = s.chats.filter((x) => x.id !== id);
+  renderList();
+  try {
+    if (running) await me.api.stopChat(id);
+    for (let i = 0; ; i++) {
+      try {
+        await me.api.deleteChat(id);
+        break;
+      } catch (e) {
+        if (e.status !== 409 || i >= 20) throw e; // 409: the stopped answer still saves
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+    toast('The temporary chat is deleted.');
+  } catch (e) {
+    if (e.status !== 404) toast('The temporary chat could not be deleted now. The app deletes it at its next start.', {kind: 'err'});
+  }
+  dropping.delete(id);
+  if (s === me) loadList().catch(() => {});
 }
 
 // ---------- modes ----------
@@ -587,7 +654,8 @@ function nextMode() {
     const saved = lsGet(MODE_KEY);
     memo.mode = saved;
   }
-  return offered().includes(memo.mode) ? memo.mode : offered()[0];
+  if (offered().includes(memo.mode)) return memo.mode;
+  return offered().includes(DEFAULT_MODE) ? DEFAULT_MODE : offered()[0];
 }
 
 function rememberMode(mode) {
@@ -602,17 +670,116 @@ function chatMode() {
   return memo.activeId ? null : nextMode();
 }
 
-// The segmented control on an empty chat. With no chat yet it only picks the mode for the chat that the first message
-// creates; an existing empty chat changes on the server.
+// The segmented control of the presets on an empty chat, and the Temporary switch. With no chat yet they only pick
+// for the chat that the first message creates; an existing empty chat changes on the server.
 function modePicker() {
-  if (offered().length < 2) return null;
   const mode = chatMode();
-  const seg = h('div', {class: 'seg', role: 'group', 'aria-label': 'Chat mode', 'aria-describedby': 'chat-mode-help'},
+  const busy = s.sending || s.modeBusy;
+  const seg = offered().length < 2 ? null : h('div', {class: 'seg', role: 'group', 'aria-label': 'Chat preset', 'aria-describedby': 'chat-mode-help'},
     offered().map((m) => h('button', {
-      type: 'button', 'data-mode': m, 'aria-pressed': String(m === mode), disabled: s.sending || s.modeBusy,
-      onclick: () => pickMode(m),
+      type: 'button', 'data-mode': m, 'aria-pressed': String(m === mode), disabled: busy,
+      title: presetLine(m), onclick: () => pickMode(m),
     }, icon(MODE_INFO[m].icon, 'ic-sm'), MODE_INFO[m].label)));
-  return h('div', {class: 'mode-pick'}, seg, h('p', {class: 'mode-help', id: 'chat-mode-help'}, modeHelp(mode)));
+  const temp = h('input', {
+    type: 'checkbox', role: 'switch', id: 'chat-temp', checked: isTemporary(), disabled: busy,
+    'aria-describedby': 'chat-temp-help', onchange: () => pickTemporary(temp.checked),
+  });
+  return h('div', {class: 'mode-pick'}, seg,
+    seg ? h('p', {class: 'mode-help', id: 'chat-mode-help'}, h('b', null, presetLine(mode) + '. '), modeHelp(mode)) : null,
+    h('div', {class: 'temp-pick'},
+      h('label', {class: 'switch', for: 'chat-temp'}, temp, h('span', {class: 'track'})),
+      h('label', {class: 'temp-label', for: 'chat-temp'}, 'Temporary chat')),
+    isTemporary() ? h('p', {class: 'mode-help', id: 'chat-temp-help'}, TEMP_HELP)
+      : h('p', {class: 'sr-only', id: 'chat-temp-help'}, TEMP_HELP));
+}
+
+// The Temporary switch of an empty chat: the next chat, or the open empty chat on the server.
+async function pickTemporary(on) {
+  if (s.sending || s.modeBusy) return;
+  const me = s;
+  if (!s.chat) memo.temporary = on;
+  else {
+    const id = s.chat.id;
+    const was = !!s.chat.temporary;
+    s.chat.temporary = on; // at once: a chat opened meanwhile must not delete the chat that the user keeps
+    s.modeBusy = true;
+    renderComposer();
+    try {
+      const c = await me.api.changeChat(id, {temporary: on});
+      if (s !== me || !s.chat || s.chat.id !== id) return;
+      s.chat.temporary = c.temporary;
+      const row = s.chats.find((x) => x.id === id);
+      if (row) row.temporary = c.temporary;
+      renderList();
+    } catch (e) {
+      if (s !== me) return;
+      if (s.chat && s.chat.id === id) s.chat.temporary = was;
+      showNote(errText(e));
+      reloadChat(id);
+    } finally {
+      me.modeBusy = false;
+      if (s === me) renderComposer();
+    }
+  }
+  renderHead();
+  renderThread(false);
+  renderComposer();
+  const sw = s.els.msgs.querySelector('#chat-temp');
+  if (sw) sw.focus();
+  announce(on ? 'Temporary chat.' : 'The chat is kept.');
+}
+
+// The header's preset menu. An empty chat changes its preset; a chat with messages keeps its preset and tools, and
+// another preset starts a new chat with this chat's folder (POST .../new).
+function presetMenu() {
+  const cur = chatMode();
+  if (!cur) return;
+  const started = chatStarted();
+  const modes = offered().includes(cur) ? offered() : [cur, ...offered()];
+  menu(s.els.modeChip, modes.map((m) => ({
+    label: started && m !== cur ? 'New ' + MODE_INFO[m].label + ' chat' : MODE_INFO[m].label,
+    sub: started && m === cur ? 'This chat keeps its preset and tools' : presetLine(m),
+    checked: m === cur,
+    run: () => {
+      if (m === cur) return;
+      if (started) startFrom({mode: m});
+      else pickMode(m);
+    },
+  })));
+}
+
+// A new chat with the open chat's settings (POST .../new): the folder grant, the thinking level, the temporary flag and
+// the tools or preset in `body`; not the messages. The chat before stays, unless it is temporary.
+async function startFrom(body) {
+  const me = s;
+  const from = s.chat;
+  if (!from || s.newBusy) return;
+  s.newBusy = true;
+  if (s.tools) renderTools();
+  let c;
+  try {
+    c = await me.api.newChatFrom(from.id, body);
+  } catch (e) {
+    me.newBusy = false;
+    if (s !== me) return;
+    if (s.tools) {
+      s.tools.error = errText(e);
+      renderTools();
+    } else showNote(errText(e));
+    return;
+  }
+  me.newBusy = false;
+  if (s !== me) return;
+  s.chats = [c, ...s.chats.filter((x) => x.id !== c.id)];
+  if (s.chat !== from) { // another chat opened meanwhile: the new chat waits in the list
+    renderList();
+    return;
+  }
+  if (body.mode) rememberMode(body.mode);
+  closeTools();
+  openChat(c.id);
+  toast(from.temporary ? 'New temporary chat with these settings.' : 'New chat with these settings. The chat before keeps its messages and tools.');
+  if (c.note) showNote(c.note);
 }
 
 async function pickMode(mode) {
@@ -643,14 +810,20 @@ async function pickMode(mode) {
   renderComposer();
   const btn = s.els.msgs.querySelector('.mode-pick [data-mode="' + mode + '"]');
   if (btn) btn.focus();
-  announce(MODE_INFO[mode].label + ' mode.');
+  announce(MODE_INFO[mode].label + ' preset: ' + presetLine(mode) + '.');
 }
 
 // ---------- open and reload ----------
 
 async function openChat(id) {
+  // a temporary chat that the page leaves is deleted (dropTemporary)
+  const left = s.chat && s.chat.temporary && s.chat.id !== id ? s.chat : null;
+  const leftRunning = !!(left && (left.running || (s.live && s.live.chatId === left.id)));
+  // an answer that goes on in the background: the list polls faster and shows when it waits for an approval
+  if (s.live && !left) s.listPoll.kick();
   detachLive();
   closeTools();
+  if (left) dropTemporary(left.id, leftRunning);
   const seq = ++s.openSeq;
   memo.activeId = id;
   s.ctx.router.replace('chat', id ? {id} : null);
@@ -790,7 +963,8 @@ async function send() {
 // Creates the chat that the page shows as new (on the first message, or when the Tools menu opens) and returns its id.
 async function createChatNow() {
   const me = s;
-  const c = await me.api.createChat(nextMode());
+  const c = await me.api.createChat(nextMode(), memo.temporary);
+  memo.temporary = false; // the next new chat is kept unless the user picks Temporary again
   if (memo.efforts[''] !== undefined) { // the level picked before the chat existed is now this chat's
     memo.efforts[c.id] = memo.efforts[''];
     delete memo.efforts[''];
@@ -1137,10 +1311,14 @@ function onAgentEvent(live, ev) {
     live.asking = seg;
     live.focusAsk = true;
     announce('Approval needed: ' + (ev.label || ev.name) + '. ' + (ev.describe || ''));
+    renderList(); // the chat's row says that it waits
   } else if (ev.event === 'approval_done') {
     const seg = toolSeg(ev.id);
-    if (seg) Object.assign(seg, {decision: ev.decision, answering: null, dirty: true});
+    if (seg) Object.assign(seg, {decision: ev.decision, answering: null, editing: false, dirty: true});
+    // the user edited the arguments on the card: those ran
+    if (seg && ev.edited) seg.call = {...seg.call, arguments: ev.arguments, edited: true};
     if (live.asking === seg) live.asking = null;
+    renderList();
   } else if (ev.event === 'tool_result') {
     const seg = toolSeg(ev.id);
     if (seg) Object.assign(seg, {result: ev, dirty: true});
@@ -1244,7 +1422,7 @@ function toolSegNode(seg, live) {
     id: c.id, name: c.name, label: c.label, arguments: c.arguments, describe: c.describe, risk: c.risk, network: c.network,
     status: r.status || (seg.decision && seg.decision !== 'once' && seg.decision !== 'chat' ? 'denied' : null),
     content: r.content, truncated: r.truncated, files: r.files, seconds: r.seconds,
-    approval: r.approval || seg.decision, job: r.job,
+    approval: r.approval || seg.decision, job: r.job, edited: !!(r.edited || c.edited),
   }, seg);
 }
 
@@ -1385,7 +1563,8 @@ function toolBlock(t, seg) {
   const risk = t.risk === null || t.risk === undefined ? null : {...RISK[t.risk], label: riskLabel(t.name, t.risk, t.network)};
   const shell = t.name === 'run_shell' && t.status === 'ok' && t.content ? shellResult(t) : null;
   const body = h('div', {class: 'tool-body'},
-    t.approval && DECISION[t.approval] ? h('p', {class: 'tool-note'}, icon('lock', 'ic-sm'), DECISION[t.approval]) : null,
+    t.approval && DECISION[t.approval] ? h('p', {class: 'tool-note'}, icon('lock', 'ic-sm'),
+      t.edited ? 'You edited the arguments and allowed it once. These arguments ran.' : DECISION[t.approval]) : null,
     argsBlock(t),
     shell || (t.content ? h('div', {class: 'tool-sec'}, h('span', {class: 'eyebrow'}, 'Result'),
       h('pre', {class: 'tool-pre tool-out', tabindex: '0'}, t.content),
@@ -1396,6 +1575,7 @@ function toolBlock(t, seg) {
       h('span', {class: 'tool-name'}, t.label || t.name || 'Unknown tool'),
       sum ? h('span', {class: 'tool-sum', title: sum}, sum) : null,
       h('span', {class: 'tool-end'},
+        t.edited ? h('span', {class: 'pill pill-warn', title: 'You edited the arguments before it ran.'}, 'Edited') : null,
         risk && t.risk >= 2 ? h('span', {class: 'tool-risk'}, risk.label) : null,
         h('span', {class: 'pill pill-' + st[0]}, st[1]),
         typeof t.seconds === 'number' ? h('span', {class: 'tool-time num'}, t.seconds.toFixed(1) + ' s') : null)),
@@ -1451,35 +1631,88 @@ function paintJob(el) {
 }
 
 // The question for a call that needs the user's approval. Keyboard: the focus moves to the card, Tab reaches the
-// buttons, Escape denies.
+// buttons, Escape denies. "Edit arguments" turns the arguments into a JSON text box: the server checks them against the
+// tool's schema, and "Allow once" runs the call with them (app/chat.py approve). A call that shows a diff cannot be
+// edited: the user would allow a change they did not see.
 function approvalCard(seg, live) {
   const ap = seg.approval;
   const label = ap.label || ap.name;
   const risk = {...(RISK[ap.risk] || RISK[3]), label: riskLabel(ap.name, ap.risk, ap.network)};
   const id = 'ap-' + ap.id;
-  const err = h('p', {class: 'field-err', role: 'alert', hidden: true});
+  const err = h('p', {class: 'field-err', role: 'alert', hidden: !seg.editError}, seg.editError || '');
   const buttons = [];
-  const answer = async (decision) => {
+  const answer = async (decision, args) => {
     if (seg.answering) return;
     seg.answering = decision;
     buttons.forEach((b) => (b.disabled = true));
     err.hidden = true;
+    seg.editError = '';
     try {
-      await s.api.approve(live.chatId, ap.id, decision);
-      announce(decision === 'deny' ? 'Denied.' : 'Allowed.');
+      await s.api.approve(live.chatId, ap.id, decision, args);
+      announce(decision === 'deny' ? 'Denied.' : args ? 'Allowed once with your arguments.' : 'Allowed.');
     } catch (e) {
       seg.answering = null;
       buttons.forEach((b) => (b.disabled = false));
-      err.textContent = errText(e);
+      seg.editError = errText(e);
+      err.textContent = seg.editError;
       err.hidden = false;
     }
   };
-  buttons.push(h('button', {type: 'button', class: 'btn btn-primary btn-sm', onclick: () => answer('once')},
-    icon('check', 'ic-sm'), 'Allow once'));
-  if (ap.chat_scope) {
-    buttons.push(h('button', {type: 'button', class: 'btn btn-sm', onclick: () => answer('chat'),
-      title: 'Runs this tool without asking for the rest of this chat, until web pages or files are in it. Revoke it in the Tools menu.'},
-    'Allow in this chat'));
+  const editable = ap.editable !== false && !ap.preview;
+  const edit = (on) => {
+    seg.editing = on;
+    seg.editError = '';
+    if (on) seg.editText = JSON.stringify(ap.arguments || {}, null, 2);
+    seg.dirty = true;
+    paintLive(live);
+    const el = seg.node.querySelector(on ? 'textarea' : '[data-part="edit"]');
+    if (el) el.focus();
+  };
+  let box = null;
+  if (seg.editing) {
+    box = h('textarea', {
+      class: 'textarea approval-edit', id: id + '-args', rows: '6', spellcheck: 'false', autocomplete: 'off',
+      'aria-describedby': id + '-args-help',
+      oninput: () => (seg.editText = box.value),
+      onkeydown: (e) => {
+        if (e.key !== 'Escape') return;
+        e.preventDefault();
+        e.stopPropagation(); // Escape ends the edit here; on the card it denies
+        edit(false);
+      },
+    });
+    box.value = seg.editText;
+    const allowEdited = () => {
+      let args;
+      try {
+        args = JSON.parse(box.value);
+      } catch (e) {
+        args = undefined;
+      }
+      if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        seg.editError = 'Write the arguments as one JSON object, such as {"query": "red fox"}.';
+        err.textContent = seg.editError;
+        err.hidden = false;
+        box.focus();
+        return;
+      }
+      answer('once', args);
+    };
+    buttons.push(h('button', {type: 'button', class: 'btn btn-primary btn-sm', onclick: allowEdited},
+      icon('check', 'ic-sm'), 'Allow once with these arguments'));
+    buttons.push(h('button', {type: 'button', class: 'btn btn-sm', onclick: () => edit(false)}, 'Cancel edit'));
+  } else {
+    buttons.push(h('button', {type: 'button', class: 'btn btn-primary btn-sm', onclick: () => answer('once')},
+      icon('check', 'ic-sm'), 'Allow once'));
+    if (ap.chat_scope) {
+      buttons.push(h('button', {type: 'button', class: 'btn btn-sm', onclick: () => answer('chat'),
+        title: 'Runs this tool without asking for the rest of this chat, until web pages or files are in it. Revoke it in the Tools menu.'},
+      'Allow in this chat'));
+    }
+    if (editable) {
+      buttons.push(h('button', {type: 'button', class: 'btn btn-ghost btn-sm', 'data-part': 'edit', onclick: () => edit(true),
+        title: 'Change the arguments, then allow the call once with them.'}, 'Edit arguments'));
+    }
   }
   buttons.push(h('button', {type: 'button', class: 'btn btn-sm btn-danger', onclick: () => answer('deny')},
     icon('x', 'ic-sm'), 'Deny'));
@@ -1491,16 +1724,21 @@ function approvalCard(seg, live) {
       if (e.key !== 'Escape') return;
       e.preventDefault();
       e.stopPropagation();
-      answer('deny');
+      if (seg.editing) edit(false); // Escape ends the edit first; on the card without an edit it denies
+      else answer('deny');
     },
   },
   h('div', {class: 'approval-head'}, icon('lock'), h('b', {id: id + '-t'}, 'Allow ' + label + '?'),
+    seg.editing ? h('span', {class: 'pill pill-warn'}, 'Editing') : null,
     h('span', {class: 'pill pill-' + risk.pill}, risk.label)),
   h('p', {class: 'approval-what', id: id + '-d'}, ap.describe ? visible(ap.describe) : argsLine(ap.arguments)),
   ap.host ? h('p', {class: 'approval-host'}, 'Host: ', h('code', null, ap.host)) : null,
   ap.reason ? h('p', {class: 'approval-why'}, ap.reason) : null,
   ap.preview ? diffBlock(ap.preview) : null,
-  ap.preview ? h('details', {class: 'approval-args'}, h('summary', null, 'Arguments'), argsBlock(ap)) : argsBlock(ap),
+  box ? h('div', {class: 'tool-sec'},
+    h('label', {class: 'eyebrow', for: id + '-args'}, 'Arguments (JSON)'), box,
+    h('p', {class: 'tool-note', id: id + '-args-help'}, 'The tool checks them before the call runs. The chat keeps the arguments that ran. Escape ends the edit.'))
+    : ap.preview ? h('details', {class: 'approval-args'}, h('summary', null, 'Arguments'), argsBlock(ap)) : argsBlock(ap),
   shellFolders(ap),
   h('div', {class: 'approval-actions'}, buttons),
   err,
@@ -1525,7 +1763,7 @@ function agentTurn(run, isLast) {
         id: c.id, name: c.name, label: r.label || c.name, arguments: c.arguments, describe: r.describe, risk: r.risk,
         network: r.network,
         status: r.status || 'skipped', content: r.content, files: r.files, seconds: r.seconds, approval: r.approval,
-        job: r.job,
+        job: r.job, edited: !!r.edited,
       }));
     }
   }
@@ -1614,15 +1852,26 @@ function renderTools(focusKey) {
       : h('p', {class: 'muted'}, h('span', {class: 'spinner sm', 'aria-hidden': 'true'}), 'Loading...'));
     return;
   }
-  const rows = st.tools.map((tool) => {
+  // A chat with messages keeps its tools (the model got them with the first message, and the prompt cache holds only
+  // while they stay): its switches make a draft for a new chat (startFrom). An empty chat changes at once.
+  const started = chatStarted();
+  if (t.draft && t.draft.length === st.enabled.length && t.draft.every((n) => st.enabled.includes(n))) t.draft = null;
+  const isOn = (tool) => (t.draft ? t.draft.includes(tool.name) : tool.enabled);
+  const busy = t.busy || !!s.newBusy;
+  const row = (tool) => {
     const risk = RISK[tool.risk] || RISK[3];
     const label = riskLabel(tool.name, tool.risk, tool.network);
     const sw = h('input', {
-      type: 'checkbox', role: 'switch', id: 'tool-' + tool.name, 'data-key': 'tool-' + tool.name, checked: tool.enabled, disabled: t.busy,
+      type: 'checkbox', role: 'switch', id: 'tool-' + tool.name, 'data-key': 'tool-' + tool.name, checked: isOn(tool), disabled: busy,
       'aria-describedby': 'tool-' + tool.name + '-help',
       onchange: () => {
-        const on = st.tools.filter((x) => (x.name === tool.name ? sw.checked : x.enabled)).map((x) => x.name);
-        changeTools({tools: on}, 'tool-' + tool.name);
+        const on = st.tools.filter((x) => (x.name === tool.name ? sw.checked : isOn(x))).map((x) => x.name);
+        if (!started) changeTools({tools: on}, 'tool-' + tool.name);
+        else {
+          t.lastSwitch = 'tool-' + tool.name;
+          t.draft = on;
+          renderTools('tool-' + tool.name);
+        }
       },
     });
     return h('li', {class: 'tool-row'},
@@ -1633,7 +1882,32 @@ function renderTools(focusKey) {
         tool.granted ? h('div', {class: 'tool-grant'}, h('span', {class: 'chip'}, icon('check', 'ic-sm'), 'Allowed in this chat'),
           h('button', {type: 'button', class: 'btn btn-ghost btn-sm', 'data-key': 'revoke-' + tool.name, disabled: t.busy,
             onclick: () => changeTools({revoke: [tool.name]}, 'tool-' + tool.name)}, 'Revoke')) : null));
+  };
+  // the tools array of the chat ("loaded": "core") and the tools that the model finds with a tool search ("search");
+  // a state without the field lists every tool as always loaded
+  const groups = [
+    ['core', 'Always loaded', 'The model sees these tools in every step.'],
+    ['search', 'Found by search', 'The model finds these tools with a search when it needs one. Until then they take no room in its prompt.'],
+  ].map(([key, title, help]) => {
+    const items = st.tools.filter((x) => (x.loaded === 'search' ? 'search' : 'core') === key);
+    return items.length ? h('section', {class: 'tool-group', 'aria-labelledby': 'tools-group-' + key},
+      h('h4', {id: 'tools-group-' + key}, title), h('p', {class: 'help'}, help),
+      h('ul', {class: 'tool-list', role: 'list'}, items.map(row))) : null;
   });
+  const keepNote = started ? h('p', {class: 'tools-note'}, icon('info', 'ic-sm'),
+    'This chat keeps the tools it started with. A change here starts a new chat with them.') : null;
+  const offer = !started || !t.draft ? null
+    : h('div', {class: 'tools-keep', role: 'status'},
+      h('p', null, h('b', null, 'Your changes apply to a new chat.'), ' The model got this chat\'s tools with the first message. A change now would make it read the whole chat again.'),
+      h('div', {class: 'tools-keep-actions'},
+        h('button', {type: 'button', class: 'btn btn-primary btn-sm', 'data-key': 'restart', disabled: busy, onclick: () => startFrom({tools: t.draft})},
+          s.newBusy ? 'Starting...' : 'Start a new chat with these tools'),
+        h('button', {type: 'button', class: 'btn btn-sm', 'data-key': 'undo', disabled: busy, onclick: () => {
+          t.draft = null;
+          renderTools(t.lastSwitch); // the Undo button goes: the focus goes back to the last switch
+        }}, 'Undo')),
+      h('p', {class: 'help'}, 'The new chat gets this chat\'s folder and thinking level, not its messages. '
+        + (isTemporary() ? 'This temporary chat is deleted when you leave it.' : 'This chat stays as it is.')));
   const input = h('input', {
     class: 'input', id: 'tools-folder', 'data-key': 'folder', type: 'text', placeholder: '/Users/you/Documents/notes',
     autocomplete: 'off', spellcheck: 'false', disabled: t.busy, 'aria-invalid': t.folderError ? 'true' : null,
@@ -1670,13 +1944,15 @@ function renderTools(focusKey) {
     st.tainted ? h('p', {class: 'tools-taint'}, icon('info', 'ic-sm'), agent
       ? 'Web pages, files or program output are in this chat, so tools that send data off this Mac ask before every call.'
       : 'Transcripts or Library prompts are in this chat, so tools that queue or cancel jobs ask before every call.') : null,
+    keepNote,
     t.error ? h('p', {class: 'field-err', role: 'alert'}, t.error) : null,
-    h('ul', {class: 'tool-list', role: 'list'}, rows),
+    ...groups,
     agent && h('div', {class: 'field tools-folder'},
       h('label', {class: 'label', for: 'tools-folder'}, 'Folder the file tools and Shell may use'),
       folder,
       t.folderError ? h('p', {class: 'field-err', id: 'tools-folder-err', role: 'alert'}, t.folderError) : null,
-      h('p', {class: 'help', id: 'tools-folder-help'}, 'This folder and its subfolders only. The file tools read text files here, and write new files or change files when you allow it. Shell reads its files and never changes them. Hidden files and key files are never read or written. Not your home folder itself or a system folder.'))].filter(Boolean));
+      h('p', {class: 'help', id: 'tools-folder-help'}, 'This folder and its subfolders only. The file tools read text files here, and write new files or change files when you allow it. Shell reads its files and never changes them. Hidden files and key files are never read or written. Not your home folder itself or a system folder.')),
+    offer].filter(Boolean));
   if (key) {
     const el = pop.querySelector('[data-key="' + CSS.escape(key) + '"]');
     if (el && !el.disabled) el.focus();
@@ -1720,6 +1996,7 @@ function renderThread(toEnd) {
   }
   const last = msgs.length - 1;
   const idle = !s.live && !s.chat.running;
+  if (s.chat.temporary) box.append(h('p', {class: 'temp-note'}, icon('clock', 'ic-sm'), h('span', null, h('b', null, 'Temporary chat. '), TEMP_HELP)));
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
     if (m.role === 'user') {

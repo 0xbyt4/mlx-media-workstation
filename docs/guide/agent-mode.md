@@ -12,7 +12,7 @@ The full rules are in [AGENT.md](../AGENT.md). This page tells you how to use th
 
 1. Open Chat (Cmd-3).
 2. Press "New chat".
-3. Pick "Agent".
+3. Pick the "Agent" preset.
 4. Optional: open the Tools menu under the message box. Turn tools on or off, and grant a folder.
 5. Type your request, for example: `Search the web: when was the Antikythera mechanism found, and by whom?`
 6. Press Return.
@@ -75,6 +75,22 @@ host on its own line. For "Change a file", it shows the change.
 
 No answer in 10 minutes counts as Deny. Stop also works while a card waits.
 
+### Edit the arguments
+
+You can change a call's arguments before it runs, for example a search query or the code of a Python call.
+
+1. On the approval card, press "Edit arguments".
+2. Change the JSON text. Keep it one JSON object, such as `{"query": "red fox"}`.
+3. Press "Allow once with these arguments".
+
+The tool checks the arguments first. When they do not fit the tool, the card shows why and keeps waiting. Press Escape
+in the text box, or "Cancel edit", to go back to the arguments of the model.
+
+- The call runs once with your arguments. "Allow in this chat" is not offered for an edited call.
+- The chat keeps the arguments that ran, and the model reads those in the next steps. The tool card shows "Edited".
+- A call that shows a change ("Change a file", "Write a file") cannot be edited. Deny it and ask the model for another
+  change.
+
 To take back "Allow in this chat", open the Tools menu and press Revoke next to "Allowed in this chat".
 
 ### Untrusted content
@@ -95,10 +111,14 @@ it.
 A new Agent chat has every tool on, except Python and Shell. When the model needs a tool that is off, it asks you to
 turn it on.
 
+After the first message, the chat keeps its tools. A switch then changes the tools for a new chat: press "Start a new
+chat with these tools". The new chat gets the folder, not the messages. See
+[Chat](chat.md#change-the-preset-or-the-tools-of-a-chat).
+
 ## Turn on Python or Shell
 
 1. Open the Tools menu.
-2. Turn on Python or Shell.
+2. Turn on Python or Shell. In a chat that has messages, also press "Start a new chat with these tools".
 3. Ask for the task, for example: `Use Python to find the sum of the first 1000 prime numbers.`
 4. Read the code on the approval card. Press "Allow once" only when you agree with it.
 
