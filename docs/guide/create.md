@@ -27,6 +27,10 @@ Other controls of the form:
 - **Last result from this tool**: the newest finished job of the tool. "Use its settings" fills the form with its
   settings.
 - **File fields**: press "Choose" or drop a file on the field. A file can be at most 200 MB.
+- **Image files**: an image field takes PNG, JPEG, WebP, GIF, HEIC and HEIF. The app converts a HEIC or HEIF photo
+  (an iPhone photo) to PNG with the macOS tool `sips`. From an animated GIF, it uses the first frame. Image to Video,
+  Voice to Video and Improve put a transparent image on a white background first: LTX-2.5 and the LLM cannot use
+  transparency, so its edges would look wrong.
 
 The form remembers its values per tool in this window. It does not remember the chosen files after a restart.
 
@@ -225,7 +229,10 @@ LTX-2.5 makes a video with sound from a prompt.
 | Seed | random | |
 | Final-quality decoder (advanced) | off | Slightly cleaner skin and faces, about 2.5x slower in total. |
 
-The output is `video.mp4` at 24 frames a second.
+The output is `video.mp4` at 24 frames a second. After LTX-2.5 writes it, the app tags its colours (BT.709) and puts
+its index at the start of the file, so players show the right colours and can start before the whole file is read.
+This step copies the video and the sound as they are. If it fails, the job keeps the untagged file. Image to Video
+and Voice to Video do the same. Extend Video writes the same tags when it joins the clip and the new part.
 
 Prompt tips for all LTX-2.5 tools:
 

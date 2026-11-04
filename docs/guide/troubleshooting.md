@@ -55,6 +55,14 @@ still run, but it can take many times longer or stop. See [Models](models.md#rea
 3. Open "Technical details" and read the end of the log.
 4. Fix the cause, press "Use these settings", add the files again and press Generate.
 
+| Message | Fix |
+|---|---|
+| ffmpeg failed (exit code N): ... | The text after the colon is the line of ffmpeg's output that names the cause. Change the input file or the setting that it names. |
+| The model process exited with code N. See the log. | Open "Technical details" and read the end of the log. |
+| Could not read the input file: ... | ffprobe cannot read the file. It is damaged, or it is not an image, audio or video file. Convert it, for example to PNG, WAV or MP4. |
+| Could not convert the HEIC image: ... | Export the photo as JPEG from Photos (File > Export) and add it again. |
+| ffmpeg took more than 600 s on the input file. (ffprobe: 30 s) | Use a shorter or smaller file. Extend Video encodes the whole clip first: set "Use the clip up to (s)", or cut the clip. |
+
 Some jobs are refused before they start. The message shows at the top of the form, under "The job was not started":
 
 | Message | Fix |

@@ -61,6 +61,8 @@ See [Model licences](#model-licences).
   brew install ffmpeg python@3.12 python@3.14 hf
   ```
 
+  We tested the media steps with ffmpeg 9.0.2. Older versions are not tested.
+
 - [uv](https://docs.astral.sh/uv/) to make the Python environments:
 
   ```sh
@@ -598,6 +600,8 @@ checks on your Mac before you send a change. To send a change, read
 - In `--browser` mode, the browser sends the session cookie to every server on `127.0.0.1`. Use the app window when
   other local servers run.
 - Uploaded files get fixed names, and the server sends back only media files.
+- The jobs' ffmpeg and ffprobe calls open only local files with audio, video and image demuxers: a playlist or a
+  concat list cannot make them read other files or the network.
 - Agent mode runs model-written code only in a sandbox without network, and only after you approve each run.
   [docs/AGENT.md](docs/AGENT.md) lists what the sandbox does not protect.
 - To report a vulnerability in private, see [SECURITY.md](SECURITY.md).

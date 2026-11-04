@@ -141,6 +141,79 @@ def test_has_audio(run: Callable[..., Any], stdout: str, expected: bool) -> None
     assert calls[0][-1] == "clip.mp4"
 
 
+@pytest.mark.parametrize(
+    "probe", ["has_audio", "media_seconds", "video_size", "frame_count", "image_format"]
+)
+def test_probes_open_only_local_media_files(
+    run: Callable[..., Any], probe: str
+) -> None:
+    calls = run("64,48,rgb24\n")
+    try:
+        getattr(tools, probe)(Path("in.mp4"))
+    except ValueError:
+        pass  # the canned answer does not suit every probe; the command is what counts
+    cmd = calls[0]
+    # the file protocol and the media demuxers only, before the input: no concat list, playlist or network
+    assert cmd[3:7] == tools.GUARD
+    assert cmd[3:5] == ["-protocol_whitelist", "file"]
+    assert "concat" not in cmd[6] and "hls" not in cmd[6]
+    assert {"mov", "wav", "png_pipe", "jpeg_pipe", "gif"} <= set(cmd[6].split(","))
+    assert cmd[-1] == "in.mp4"
+
+
+def test_a_probe_that_fails_says_why_in_plain_words(run: Callable[..., Any]) -> None:
+    run(
+        stderr="[in#0 @ 0x7f8a] in.mp4: Invalid data found when processing input\n",
+        code=1,
+    )
+    with pytest.raises(ValueError) as exc:
+        tools.media_seconds(Path("in.mp4"))
+    assert str(exc.value) == (
+        "Could not read the input file: in.mp4: Invalid data found when processing input"
+    )
+
+
+def test_a_probe_without_a_value(run: Callable[..., Any]) -> None:
+    run("N/A\n")
+    with pytest.raises(
+        ValueError, match="^Could not read the length of the input file.$"
+    ):
+        tools.media_seconds(Path("in.wav"))
+    run("\n")
+    with pytest.raises(ValueError, match="^The input file has no video stream.$"):
+        tools.video_size(Path("in.wav"))
+
+
+def test_probes_and_prep_have_time_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    limits: list[float] = []
+
+    def slow(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        limits.append(kw["timeout"])
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    monkeypatch.setattr(tools.subprocess, "run", slow)
+    with pytest.raises(ValueError) as exc:
+        tools.media_seconds(Path("in.wav"))
+    assert str(exc.value) == (
+        "ffprobe took more than 30 s on the input file. Use a shorter or smaller file."
+    )
+    with pytest.raises(ValueError, match="^ffmpeg took more than 600 s on the input"):
+        tools.prep(["ffmpeg", "-i", "in.mp4", "out.mp4"])
+    assert limits == [tools.READ_SECONDS, tools.PREP_SECONDS]
+
+
+def test_a_missing_ffmpeg_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError(2, "No such file or directory", cmd[0])
+
+    monkeypatch.setattr(tools.subprocess, "run", missing)
+    with pytest.raises(ValueError) as exc:
+        tools.has_audio(Path("in.wav"))
+    assert str(exc.value) == (
+        "ffprobe was not found. Install it with Homebrew: brew install ffmpeg."
+    )
+
+
 def test_media_seconds(run: Callable[..., Any]) -> None:
     run("12.480000\n")
     assert tools.media_seconds(Path("a.wav")) == 12.48
@@ -152,9 +225,105 @@ def test_video_size(run: Callable[..., Any], stdout: str) -> None:
     assert tools.video_size(Path("v.mp4")) == (704, 1280)
 
 
-def test_frame_count(run: Callable[..., Any]) -> None:
-    run("121\n")
+def test_frame_count_reads_the_header(run: Callable[..., Any]) -> None:
+    calls = run("121\n")
     assert tools.frame_count(Path("v.mp4")) == 121
+    assert len(calls) == 1  # no decode of the whole clip
+    assert calls[0][calls[0].index("-show_entries") + 1] == "stream=nb_frames"
+    assert "-count_frames" not in calls[0]
+
+
+def test_frame_count_counts_when_the_header_has_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], float]] = []
+
+    def fake(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((cmd, kw["timeout"]))
+        out = "N/A\n" if len(calls) == 1 else "97\n"
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    monkeypatch.setattr(tools.subprocess, "run", fake)
+    assert tools.frame_count(Path("v.mkv")) == 97
+    (header, _), (count, limit) = calls
+    assert "stream=nb_frames" in header
+    assert "-count_frames" in count and "stream=nb_read_frames" in count
+    assert limit == tools.PREP_SECONDS  # a decode of the whole clip
+
+
+# ffmpeg's error lines, as ffmpeg 9.0.2 writes them with -v error
+
+PRORES_COPY = """\
+[mp4 @ 0x7cf0c0c500] Could not find tag for codec prores in stream #0, codec not currently supported in container
+[out#0/mp4 @ 0x7cf1024180] Could not write header (incorrect codec parameters ?): Invalid argument
+"""
+GIF_TO_PNG = """\
+[image2 @ 0x7938c0c280] Cannot write more than one file with the same name. Are you missing the -update option or a sequence pattern?
+[vost#0:0/png @ 0x7938c5c000] Error submitting a packet to the muxer: Invalid argument
+    Last message repeated 1 times
+[out#0/image2 @ 0x7939024180] Error muxing a packet
+[out#0/image2 @ 0x7939024180] Task finished with error code: -22 (Invalid argument)
+[out#0/image2 @ 0x7939024180] Terminating thread with return code -22 (Invalid argument)
+"""
+HEIC_GRID = """\
+[vost#0:0/png @ 0x74c2c6c000] Filtergraph 'scale=64:48' was specified for a stream fed from a complex filtergraph. Simple and complex filtering cannot be used together for the same stream.
+Error opening output file fixed_big.png.
+Error opening output files: Invalid argument
+"""
+GIF_CAUSE = "Cannot write more than one file with the same name. Are you missing the -update option or a sequence pattern?"
+HEIC_CAUSE = (
+    "Filtergraph 'scale=64:48' was specified for a stream fed from a complex filtergraph. Simple and complex "
+    "filtering cannot be used together for the same stream."
+)
+MISSING = """\
+[in#0 @ 0x774d018000] Error opening input: No such file or directory
+Error opening input file nothere.mp4.
+Error opening input files: No such file or directory
+"""
+NOT_WHITELISTED = """\
+[in#0 @ 0x74e4c10000] Format not on whitelist 'mp3,wav'
+[in#0 @ 0x74e4c0c000] Error opening input: Invalid argument
+Error opening input file list.mp3.
+Error opening input files: Invalid argument
+"""
+NO_STREAM = """\
+[fc#0 @ 0x7c82c08000] Stream specifier ':a' in filtergraph description [0:a]anull[x] matches no streams.
+Error binding filtergraph inputs/outputs: Invalid argument
+"""
+
+
+@pytest.mark.parametrize(
+    ("stderr", "cause"),
+    [
+        (
+            PRORES_COPY,
+            "Could not find tag for codec prores in stream #0, codec not currently supported in container",
+        ),
+        (
+            GIF_TO_PNG,
+            GIF_CAUSE,
+        ),
+        (
+            HEIC_GRID,
+            HEIC_CAUSE,
+        ),
+        (MISSING, "Error opening input: No such file or directory"),
+        (NOT_WHITELISTED, "Format not on whitelist 'mp3,wav'"),
+        (
+            NO_STREAM,
+            "Stream specifier ':a' in filtergraph description [0:a]anull[x] matches no streams.",
+        ),
+        ("one\ntwo\n", "two"),
+        ("", ""),
+    ],
+)
+def test_ffmpeg_error_names_the_cause(stderr: str, cause: str) -> None:
+    assert tools.ffmpeg_error(stderr) == cause
+
+
+def test_ffmpeg_error_strips_every_prefix_and_is_short() -> None:
+    line = "[out#0/wav @ 0x1a2b3c] [aist#0:0/pcm_s16le @ 0xdeadbeef] " + "x" * 400
+    assert tools.ffmpeg_error(line) == "x" * 300
 
 
 EBUR128 = """\
@@ -192,7 +361,11 @@ def test_prep_passes(run: Callable[..., Any]) -> None:
 @pytest.mark.parametrize(
     ("stderr", "code", "why"),
     [
-        ("line 1\nline 2\nline 3\nline 4\n", 1, "line 2 line 3 line 4"),
+        (
+            GIF_TO_PNG,
+            234,
+            GIF_CAUSE,
+        ),
         ("", 2, "exit code 2"),
     ],
 )

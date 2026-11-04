@@ -89,9 +89,9 @@ most 10). `transcribe_audio` takes one in `audio`. A reference has one of these 
   checks of an upload (`prepare_job` in `app/server.py`, shared with `POST /api/jobs`): at most 200 MB, the count of
   the field, and the name `in_<field>_<n><suffix>`. Only the suffix of the file's name is kept.
 - The agent path also checks the type: the suffix must be a media type that the field accepts (`image/*` takes
-  `.png`, `.jpg`, `.jpeg` and `.webp`; `audio/*` takes `.wav`, `.mp3`, `.flac`, `.m4a`, `.aac`, `.ogg`, `.opus`,
-  `.aiff` and `.aif`; `video/*` takes `.mp4`
-  and `.mov`). A browser upload of another type is kept as `.bin`; the agent's is refused.
+  `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.heic` and `.heif`; `audio/*` takes `.wav`, `.mp3`, `.flac`, `.m4a`,
+  `.aac`, `.ogg`, `.opus`, `.aiff` and `.aif`; `video/*` takes `.mp4` and `.mov`). A browser upload of another type is
+  kept as `.bin`; the agent's is refused.
 - The approval card lists the input files with the other fields. The risk stays R2: the job uses this Mac for
   minutes.
 - The job stores the chat that queued it (`"chat"` in `job.json`).

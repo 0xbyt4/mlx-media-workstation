@@ -95,6 +95,9 @@ class FakeMedia:
         self.frames = 121
         self.audio: dict[str, bool] = {}
         self.lufs: dict[str, float | None] = {}
+        self.pix_fmt: dict[
+            str, str
+        ] = {}  # an image's pixel format; rgb24 when not given
         self.prepped: list[list[str]] = []
 
     def media_seconds(self, path: Path) -> float:
@@ -115,6 +118,9 @@ class FakeMedia:
     def prep(self, cmd: list[str]) -> None:
         self.prepped.append(cmd)
 
+    def image_format(self, path: Path) -> tuple[int, int, str]:
+        return 640, 480, self.pix_fmt.get(path.name, "rgb24")
+
 
 @pytest.fixture
 def media(monkeypatch: pytest.MonkeyPatch) -> FakeMedia:
@@ -126,6 +132,7 @@ def media(monkeypatch: pytest.MonkeyPatch) -> FakeMedia:
         "has_audio",
         "loudness",
         "prep",
+        "image_format",
     ):
         monkeypatch.setattr(tools, name, getattr(fake, name))
     return fake

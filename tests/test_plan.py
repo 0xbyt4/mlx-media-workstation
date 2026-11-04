@@ -1,6 +1,7 @@
 """tools.plan(): the exact commands, environment and output names for each tool."""
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,12 @@ LTX_ENV = {"HF_HUB_OFFLINE": "1", "LTX2_COMPUTE_DTYPE": "float16"}
 LTX = str(MODELS / "ltx" / "bin" / "ltx-2-mlx")
 LTX_MODEL = str(MODELS / "ltx-2.5")
 MFLUX = MODELS / "mflux" / "bin"
+GUARD = [
+    "-protocol_whitelist",
+    "file",
+    "-format_whitelist",
+    tools.SPEECH_DEMUXERS + ",png_pipe,jpeg_pipe,webp_pipe,gif,apng,bmp_pipe,tiff_pipe",
+]
 
 
 def params(tool: str, **values: Any) -> dict[str, Any]:
@@ -33,12 +40,22 @@ def fit(src: Path, dst: Path, w: int, h: int) -> list[str]:
         "-v",
         "error",
         "-y",
+        *GUARD,
         "-i",
         str(src),
         "-vf",
         f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}",
+        "-frames:v",
+        "1",
+        "-update",
+        "1",
         str(dst),
     ]
+
+
+def tag(video: Path) -> list[str]:
+    """The step after LTX: a stream copy that tags the colours and puts the index first."""
+    return [sys.executable, str(tools.APP / "runners/tag_video.py"), str(video)]
 
 
 def test_unknown_tool(tmp_path: Path) -> None:
@@ -298,7 +315,8 @@ def test_t2v_defaults(tmp_path: Path) -> None:
             "24",
             "-o",
             str(tmp_path / "video.mp4"),
-        ]
+        ],
+        tag(tmp_path / "video.mp4"),
     ]
     assert plan.env == LTX_ENV
 
@@ -313,7 +331,7 @@ def test_t2v_no_audio_hq_decoder_and_seed(tmp_path: Path) -> None:
         hq_decoder="true",
         seed="123",
     )
-    [cmd] = tools.plan("video.t2v", p, {}, tmp_path).commands
+    [cmd, _] = tools.plan("video.t2v", p, {}, tmp_path).commands
     assert cmd[6:] == [
         "-W",
         "1024",
@@ -339,11 +357,30 @@ def test_i2v_fits_the_start_image(tmp_path: Path, media: FakeMedia) -> None:
     plan = tools.plan("video.i2v", p, {"image": [img]}, tmp_path)
     start = tmp_path / "start.png"
     assert media.prepped == [fit(img, start, 576, 1024)]
-    [cmd] = plan.commands
+    [cmd, finish] = plan.commands
+    assert finish == tag(tmp_path / "video.mp4")
     assert cmd[:2] == [LTX, "generate"]
     assert cmd[6:12] == ["-W", "576", "-H", "1024", "-f", "97"]
     assert cmd[-4:] == ["-o", str(tmp_path / "video.mp4"), "--image", str(start)]
     assert plan.env == LTX_ENV
+
+
+@pytest.mark.parametrize("pix_fmt", ["rgba", "pal8", "ya8", "yuva420p", "rgba64be"])
+def test_i2v_lays_an_image_with_alpha_on_white(
+    tmp_path: Path, media: FakeMedia, pix_fmt: str
+) -> None:
+    img = tmp_path / "in_image_0.png"
+    media.pix_fmt[img.name] = pix_fmt  # 640x480
+    p = params("video.i2v", prompt="It turns.", size="576x1024")
+    tools.plan("video.i2v", p, {"image": [img]}, tmp_path)
+    [cmd] = media.prepped
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert graph == (
+        "[0:v]format=rgba[fg];color=c=white:s=640x480[bg];[bg][fg]overlay=shortest=1:format=auto,format=rgb24,"
+        "scale=576:1024:force_original_aspect_ratio=increase:flags=lanczos,crop=576:1024"
+    )
+    assert "-vf" not in cmd
+    assert cmd[-5:] == ["-frames:v", "1", "-update", "1", str(tmp_path / "start.png")]
 
 
 def test_i2v_needs_an_image(tmp_path: Path, media: FakeMedia) -> None:
@@ -367,6 +404,7 @@ def test_a2v_pads_the_voice_and_fits_the_image(
             "-v",
             "error",
             "-y",
+            *GUARD,
             "-i",
             str(aud),
             "-af",
@@ -401,7 +439,8 @@ def test_a2v_pads_the_voice_and_fits_the_image(
             "11",
             "-o",
             str(tmp_path / "video.mp4"),
-        ]
+        ],
+        tag(tmp_path / "video.mp4"),
     ]
     assert plan.env == LTX_ENV
 
@@ -413,7 +452,7 @@ def test_a2v_custom_style(tmp_path: Path, media: FakeMedia) -> None:
     }
     media.seconds["in_audio_0.wav"] = 1.5
     p = params("video.a2v", prompt="A man speaks.", style=" Close-up. ")
-    [cmd] = tools.plan("video.a2v", p, files, tmp_path).commands
+    [cmd, _] = tools.plan("video.a2v", p, files, tmp_path).commands
     assert "--prompt=A man speaks. Close-up." in cmd
 
 
@@ -452,6 +491,7 @@ def encode(src: Path, dst: Path, used: str, *, audio: bool) -> list[str]:
         "-v",
         "error",
         "-y",
+        *GUARD,
         "-i",
         str(src),
         *silence,
@@ -486,6 +526,7 @@ def test_extend_defaults(tmp_path: Path, media: FakeMedia) -> None:
             "-v",
             "error",
             "-y",
+            *GUARD,
             "-i",
             str(source),
             "-vf",
@@ -523,8 +564,10 @@ def test_extend_defaults(tmp_path: Path, media: FakeMedia) -> None:
             "-v",
             "error",
             "-y",
+            *GUARD,
             "-i",
             str(source),
+            *GUARD,
             "-i",
             str(raw),
             "-filter_complex",
@@ -539,6 +582,8 @@ def test_extend_defaults(tmp_path: Path, media: FakeMedia) -> None:
             "16",
             "-pix_fmt",
             "yuv420p",
+            "-bsf:v",
+            tools.LTX_COLOURS,
             "-c:a",
             "aac",
             "-b:a",
