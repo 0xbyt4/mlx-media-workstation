@@ -1,8 +1,8 @@
 """The Library screen's endpoints: every output of finished jobs, Show in Finder, and deleting one output.
 
 Only files listed in a finished job's `outputs` are reachable here: never inputs (in_* files), never other names.
-Writes pass the server's same-origin check. Media facts (size, duration) come from ffprobe once per file version
-and stay in memory, so the list stays fast for hundreds of outputs.
+Writes pass the server's same-origin check. Media facts (size, duration) come from the file header (PNG, WAV) or from
+ffprobe, once per file version, and stay in memory, so the list stays fast for thousands of outputs.
 """
 
 import json
@@ -82,13 +82,61 @@ def probe(path: Path) -> dict[str, Any]:
     return facts
 
 
+def header_facts(path: Path) -> dict[str, Any] | None:
+    """The facts of a PNG (its size) or a WAV file (its length) from the file's header, without ffprobe; None for
+    another type or a header that is not plain. ffprobe costs about 25 ms a file: 9 s for 2,400 outputs."""
+    facts: dict[str, Any] = {"width": None, "height": None, "duration": None}
+    try:
+        with path.open("rb") as f:
+            head = f.read(24)
+            if path.suffix.lower() == ".png":
+                if head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+                    return None
+                facts["width"] = int.from_bytes(head[16:20], "big")
+                facts["height"] = int.from_bytes(head[20:24], "big")
+                return facts if facts["width"] and facts["height"] else None
+            if (
+                path.suffix.lower() != ".wav"
+                or head[:4] != b"RIFF"
+                or head[8:12] != b"WAVE"
+            ):
+                return None
+            # the chunks: an id, a length (little-endian) and the data, padded to an even length. The "fmt " data
+            # has the format at offset 0 (its subformat at 24 for 0xFFFE) and the bytes a second at offset 8; for
+            # PCM or float samples, the "data" length over it is the length in seconds.
+            size, at, rate = f.seek(0, 2), 12, 0
+            while at + 8 <= size:
+                f.seek(at)
+                chunk = f.read(8 + 26)
+                length = int.from_bytes(chunk[4:8], "little")
+                if chunk[:4] == b"fmt ":
+                    code = int.from_bytes(chunk[8:10], "little")
+                    if code == 0xFFFE:
+                        code = int.from_bytes(chunk[32:34], "little")
+                    if code not in (1, 3):  # a compressed format: ffprobe decides
+                        return None
+                    rate = int.from_bytes(chunk[16:20], "little")
+                elif chunk[:4] == b"data":
+                    # no format before it, or a length that a streaming writer left open: ffprobe decides
+                    if not rate or at + 8 + length > size:
+                        return None
+                    facts["duration"] = round(length / rate, 2)
+                    return facts
+                at += 8 + length + length % 2
+    except OSError:
+        return None
+    return None
+
+
 def facts_of(path: Path, size: int, mtime_ns: int, kind: str) -> dict[str, Any]:
+    if kind == "text":  # a transcript: ffprobe finds nothing to report
+        return {"width": None, "height": None, "duration": None}
     with probed_lock:
         hit = probed.get(str(path))
     if hit and hit[:2] == (size, mtime_ns):
         facts = hit[2]
     else:
-        facts = probe(path)
+        facts = header_facts(path) or probe(path)
         with probed_lock:
             probed[str(path)] = (size, mtime_ns, facts)
     if kind == "image":

@@ -133,19 +133,29 @@ function render() {
 // in the DOM takes the focus away from it, so the focus goes back to the element that had it.
 function place(container, list, seen) {
   const active = container.contains(document.activeElement) ? document.activeElement : null;
+  // the cards in the container, read once and kept in step below (read once per job, 2,000 jobs took 0.4 s a poll)
+  const items = [...container.children].filter((c) => !c.classList.contains('empty'));
   list.forEach((job, i) => {
     seen.add(job.id);
     let card = s.cards.get(job.id);
     const sig = jobSig(job);
     if (!card || card.sig !== sig) {
       const fresh = build(job, sig);
-      if (card) card.el.replaceWith(fresh.el);
+      if (card) {
+        const at = items.indexOf(card.el);
+        if (at >= 0) items[at] = fresh.el;
+        card.el.replaceWith(fresh.el);
+      }
       card = fresh;
       s.cards.set(job.id, card);
     }
     if (card.update) card.update(job);
-    const items = [...container.children].filter((c) => !c.classList.contains('empty'));
-    if (items[i] !== card.el) container.insertBefore(card.el, items[i] || null);
+    if (items[i] !== card.el) {
+      container.insertBefore(card.el, items[i] || null);
+      const was = items.indexOf(card.el, i);
+      if (was >= 0) items.splice(was, 1);
+      items.splice(i, 0, card.el);
+    }
   });
   if (active && active.isConnected && document.activeElement !== active) active.focus({preventScroll: true});
 }

@@ -187,6 +187,64 @@ def test_probe_parses_and_survives_failures(monkeypatch: pytest.MonkeyPatch) -> 
     assert REAL_PROBE(Path("/x/clip.mp4")) == empty
 
 
+def png_head(width: int, height: int) -> bytes:
+    ihdr = width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes([8, 6, 0, 0, 0])
+    return b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR" + ihdr + b"crc!"
+
+
+def le(n: int, size: int = 4) -> bytes:
+    return n.to_bytes(size, "little")
+
+
+def wav_bytes(code: int, rate: int, data: int, declared: int | None = None) -> bytes:
+    """A WAV file: format `code` at `rate` bytes a second, a LIST chunk, and `data` bytes of samples."""
+    fmt = le(code, 2) + le(1, 2) + le(rate // 2) + le(rate) + le(2, 2) + le(16, 2)
+    info = b"INFOISFT\x05\x00\x00\x00test\x00\x00"  # odd length 5: padded to 6
+    body = b"WAVE" + b"fmt " + le(len(fmt)) + fmt + b"LIST" + le(len(info)) + info
+    body += b"data" + le(data if declared is None else declared) + b"\0" * data
+    return b"RIFF" + le(len(body)) + body
+
+
+def test_header_facts_read_png_and_wav(tmp_path: Path) -> None:
+    files = {
+        "a.png": png_head(1344, 768),
+        "pcm.wav": wav_bytes(1, 48000, 48000 * 5 + 2000),  # 5.04 s
+        "float.wav": wav_bytes(3, 64000, 64000 * 2),
+        "adpcm.wav": wav_bytes(2, 48000, 48000),  # compressed: its rate is a rough one
+        "open.wav": wav_bytes(1, 48000, 4800, declared=0xFFFFFFFF),  # streamed
+        "fake.png": b"not a picture at all, just text",
+        "clip.mp4": b"\0\0\0\x18ftypisom" + b"\0" * 32,
+    }
+    for name, data in files.items():
+        (tmp_path / name).write_bytes(data)
+    facts = {name: library.header_facts(tmp_path / name) for name in files}
+    assert facts["a.png"] == {"width": 1344, "height": 768, "duration": None}
+    assert facts["pcm.wav"] == {"width": None, "height": None, "duration": 5.04}
+    assert facts["float.wav"]["duration"] == 2.0
+    for name in ("adpcm.wav", "open.wav", "fake.png", "clip.mp4"):
+        assert facts[name] is None, name  # ffprobe decides
+
+
+def test_library_probes_only_what_the_header_does_not_tell(
+    client: TestClient, make_job: Job, state: Path, no_ffprobe: list[Path]
+) -> None:
+    job_id = "20261102-090000-aaaa"
+    done_job(
+        make_job,
+        state,
+        job_id,
+        "2026-11-02T09:00:00",
+        **{"image.png": "image", "take.wav": "audio", "notes.txt": "text"},
+    )
+    (state / job_id / "image.png").write_bytes(png_head(512, 256))
+    (state / job_id / "take.wav").write_bytes(wav_bytes(1, 32000, 32000 * 3))
+    items = {i["name"]: i for i in client.get("/api/library").json()}
+    assert no_ffprobe == []
+    assert (items["image.png"]["width"], items["image.png"]["height"]) == (512, 256)
+    assert items["take.wav"]["duration"] == 3.0
+    assert items["notes.txt"]["duration"] is None
+
+
 # Show in Finder
 
 

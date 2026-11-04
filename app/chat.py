@@ -304,6 +304,8 @@ def system_prompt(chat: dict[str, Any]) -> str:
 router = APIRouter(prefix="/api")
 lock = threading.Lock()  # guards chat files and live
 live: dict[str, "Live"] = {}  # chat id -> its running answer
+# chat.json path -> (size, mtime_ns, its summary): the chat list reads only the chats that changed (guarded by lock)
+listed: dict[Path, tuple[int, int, dict[str, Any]]] = {}
 
 
 class Live:
@@ -1265,13 +1267,26 @@ def llm_unload() -> dict[str, str]:
 def list_chats() -> list[dict[str, Any]]:
     out = []
     with lock:
+        seen = set()
         for path in CHATS.glob("*/chat.json") if CHATS.exists() else []:
             if not ID.fullmatch(path.parent.name):  # a deleted chat's trash folder
                 continue
             try:
-                out.append(summary(json.loads(path.read_text())))
+                st = path.stat()
+                hit = listed.get(path)
+                if hit is None or hit[:2] != (st.st_size, st.st_mtime_ns):
+                    hit = (
+                        st.st_size,
+                        st.st_mtime_ns,
+                        summary(json.loads(path.read_text())),
+                    )
+                    listed[path] = hit
             except (OSError, json.JSONDecodeError, KeyError):
                 continue
+            seen.add(path)
+            out.append({**hit[2], "running": hit[2]["id"] in live})
+        for gone in listed.keys() - seen:
+            del listed[gone]
     return sorted(out, key=lambda c: c["updated"], reverse=True)
 
 

@@ -142,7 +142,9 @@ for another `to`.
   the app, or that is a symbolic link, is left out.
 - `size` is in bytes. `text` is the first non-empty one of the `prompt`, `text` and `caption` params, else `""`.
 - `width` and `height` are set for images and videos, `duration` (seconds) for audio and videos; each is `null` when
-  ffprobe does not report it. The server probes each file once and keeps the result in memory until the file changes.
+  ffprobe does not report it. The server reads the size of a PNG and the length of a PCM or float WAV from the file's
+  header; it runs ffprobe for other files. It reads each file once and keeps the result in memory until the file
+  changes.
 
 `POST /api/library/reveal` takes JSON `{"job": "<job id>", "name": "<file name>"}` and shows the file in Finder
 (`open -R`). It returns `{"status": "shown"}`. The file must be a listed output of that job: HTTP 404 for any other
