@@ -1242,12 +1242,15 @@ def test_model_input_counts_the_tools_and_shortens_old_results_first(monkeypatch
     # schemas that leave room for every message but one big result
     system = len(chat.system_prompt(c)) // 3
     total = sum(chat.tokens(m) for m in msgs)
-    room = 4000 - 256 - system - (total - 500)
+    # (with the old result shortened, the messages fill less than TRIM_TO of that room)
+    room = 4000 - 256 - system - (total - 100)
     schemas = [{"type": "function", "function": {"name": "f", "description": ""}}]
     schemas[0]["function"]["description"] = "d" * (3 * room - len(json.dumps(schemas)))
-    short, _ = chat.model_input(c, 256, schemas)
+    trimmed = {**c}
+    short, _ = chat.model_input(trimmed, 256, schemas)
     assert [m["role"] for m in short] == [m["role"] for m in full]  # nothing dropped
     assert short[3]["content"] == chat.SHORTENED and short[-1]["content"] == big
+    assert trimmed["window"] == {"start": 0, "short": 3}  # the next turns keep the note
     # a result over MAX_RESULT goes in capped
     long = {**msgs[-1], "content": "z" * 30000}
     capped, _ = chat.model_input({**c, "messages": msgs[4:6] + [long]}, 256)
@@ -1257,6 +1260,48 @@ def test_model_input_counts_the_tools_and_shortens_old_results_first(monkeypatch
     monkeypatch.setattr(chat, "CONTEXT_TOKENS", 256 + system + newest + 5)
     least, _ = chat.model_input(c, 256)
     assert [m["role"] for m in least] == ["system", "user", "assistant", "tool"]
+
+
+def test_the_newest_step_s_results_stay_whole(monkeypatch):
+    """Also in the last step (the app's note follows the results) and under a stored window that points past them
+    (a regenerated or unsaved answer)."""
+    monkeypatch.setattr(chat, "CONTEXT_TOKENS", 4000)
+    calls = [{"id": "c", "name": "web_search", "arguments": {"query": "x"}}]
+
+    def step(n, content):
+        return [
+            {"role": "assistant", "content": "", "reasoning": "", "tool_calls": calls},
+            {
+                "role": "tool",
+                "tool_call_id": "c",
+                "name": "web_search",
+                "content": content,
+            },
+        ]
+
+    msgs = [{"role": "user", "content": "one", "images": []}]
+    for n in range(5):
+        msgs += step(n, "o" * 900)
+    msgs += step(5, "FRESH" + "n" * 4200)
+    note = {"role": "user", "content": "no more tools", "images": [], "app": True}
+    c = {
+        "id": "c",
+        "mode": "agent",
+        "agent": chat.default_agent(),
+        "messages": msgs + [note],
+    }
+    sent, _ = chat.model_input(c, 256)
+    assert (
+        sent[-2]["content"].startswith("FRESH")
+        and sent[-1]["content"][0]["text"] == "no more tools"
+    )
+    assert sent[3]["content"] == chat.SHORTENED  # an older result made the room
+    assert (
+        c["window"]["short"] <= len(msgs) - 1
+    )  # the newest result is not in the window
+    stale = {**c, "messages": msgs, "window": {"start": 0, "short": len(msgs) + 5}}
+    sent, _ = chat.model_input(stale, 256)
+    assert sent[-1]["content"].startswith("FRESH")
 
 
 def test_a_fifo_in_the_workspace_does_not_block_the_server(client):

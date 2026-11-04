@@ -646,7 +646,12 @@ The answer's messages are saved when it ends. The assistant messages keep their 
 message of the last step has `nudge`, the app's note that the model got as a user message before it; the next turns
 send it in the same place. The model gets at most 12,000 characters of each result.
 When the history does not fit the context budget, old tool results are shortened first, oldest first, and then the
-oldest turns are dropped. The budget counts the system prompt and the tool schemas.
+oldest turns are dropped, until the history fills 60% of the budget. The budget counts the system prompt and the tool
+schemas. `chat.json` then stores the cut as `window`: `{"start": n, "short": n}`, indexes into `messages`. The model
+input leaves out the turns before message `start` and shortens the tool results before message `short`, so the next
+turns extend the same prompt and the worker's prompt cache holds. A chat in any mode can have `window`. The
+results of the newest step always go in whole. Regenerate removes `window`. The window does not move back when the
+budget grows (a lower thinking level, fewer tools): turns that would fit again stay out until the next regenerate.
 
 
 ## Settings

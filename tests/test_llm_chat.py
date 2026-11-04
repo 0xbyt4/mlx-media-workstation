@@ -721,8 +721,81 @@ def test_model_input_counts_the_chat_s_own_system_prompt(monkeypatch):
         assert messages[0] == {"role": "system", "content": chat.system_prompt(c)}
         budget = 1500 - 256 - len(chat.system_prompt(c)) // 3
         kept[mode] = len(messages) - 1
-        assert kept[mode] == budget // 38  # 92 // 3 + 8 tokens a message
+        # a trim fills TRIM_TO of the budget; 92 // 3 + 8 tokens a message
+        assert kept[mode] == int(budget * chat.TRIM_TO) // 38
+        assert c["window"] == {"start": 40 - kept[mode], "short": 0}
     assert kept["general"] > kept["workstation"]
+
+
+def test_a_trimmed_context_keeps_its_start_until_it_is_full_again(monkeypatch):
+    """After a trim the next turns extend the same prompt (the worker's prompt cache holds); only a full context
+    moves the start, and then again by more than one turn."""
+    monkeypatch.setattr(chat, "today", lambda: "Tuesday 3 November 2026")
+    monkeypatch.setattr(chat, "CONTEXT_TOKENS", 1500)
+
+    def msg(n):
+        return {"role": "user", "content": f"{n:02d}" + "x" * 90, "images": []}
+
+    c = {"id": "c", "mode": "general", "messages": [msg(n) for n in range(40)]}
+    first, _ = chat.model_input(c, 256)
+    window = c["window"]
+    budget = 1500 - 256 - len(chat.system_prompt(c)) // 3
+    room = budget // 38 - (len(first) - 1)  # the messages that still fit
+    assert room > 1
+    for n in range(40, 40 + room):
+        c["messages"].append(msg(n))
+        later, _ = chat.model_input(c, 256)
+        assert (
+            later[: len(first)] == first
+        )  # the earlier prompt is the start of this one
+        assert c["window"] == window
+    c["messages"].append(msg(40 + room))  # full: trim again
+    again, _ = chat.model_input(c, 256)
+    assert c["window"]["start"] > window["start"] + 1
+    assert len(again) - 1 == int(budget * chat.TRIM_TO) // 38
+
+
+def test_the_trimmed_window_is_saved_with_the_chat(client, monkeypatch):
+    monkeypatch.setattr(chat, "CONTEXT_TOKENS", chat.effort.reserve("off") + 1500)
+    cid = new_chat(client)
+    path = chat.CHATS / cid / "chat.json"
+    data = json.loads(path.read_text())
+    data["messages"] = [
+        m
+        for n in range(40)
+        for m in (
+            {"role": "user", "content": "x" * 92, "images": [], "time": "t"},
+            {"role": "assistant", "content": "y" * 92, "reasoning": "", "time": "t"},
+        )
+    ]
+    path.write_text(json.dumps(data))
+    events(
+        client.post(
+            f"/api/chats/{cid}/messages", data={"text": "next", "effort": "off"}
+        )
+    )
+    window = json.loads(path.read_text())["window"]
+    assert window["start"] > 0 and window["start"] % 2 == 0  # a turn's user message
+    events(
+        client.post(
+            f"/api/chats/{cid}/messages", data={"text": "and the next", "effort": "off"}
+        )
+    )
+    assert json.loads(path.read_text())["window"] == window  # it fits: the same start
+
+
+def test_regenerate_starts_from_the_whole_chat_again(client):
+    """A trim in the old answer can point into it; the regenerated answer must not inherit that window."""
+    cid = new_chat(client)
+    client.post(f"/api/chats/{cid}/messages", data={"text": "one", "effort": "off"})
+    path = chat.CHATS / cid / "chat.json"
+    data = json.loads(path.read_text())
+    data["window"] = {"start": 0, "short": 2}
+    path.write_text(json.dumps(data))
+    client.post(
+        f"/api/chats/{cid}/messages", data={"regenerate": "true", "effort": "off"}
+    )
+    assert "window" not in json.loads(path.read_text())
 
 
 def test_chat_modes(client):

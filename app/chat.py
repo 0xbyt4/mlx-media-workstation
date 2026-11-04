@@ -89,6 +89,11 @@ MAX_FILES = 20  # files of one tool result linked on the page
 MAX_SERVED = 64 * 1024 * 1024
 OFF_BY_DEFAULT = ("run_python", "run_shell")  # see default_agent()
 SHORTENED = "[This older tool result was removed to save space.]"
+# When the turns no longer fit, model_input trims them to this share of the budget, not just under it, and stores where
+# the context starts (the chat's "window"). The next turns then extend the same prompt and the worker's prompt cache
+# holds until the context is full again. A trim to just under the budget would change the prompt's start on each
+# turn, and the model would read the whole chat again on each turn.
+TRIM_TO = 0.6
 # the notes of an answer that ended without a final text
 NOTE_STEPS = (
     "The agent reached its limit of {steps} steps, so it summed up what it has. "
@@ -471,10 +476,13 @@ def model_input(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """The messages and image paths for the model: the newest turns that fit, oldest dropped first.
 
-    The budget counts the system prompt and the tool schemas. A tool result goes in capped at MAX_RESULT characters;
-    when the turns do not fit, older tool results are replaced by a short note first (not those of the newest step),
-    then whole turns are dropped, oldest first. A turn (a user message and every message up to the next one) is kept
-    or dropped as a whole, so an assistant's tool calls always come with their results. A tool result with images
+    The budget counts the system prompt and the tool schemas. A tool result goes in capped at MAX_RESULT characters.
+    The chat's "window" ({"start": n, "short": n}, indexes into chat["messages"]) says where the context starts: the
+    turns before message start are left out and the tool results before message short are replaced by a short note.
+    When the turns from there do not fit, older tool results are replaced by the note first (not those of the newest
+    step), then whole turns are dropped, oldest first, until they fill TRIM_TO of the budget; the new window is set
+    in chat["window"], and the caller saves it (keep_window). A turn (a user message and every message up to the
+    next one) is kept or dropped as a whole, so an assistant's tool calls always come with their results. A tool result with images
     (view_image) carries them as image parts before its text; only the newest MAX_TOOL_IMAGES of them are sent.
 
     An agent answer's last step gets the app's note that no tool can be called (NUDGE) as a user message: in the
@@ -485,8 +493,20 @@ def model_input(
     budget = CONTEXT_TOKENS - max_tokens - len(system) // 3
     if tool_schemas:
         budget -= len(json.dumps(tool_schemas, ensure_ascii=False)) // 3
+    window = chat.get("window") or {}
+    start, short = int(window.get("start", 0)), int(window.get("short", 0))
+    # the newest step's results (and the app's note after them) always go in whole, also under a stored window
+    fresh = len(chat["messages"])
+    while fresh > 0 and (
+        chat["messages"][fresh - 1]["role"] == "tool"
+        or chat["messages"][fresh - 1].get("app")
+    ):
+        fresh -= 1
     turns: list[list[dict[str, Any]]] = []
-    for msg in chat["messages"]:
+    where: list[
+        list[int]
+    ] = []  # the index in chat["messages"] of each message in turns
+    for n, msg in enumerate(chat["messages"]):
         if (
             msg["role"] == "assistant"
             and msg.get("finish") == "cancelled"
@@ -495,13 +515,22 @@ def model_input(
             continue
         if msg["role"] == "user" and not msg.get("app"):
             turns.append([])
+            where.append([])
         if turns:  # a turn starts with the user
-            if msg["role"] == "tool":
+            if msg["role"] == "tool" and n < min(short, fresh):
+                msg = {**msg, "content": SHORTENED, "images": []}
+            elif msg["role"] == "tool":
                 msg = {
                     **msg,
                     "content": cap(str(msg.get("content", "")), MAX_RESULT)[0],
                 }
             turns[-1].append(msg)
+            where[-1].append(n)
+    while (
+        len(turns) > 1 and where[0][0] < start
+    ):  # the window's start; the newest turn always stays
+        turns.pop(0)
+        where.pop(0)
     # the images of tool results (view_image) that are still on disk; the newest MAX_TOOL_IMAGES are sent
     kept = 0
     for turn in reversed(turns):
@@ -529,7 +558,9 @@ def model_input(
     if total > budget:
         flat = [m for turn in turns for m in turn]
         newest = len(flat)  # the results of the newest step stay whole
-        while newest > 0 and flat[newest - 1]["role"] == "tool":
+        while newest > 0 and (
+            flat[newest - 1]["role"] == "tool" or flat[newest - 1].get("app")
+        ):
             newest -= 1
         old = [
             (t, i)
@@ -537,14 +568,18 @@ def model_input(
             for i, m in enumerate(turn)
             if m["role"] == "tool"
         ][: sum(1 for m in flat[:newest] if m["role"] == "tool")]
+        target = int(budget * TRIM_TO)
         for t, i in old:
-            if total <= budget:
+            if total <= target:
                 break
             before = tokens(turns[t][i])
             turns[t][i] = {**turns[t][i], "content": SHORTENED, "images": []}
             total -= before - tokens(turns[t][i])
-    while total > budget and len(turns) > 1:
-        total -= sum(tokens(m) for m in turns.pop(0))
+            short = max(short, where[t][i] + 1)
+        while total > target and len(turns) > 1:
+            total -= sum(tokens(m) for m in turns.pop(0))
+            where.pop(0)
+        chat["window"] = {"start": where[0][0] if where else start, "short": short}
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     images: list[str] = []
     for msg in (m for turn in turns for m in turn):
@@ -594,6 +629,16 @@ def model_input(
     return messages, images
 
 
+def keep_window(chat_id: str, before: Any, window: Any) -> None:
+    """Save the context window that model_input set (a trim), so the next turns start at the same message."""
+    if window == before:
+        return
+    with lock:
+        chat = load(chat_id)
+        chat["window"] = window
+        save(chat)
+
+
 def room(
     messages: list[dict[str, Any]],
     images: list[str],
@@ -618,7 +663,9 @@ def answer(chat_id: str, level: str, run: Live) -> None:
     try:
         with lock:
             chat = load(chat_id)
+        window = chat.get("window")
         messages, images = model_input(chat, effort.reserve(level))
+        keep_window(chat_id, window, chat.get("window"))
         for ev in llm.generate(
             messages,
             images,
@@ -765,6 +812,7 @@ class Turn:
                 note = {"role": "user", "content": nudge, "images": [], "app": True}
                 history["messages"].append(note)
             messages, images = model_input(history, self.max_tokens, schemas)
+            keep_window(self.chat_id, chat.get("window"), history.get("window"))
             self.steps = n
             self.emit({"event": "step", "n": n, "max": MAX_STEPS, "last": last})
             done = self.generate(messages, images, schemas, last)
@@ -1353,6 +1401,9 @@ async def send_message(chat_id: str, request: Request) -> StreamingResponse:
                 "tool",
             ):
                 chat["messages"].pop()
+            # a trim in the old answer can point into it: the new answer starts from the whole chat again (a
+            # regenerated answer reads the chat again in any case)
+            chat.pop("window", None)
             if not chat["messages"]:
                 raise HTTPException(400, "Nothing to answer again.")
         else:

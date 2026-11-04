@@ -443,7 +443,7 @@ registry per media flag, so at most one per profile: with the media tools (the f
 
 1. Take the schemas of the tools the chat offers. The tools that need a folder are offered only when one is granted.
 2. Build the model input. The budget counts the system prompt, the tool schemas and the tool messages. Old tool
-   results are shortened first, then old turns are dropped.
+   results are shortened first, then old turns are dropped, until the input fills 60% of the budget (`TRIM_TO`).
 3. Run one model request with the schemas. With no calls, the answer ends. When the content has no call but the
    reasoning ends with complete call blocks (Qwen sometimes writes its call while it thinks), the worker takes the
    calls from there.
@@ -492,6 +492,11 @@ It holds the offered tools, the tools that are off (by name, with the rule to as
 Tools menu), the step limit, the folder and two short fixed example runs (`AGENT_EXAMPLES`, about 250 tokens). It
 changes only when the user changes the tools or the folder, and when the date changes: the prompt has today's date,
 so the first answer after midnight reads the chat again.
+
+A full context also changes the prompt's start: old turns must go. A trim to just under the budget would drop one
+turn on each new turn, and each turn would read the whole chat again. So a trim goes down to 60% of the budget
+(`TRIM_TO`), and the chat stores where the input now starts (`window` in `chat.json`). The next turns start at the
+same message and extend the same prompt, until the context is full again.
 
 These steps also read the whole chat again (mlx-vlm 0.7.11):
 
