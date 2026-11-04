@@ -328,6 +328,12 @@ def test_the_file_room_counts_the_tool_schemas_of_a_workstation_chat():
     assert a < b
 
 
+def test_the_workstation_prompt_asks_for_a_recording_of_the_user_s_own_voice():
+    prompt = chat.workstation_prompt(["create_job", "search_library"], [], [])
+    assert "Speech in the user's own voice needs a recording of the user." in prompt
+    assert "A take that a voice tool made is not their voice." in prompt
+
+
 def test_the_workstation_prompt_names_the_tools_that_are_not_installed():
     names = ["list_workstation_tools", "create_job"]
     prompt = chat.workstation_prompt(names, [], ["video.t2v", "music.ace"])
