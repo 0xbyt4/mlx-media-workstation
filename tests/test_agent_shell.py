@@ -367,7 +367,8 @@ def test_user_pids_lists_the_newest_first() -> None:
     procs = [subprocess.Popen(["/bin/sleep", "5"]) for _ in range(3)]
     try:
         pids = ss.user_pids()
-        assert [pids.index(p.pid) for p in procs] == [2, 1, 0]
+        first, second, third = (pids.index(p.pid) for p in procs)
+        assert first > second > third  # other processes may start in between
     finally:
         for p in procs:
             p.kill()

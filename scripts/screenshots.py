@@ -266,9 +266,10 @@ class Browser:
                 raise SystemExit(f"Timed out waiting for {what}.")
             time.sleep(0.25)
 
-    def goto(self, url: str) -> None:
+    def goto(self, url: str, what: str | None = None) -> None:
+        """Open url; `what` names it in a timeout message (the sign-in URL holds the token)."""
         self.call("Page.navigate", {"url": url})
-        self.wait("document.readyState === 'complete'", url)
+        self.wait("document.readyState === 'complete'", what or url)
 
     def theme(self, scheme: str) -> None:
         features = [
@@ -409,9 +410,8 @@ def run(out_dir: Path, only: set[str], keep: bool) -> None:
         query = urllib.parse.urlencode(
             {"t": token_file.read_text().strip(), "next": "/"}
         )
-        browser.goto(
-            f"{base}/auth?{query}"
-        )  # the token goes to Chrome only, never to the output
+        # the token goes to Chrome only, never to the output
+        browser.goto(f"{base}/auth?{query}", what="the sign-in page")
         browser.wait("document.querySelector('nav, aside')", "the app")
         prepare(browser, made, text)
         browser.goto(

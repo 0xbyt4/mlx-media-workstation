@@ -193,6 +193,22 @@ def test_tails_leave_out_the_time_reports(state: Path) -> None:
     path = state / "job.log"
     path.write_text("$ step one\nloaded\n" + TIME_REPORT + "$ step two\nworking 3/10\n")
     assert server.live_tail(path) == "$ step one\nloaded\n$ step two\nworking 3/10"
+    # a long log whose read window starts inside a times line ("8.07 real" of "18.07 real"): that cut line is
+    # dropped, and no line of the model with it
+    rest = TIME_REPORT[TIME_REPORT.index("18.07") + 1 :]
+    width = (server.TAIL_BYTES - len(rest)) // 5 - 1
+    model = [f"step {i}/5 ".ljust(width, "z") for i in range(1, 6)]
+    model[-1] += "z" * (server.TAIL_BYTES - len(rest) - 5 * (width + 1))
+    path.write_text(
+        "x" * 1000
+        + "\n"
+        + TIME_REPORT[: TIME_REPORT.index("18.07") + 1]
+        + rest
+        + "\n".join(model)
+        + "\n"
+    )
+    assert path.read_bytes()[-server.TAIL_BYTES :].startswith(b"8.07 real")
+    assert server.live_tail(path).splitlines() == model
 
 
 def test_view_of_queued_and_finished_jobs(state: Path, make_job: Job) -> None:

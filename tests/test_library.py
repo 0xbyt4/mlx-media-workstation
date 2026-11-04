@@ -212,6 +212,7 @@ def test_header_facts_read_png_and_wav(tmp_path: Path) -> None:
         "float.wav": wav_bytes(3, 64000, 64000 * 2),
         "adpcm.wav": wav_bytes(2, 48000, 48000),  # compressed: its rate is a rough one
         "open.wav": wav_bytes(1, 48000, 4800, declared=0xFFFFFFFF),  # streamed
+        "zero.wav": wav_bytes(1, 48000, 4800, declared=0),  # streamed, length left at 0
         "fake.png": b"not a picture at all, just text",
         "clip.mp4": b"\0\0\0\x18ftypisom" + b"\0" * 32,
     }
@@ -221,7 +222,7 @@ def test_header_facts_read_png_and_wav(tmp_path: Path) -> None:
     assert facts["a.png"] == {"width": 1344, "height": 768, "duration": None}
     assert facts["pcm.wav"] == {"width": None, "height": None, "duration": 5.04}
     assert facts["float.wav"]["duration"] == 2.0
-    for name in ("adpcm.wav", "open.wav", "fake.png", "clip.mp4"):
+    for name in ("adpcm.wav", "open.wav", "zero.wav", "fake.png", "clip.mp4"):
         assert facts[name] is None, name  # ffprobe decides
 
 

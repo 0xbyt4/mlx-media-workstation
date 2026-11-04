@@ -117,8 +117,9 @@ def header_facts(path: Path) -> dict[str, Any] | None:
                         return None
                     rate = int.from_bytes(chunk[16:20], "little")
                 elif chunk[:4] == b"data":
-                    # no format before it, or a length that a streaming writer left open: ffprobe decides
-                    if not rate or at + 8 + length > size:
+                    # no format before it, or a length that a streaming writer left open (past the end, or 0):
+                    # ffprobe decides
+                    if not rate or not length or at + 8 + length > size:
                         return None
                     facts["duration"] = round(length / rate, 2)
                     return facts

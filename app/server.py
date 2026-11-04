@@ -71,6 +71,9 @@ TIME_REPORT = re.compile(
     r"^ *[\d.]+ real +[\d.]+ user +[\d.]+ sys\n(?: *-?\d+ +[a-z][a-z ]*(?:\n|$))*",
     re.MULTILINE,
 )
+TIME_COUNTERS = re.compile(
+    r"(?: *-?\d+ +[a-z][a-z ]*(?:\n|$))*"
+)  # a report's counter lines, at the start
 ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
 KINDS = {
     ".png": "image",
@@ -323,9 +326,11 @@ def live_tail(path: Path) -> str:
             text = f.read().decode(errors="replace")
     except OSError:  # not yet written while the job's inputs are prepared
         return ""
+    if size > TAIL_BYTES:
+        # the first line is cut: drop it, and the counter lines of a report whose times line it was
+        text = text.split("\n", 1)[-1]
+        text = text[TIME_COUNTERS.match(text).end() :]
     lines = TIME_REPORT.sub("", text).splitlines()
-    if size > TAIL_BYTES:  # the first line is cut
-        lines = lines[1:]
     return "\n".join(lines[-TAIL_LINES:])
 
 
