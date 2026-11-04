@@ -103,6 +103,8 @@ MAX_FILES = 20  # files of one tool result linked on the page
 # the largest workspace file the page may fetch (run_python writes at most 50 MB a file)
 MAX_SERVED = 64 * 1024 * 1024
 OFF_BY_DEFAULT = ("run_python", "run_shell")  # see default_agent()
+# tools added after chats began to store their tool lists, before they stored "known" (see agent_of())
+ADDED_TOOLS = ("system_status",)
 SHORTENED = "[This older tool result was removed to save space.]"
 # When the turns no longer fit, model_input trims them to this share of the budget, not just under it, and stores where
 # the context starts (the chat's "window"). The next turns then extend the same prompt and the worker's prompt cache
@@ -468,21 +470,37 @@ def default_agent(mode: str = "agent") -> dict[str, Any]:
         "folder": None,
         "grants": [],
         "tainted": False,
+        "known": names,
     }
 
 
 def agent_of(chat: dict[str, Any]) -> dict[str, Any]:
-    """The chat's agent state (a copy), with defaults for what is missing."""
+    """The chat's agent state (a copy), with defaults for what is missing. "known" lists the tools that existed when
+    the state was saved: a tool added to the app since then starts as a new chat would have it (on, except
+    OFF_BY_DEFAULT), while a tool the user turned off stays off."""
     saved = chat.get("agent")
-    state = default_agent(mode_of(chat)) if not isinstance(saved, dict) else {}
-    if isinstance(saved, dict):
-        state = {
-            "tools": [str(n) for n in saved.get("tools", [])],
-            "folder": saved.get("folder") or None,
-            "grants": [str(n) for n in saved.get("grants", [])],
-            "tainted": bool(saved.get("tainted", False)),
-        }
-    return state
+    if not isinstance(saved, dict):
+        return default_agent(mode_of(chat))
+    try:
+        names = tools_for(mode_of(chat)).names()
+    except RuntimeError:
+        names = []
+    tools = [str(n) for n in saved.get("tools", [])]
+    known = saved.get("known")
+    if not isinstance(known, list):  # saved before "known"
+        known = [n for n in names if n not in ADDED_TOOLS]
+    tools += [
+        n
+        for n in names
+        if n not in known and n not in tools and n not in OFF_BY_DEFAULT
+    ]
+    return {
+        "tools": tools,
+        "folder": saved.get("folder") or None,
+        "grants": [str(n) for n in saved.get("grants", [])],
+        "tainted": bool(saved.get("tainted", False)),
+        "known": sorted(set(names) | {str(n) for n in known}),
+    }
 
 
 def grants_of(state: dict[str, Any]) -> Grants:
@@ -777,9 +795,9 @@ def file_room(
     message's own text, images and file blocks: with the older turns trimmed away the new turn fits, also when a later
     answer thinks longer."""
     budget = CONTEXT_TOKENS - effort.reserve(level) - len(system_prompt(chat)) // 3
-    if mode_of(chat) == "agent":
+    if uses_tools(chat):
         try:
-            reg = registry()
+            reg = tools_for(mode_of(chat))
             schemas = reg.schemas(offered(agent_of(chat), reg))
             budget -= len(json.dumps(schemas, ensure_ascii=False)) // 3
         except RuntimeError:  # no tools: the answer reports that
@@ -1866,9 +1884,8 @@ def start_answer(
             if staged:
                 message["files"] = store_files(chat, staged, room)
                 # a file's text is untrusted content in the model's context, as a web page is (docs/AGENT.md)
-                if uses_tools(
-                    chat
-                ):  # an agent chat, or a workstation chat with the media tools
+                # also in the chat profile: the same chat can open in the full profile later, with tools
+                if mode_of(chat) in ("agent", "workstation"):
                     chat["agent"] = {**agent_of(chat), "tainted": True}
             chat["messages"].append(message)
             if chat["title"] == "New chat" and (text or staged):

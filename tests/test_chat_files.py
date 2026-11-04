@@ -741,3 +741,92 @@ def test_a_transcription_over_its_time_is_cancelled(client, ws, monkeypatch):
     entry = saved(client, cid)["messages"][0]["files"][0]
     assert entry["state"] == "failed" and "took longer than" in entry["error"]
     assert ws.cancelled == [FIRST_JOB]
+
+
+# ---------- review fixes ----------
+
+
+def test_a_utf16_part_with_entities_is_refused(tmp_path):
+    # a byte search for "<!ENTITY" misses UTF-16: the parser itself must refuse the declaration
+    part = (
+        '<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE a [<!ENTITY e "xxxxxxxx">]>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        '<row r="1"><c r="A1" t="inlineStr"><is><t>&e;&e;&e;</t></is></c></row></sheetData></worksheet>'
+    ).encode("utf-16")
+    src = zipfile.ZipFile(io.BytesIO(make_xlsx({"S": [["a"]]})))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for name in src.namelist():
+            z.writestr(name, part if name.endswith("sheet1.xml") else src.read(name))
+    with pytest.raises(attachments.AttachmentError, match="unexpected XML"):
+        attachments.extract(write(tmp_path, "u16.xlsx", out.getvalue()), "sheet")
+
+
+def test_a_utf16_part_without_a_dtd_still_reads(tmp_path):
+    part = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        '<row r="1"><c r="A1" t="inlineStr"><is><t>wide &amp; fine</t></is></c></row></sheetData></worksheet>'
+    ).encode("utf-16")
+    src = zipfile.ZipFile(io.BytesIO(make_xlsx({"S": [["a"]]})))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for name in src.namelist():
+            z.writestr(name, part if name.endswith("sheet1.xml") else src.read(name))
+    ex = attachments.extract(write(tmp_path, "w.xlsx", out.getvalue()), "sheet")
+    assert "wide & fine" in "".join(t for _, t in ex.sections)
+
+
+def test_sheets_that_name_one_part_read_it_once(tmp_path, monkeypatch):
+    src = zipfile.ZipFile(
+        io.BytesIO(make_xlsx({"A": [["one"]], "B": [["two"]], "C": [["three"]]}))
+    )
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        for name in src.namelist():
+            data = src.read(name)
+            if name == "xl/_rels/workbook.xml.rels":  # every sheet points at sheet1.xml
+                data = data.replace(b"sheet2.xml", b"sheet1.xml").replace(
+                    b"sheet3.xml", b"sheet1.xml"
+                )
+            z.writestr(name, data)
+    parsed: list[str] = []
+    real = attachments.parse
+    monkeypatch.setattr(
+        attachments, "parse", lambda z, name: parsed.append(name) or real(z, name)
+    )
+    attachments.extract(write(tmp_path, "same.xlsx", out.getvalue()), "sheet")
+    assert parsed.count("xl/worksheets/sheet1.xml") == 1
+
+
+def test_odd_numbers_and_damaged_parts_are_refused_not_crashed(tmp_path):
+    ods = make_ods(["a\tb"]).replace(
+        b'number-columns-repeated="16380"', 'number-columns-repeated="²"'.encode()
+    )
+    ex = attachments.extract(write(tmp_path, "sq.ods", ods), "sheet")
+    assert "a\tb" in "".join(t for _, t in ex.sections)
+    data = bytearray(make_xlsx({"S": [["hello"] * 50]}))
+    i = data.index(b"xl/worksheets/sheet1.xml") + len("xl/worksheets/sheet1.xml") + 5
+    data[i] ^= 0xFF  # a byte of the compressed sheet: its CRC no longer matches
+    with pytest.raises(attachments.AttachmentError):
+        attachments.extract(write(tmp_path, "crc.xlsx", bytes(data)), "sheet")
+
+
+def test_one_huge_first_page_is_cut_not_called_a_scan(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(attachments, "MAX_EXTRACT", 20)
+    path = write(
+        tmp_path, "big.pdf", make_pdf(["A long first page with many words on it"])
+    )
+    attachments.pdf_main(str(path))
+    out = json.loads(capsys.readouterr().out)
+    assert out["more"] and out["texts"] and 0 < len(out["texts"][0]) <= 20
+
+
+def test_a_chat_profile_workstation_chat_is_tainted_by_a_file(client, monkeypatch):
+    monkeypatch.setattr(
+        config, "APP", config.App(**{**config.APP_DEFAULTS, "profile": "chat"})
+    )
+    cid = new_chat(client, "workstation")
+    r = send(client, cid, "read", [("n.txt", io.BytesIO(b"note"), "text/plain")])
+    assert r.status_code == 200
+    assert saved(client, cid)["agent"]["tainted"] is True

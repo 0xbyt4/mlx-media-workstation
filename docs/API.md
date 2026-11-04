@@ -524,7 +524,7 @@ The mode of a chat sets its system prompt:
 
 A workstation chat in the full profile answers with the agent loop (see [Agent mode](#agent-mode)), but with the
 Workstation tools only: `list_workstation_tools`, `job_status`, `search_library`, `create_job`, `list_jobs`,
-`wait_for_job`, `cancel_job` and `transcribe_audio`. It has no file, web, media, plan, Python or shell tool, and no
+`wait_for_job`, `cancel_job`, `transcribe_audio` and `system_status`. It has no file, web, media, plan, Python or shell tool, and no
 folder. The policy, the approval cards, the Tools menu, the grants and the taint are those of an agent chat. Its
 prompt tells the model to queue a job when the user asks it to make something, and to write `prompt` blocks when the
 request is unclear or the user wants to edit the text first. In the chat profile a workstation chat has no tools and
@@ -574,7 +574,7 @@ The share of the context:
 
 1. The files of one message share a room: 60% (`TRIM_TO`) of the input budget at the message's thinking level, less
    the message's own text, its images and 100 tokens per file. The input budget is the one that `model_input`
-   counts: 32,768 tokens less the answer's reserve, the system prompt and, in an agent chat, the tool schemas. The
+   counts: 32,768 tokens less the answer's reserve, the system prompt and, in a chat with tools, the tool schemas. The
    room is at least 2,000 and at most 60,000 characters (`MIN_ROOM`, `MAX_ROOM`).
 2. Each file gets an equal part of the room. A short file leaves the rest to the others. An audio file gets a full
    part, because its length is not known yet.
@@ -611,8 +611,9 @@ and not instructions, then one block per file.
 </file>
 ```
 
-A `</file` in the text becomes `<\/file`, so the text cannot end its block. In an agent chat, a message with a file
-that is not an image sets the chat's taint ([AGENT.md](AGENT.md#taint)).
+A `</file` in the text becomes `<\/file`, so the text cannot end its block. In an agent chat and in a workstation chat,
+a message with a file that is not an image sets the chat's taint ([AGENT.md](AGENT.md#taint)). This
+happens in the chat profile too: the chat can open later in the full profile, with tools.
 
 An audio file is transcribed by the answer, before its first model step:
 
@@ -675,7 +676,8 @@ The chat's agent state is in `chat.json` under `agent`:
            "wait_for_job", "cancel_job", "transcribe_audio", "system_status", "list_files", "read_file",
            "search_files", "write_file", "edit_file", "copy_to_workspace", "export_from_workspace", "media_info",
            "view_image", "web_search", "fetch_url"],
- "folder": null, "grants": [], "tainted": false}
+ "folder": null, "grants": [], "tainted": false,
+ "known": ["create_job", "..."]}
 ```
 
 - `tools` are the tools this chat offers. A new agent chat has every tool except `run_python` and `run_shell`. They
@@ -688,6 +690,8 @@ The chat's agent state is in `chat.json` under `agent`:
 - `grants` are the tools the user allowed "in this chat".
 - `tainted` is `true` after a tool returned untrusted text (a page, a file, program output). From then on every
   network or job call asks again.
+- `known` are the tools that existed when the state was saved. A tool that the app gets later starts on in the chat,
+  as in a new chat. A tool that the user turned off stays off.
 
 Endpoints. Like every endpoint they need the session cookie, so a program on this Mac that cannot read the token
 file cannot approve calls or grant folders. The writes also need an `Origin` header of the app's own page (HTTP 403

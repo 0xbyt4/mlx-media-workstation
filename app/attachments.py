@@ -21,10 +21,12 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
+from xml.parsers import expat
 
 # suffix -> kind; the type label is the suffix in capitals
 TEXT = (  # noqa: SIM905 - easier to read than one suffix per line
@@ -252,6 +254,9 @@ def pdf_main(path: str) -> None:
         page = doc.pageAtIndex_(i)
         text = (page.string() if page is not None else None) or ""
         if total + len(text) > MAX_EXTRACT:
+            texts.append(
+                text[: MAX_EXTRACT - total]
+            )  # its start: one huge page is no scan
             more = True
             break
         texts.append(text)
@@ -314,18 +319,46 @@ def read_word(path: Path) -> Extract:
     return Extract([("", text[:MAX_EXTRACT])], more=len(text) > MAX_EXTRACT)
 
 
+def refuse_dtd(*_: Any) -> None:
+    raise AttachmentError("the file has an unexpected XML part.")
+
+
+def qname(name: str) -> str:
+    """expat's "uri}local" (namespace_separator "}") as ElementTree's "{uri}local"."""
+    return "{" + name if "}" in name else name
+
+
 def parse(z: zipfile.ZipFile, name: str) -> ET.Element:
-    """One XML part of a zip. A part with a DOCTYPE is refused: these formats never have one, and it is where entity
-    tricks live."""
+    """One XML part of a zip. A part with a DOCTYPE or an entity declaration is refused: these formats never have
+    one, and it is where entity tricks live. The parser itself refuses it, in any encoding (a byte search misses a
+    UTF-16 part)."""
     try:
         data = z.read(name)
     except KeyError:
         raise AttachmentError(f"the file has no {name}.") from None
-    if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
-        raise AttachmentError("the file has an unexpected XML part.")
+    except (
+        zipfile.BadZipFile,
+        zlib.error,
+        NotImplementedError,
+        RuntimeError,
+        OSError,
+        EOFError,
+    ):
+        raise AttachmentError("the file cannot be read (it may be damaged).") from None
+    tree = ET.TreeBuilder()
+    p = expat.ParserCreate(namespace_separator="}")
+    p.buffer_text = True
+    p.StartDoctypeDeclHandler = refuse_dtd
+    p.EntityDeclHandler = refuse_dtd
+    p.StartElementHandler = lambda tag, attrs: tree.start(
+        qname(tag), {qname(k): v for k, v in attrs.items()}
+    )
+    p.EndElementHandler = lambda tag: tree.end(qname(tag))
+    p.CharacterDataHandler = tree.data
     try:
-        return ET.fromstring(data)
-    except ET.ParseError:
+        p.Parse(data, True)
+        return tree.close()
+    except (expat.ExpatError, AssertionError):
         raise AttachmentError("the file cannot be read (it may be damaged).") from None
 
 
@@ -374,6 +407,15 @@ def read_sheets(path: Path) -> Extract:
         return read_xlsx(z)
 
 
+def count(text: str | None, default: int) -> int:
+    """A small decimal number from the XML, else default (isdigit() alone also takes "²")."""
+    return (
+        int(text)
+        if text and len(text) <= 9 and text.isascii() and text.isdigit()
+        else default
+    )
+
+
 def read_xlsx(z: zipfile.ZipFile) -> Extract:
     book = parse(z, "xl/workbook.xml")
     rels = parse(z, "xl/_rels/workbook.xml.rels")
@@ -385,9 +427,15 @@ def read_xlsx(z: zipfile.ZipFile) -> Extract:
         for si in parse(z, "xl/sharedStrings.xml").iter(f"{MAIN}si"):
             strings.append("".join(t.text or "" for t in si.iter(f"{MAIN}t")))
     sheets = Sheets()
+    done: set[str] = (
+        set()
+    )  # each part once: many sheets that name one big part would read it again and again
     for sheet in list(book.iter(f"{MAIN}sheet"))[:MAX_SHEETS]:
         target = targets.get(sheet.get(f"{REL}id"), "")
         part = target.lstrip("/") if target.startswith("/") else f"xl/{target}"
+        if part in done:
+            continue
+        done.add(part)
         rows: list[str] = []
         chars = 0
         for row in parse(z, part).iter(f"{MAIN}row"):
@@ -403,7 +451,7 @@ def read_xlsx(z: zipfile.ZipFile) -> Extract:
                 elif v is None or v.text is None:
                     value = ""
                 elif kind == "s":
-                    i = int(v.text) if v.text.isdigit() else -1
+                    i = count(v.text, -1)
                     value = strings[i] if 0 <= i < len(strings) else ""
                 elif kind == "b":
                     value = "TRUE" if v.text == "1" else "FALSE"
@@ -437,7 +485,7 @@ def read_ods(z: zipfile.ZipFile) -> Extract:
                 value = " ".join(paragraphs) or c.get(f"{OFFICE}value") or ""
                 repeat = c.get(f"{TABLE}number-columns-repeated") or "1"
                 # an empty run (often thousands of cells to the sheet's edge) adds nothing
-                times = min(int(repeat) if repeat.isdigit() else 1, MAX_COLUMNS)
+                times = min(count(repeat, 1), MAX_COLUMNS)
                 cells += [value] * (
                     times if value else min(times, MAX_COLUMNS - len(cells))
                 )
@@ -446,7 +494,7 @@ def read_ods(z: zipfile.ZipFile) -> Extract:
             text = row_text(cells)
             repeat = row.get(f"{TABLE}number-rows-repeated") or "1"
             # empty rows repeat to the sheet's end: one is enough; a filled row repeats as it says
-            times = min(int(repeat) if repeat.isdigit() else 1, 1000) if text else 1
+            times = min(count(repeat, 1), 1000) if text else 1
             rows += [text] * times
             chars += (len(text) + 1) * times
             if sheets.full(chars):

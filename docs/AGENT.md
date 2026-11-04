@@ -250,8 +250,8 @@ Taint is a flag per chat. It is stored in `chat.json` with the grants.
   `search_files`, `copy_to_workspace`, `media_info`, `view_image`, `web_search`, `fetch_url`, `run_python` and
   `run_shell`. Their results can hold text from outside the app (an image can hold written text too).
 - A message with an attached file that is not an image (a document, a text file, an audio file) sets it when the
-  message is saved, before the model reads the file. This applies to agent chats and to workstation chats with the
-  Workstation tools. The file's text (or the audio's transcript) comes from outside
+  message is saved, before the model reads the file. This applies to agent chats and to workstation chats, also in the chat
+  profile: the same chat can open later in the full profile, with tools. The file's text (or the audio's transcript) comes from outside
   the app, as a web page does: a downloaded PDF can hold orders for the model. See
   [API.md](API.md#attached-files).
 - An attached image does not set it. An image can hold written text too, but the user chose it and sees it in the

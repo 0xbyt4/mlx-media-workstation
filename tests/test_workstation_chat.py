@@ -288,3 +288,33 @@ def test_a_saved_workstation_chat_without_tool_state(client):
     assert [
         t["function"]["name"] for t in evs[-1]["stats"]["seen"]["tools"]
     ] == WS_TOOLS
+
+
+def test_a_tool_added_to_the_app_starts_on_in_saved_chats():
+    names = [n for n in WS_TOOLS if n != "system_status"]
+    # a chat saved before "known" existed: system_status came later, so it starts on; a tool turned off stays off
+    old = {
+        "mode": "workstation",
+        "agent": {"tools": names[1:], "grants": [], "tainted": False},
+    }
+    tools = chat.agent_of(old)["tools"]
+    assert "system_status" in tools and names[0] not in tools
+    # a chat that knew system_status and turned it off keeps it off
+    off = {"mode": "workstation", "agent": {"tools": names, "known": WS_TOOLS}}
+    assert "system_status" not in chat.agent_of(off)["tools"]
+    # a tool unknown to the saved state starts as in a new chat
+    newer = {"mode": "workstation", "agent": {"tools": names, "known": names}}
+    assert "system_status" in chat.agent_of(newer)["tools"]
+    assert set(chat.agent_of(newer)["known"]) == set(WS_TOOLS)
+
+
+def test_the_file_room_counts_the_tool_schemas_of_a_workstation_chat():
+    with_tools = {"mode": "workstation", "messages": []}
+    none_on = {
+        "mode": "workstation",
+        "messages": [],
+        "agent": {"tools": [], "known": WS_TOOLS},
+    }
+    a = chat.file_room(with_tools, "off", "", 0, 1)
+    b = chat.file_room(none_on, "off", "", 0, 1)
+    assert a < b
