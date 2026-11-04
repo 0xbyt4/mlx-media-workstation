@@ -155,14 +155,16 @@ Expressive speech and dialogue. Speech recognition (Qwen3-ASR) checks each take.
 | Top p (advanced) | 0.9 | 0.1 to 1.0. |
 | Top k (advanced) | 30 | 5 to 200. |
 
-The output is `take1.wav`, `take2.wav` and so on. The note of each take says "checked ok" or "CHECK FAILED" with the
-reason. The check finds a wrong length, a silence of 3 s or more, or more than 15% of the words not heard. A take that
+The output is `take1.wav`, `take2.wav` and so on. Each take is raised toward -16 LUFS. The gain stops where the
+loudest sample reaches -1 dBFS, so a take never clips. The note of each take says "checked ok" or "CHECK FAILED" with
+the reason. The check finds a wrong length, a silence of 3 s or more, or more than 15% of the words not heard. A take that
 fails the check is made once more with another seed.
 
 Prompt tips:
 
 - Mark the speakers with `<|speaker:0|>` and `<|speaker:1|>`. Write the whole exchange as one text.
 - Use 2-4 short turns of 5-20 words each, under about 300 bytes per take.
+- Plan about 2.5 words for each second of speech. For 10 seconds, write about 25 words.
 - Put cues in brackets where they happen, if possible mid-sentence: `[sighs]`, `[nervous laugh]`. A cue lasts until
   the next one.
 - Make pauses with "...", a dash, a comma or a new short sentence.

@@ -138,9 +138,62 @@ def drama(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
             "mlx_audio.tts.models.fish_drama3.chunking": {"split_text": None},
             "mlx_audio.tts.utils": {"load_model": None},
             "scipy.io": {"wavfile": None},
+            "scipy.signal": {"lfilter": None},
         },
     )
     return load("drama3")
+
+
+@pytest.fixture
+def drama_np(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """The Drama 3 runner with the real numpy and scipy (they live in the Drama 3 environment, not the app's)."""
+    pytest.importorskip("numpy")
+    pytest.importorskip("scipy.signal")
+    stub(
+        monkeypatch,
+        {
+            "mlx.core": {},
+            "mlx_audio.stt.utils": {"load_model": None},
+            "mlx_audio.tts.models.fish_drama3.chunking": {"split_text": None},
+            "mlx_audio.tts.utils": {"load_model": None},
+        },
+    )
+    return load("drama3")
+
+
+def test_drama_loudness_of_a_sine(drama_np: ModuleType) -> None:
+    import numpy as np
+
+    sr = 48000
+    t = np.arange(5 * sr) / sr
+    # BS.1770: a full-scale 1 kHz sine in one channel is -3.01 LUFS, so 0.1 of full scale is -23.01
+    assert drama_np.loudness(0.1 * np.sin(2 * np.pi * 1000 * t), sr) == pytest.approx(
+        -23.01, abs=0.1
+    )
+    assert drama_np.loudness(np.zeros(sr), sr) is None
+
+
+def test_drama_level_raises_quiet_speech(drama_np: ModuleType) -> None:
+    import numpy as np
+
+    sr = 44100
+    t = np.arange(6 * sr) / sr
+    on = (t % 1.0) < 0.6  # word-like bursts with gaps
+    quiet = (0.02 * np.sin(2 * np.pi * 300 * t) * on).astype(np.float32)
+    out, measured = drama_np.level(quiet, sr)
+    assert measured < -30
+    assert drama_np.loudness(out, sr) == pytest.approx(-16.0, abs=0.1)
+    assert out.dtype == np.float32
+
+    spiky = quiet.copy()
+    spiky[1000] = 0.5  # one loud click: the gain stops where it reaches -1 dBFS
+    out, _ = drama_np.level(spiky, sr)
+    assert 20 * np.log10(np.max(np.abs(out))) == pytest.approx(-1.0, abs=0.01)
+    assert drama_np.loudness(out, sr) < -16.5
+
+    silent = np.zeros(sr, np.float32)
+    out, measured = drama_np.level(silent, sr)
+    assert measured is None and not out.any()
 
 
 @pytest.mark.parametrize(
