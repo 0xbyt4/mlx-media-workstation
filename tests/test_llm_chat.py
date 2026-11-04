@@ -502,6 +502,31 @@ def test_chat_round_trip(client):
     assert client.get("/api/chats").json()[0]["messages"] == 2
 
 
+def test_the_chat_list_reads_only_changed_chats(client, monkeypatch):
+    one, two = new_chat(client), new_chat(client)
+    client.get("/api/chats")
+    read = []
+    real = Path.read_text
+
+    def counted(p, *a, **k):
+        read.append(p.parent.name)
+        return real(p, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", counted)
+    assert {c["id"] for c in client.get("/api/chats").json()} == {one, two}
+    assert read == []  # both from the cache
+    path = chat.CHATS / one / "chat.json"
+    data = json.loads(real(path))
+    path.write_text(json.dumps({**data, "title": "Renamed"}))
+    monkeypatch.setitem(chat.live, two, object())
+    listed = {c["id"]: c for c in client.get("/api/chats").json()}
+    assert read == [one]
+    assert listed[one]["title"] == "Renamed" and not listed[one]["running"]
+    assert listed[two]["running"]  # from the running answers, not the cache
+    client.delete(f"/api/chats/{one}")
+    assert [c["id"] for c in client.get("/api/chats").json()] == [two]
+
+
 def test_a_chat_answer_ends_at_the_time_limit(client, monkeypatch):
     """A plain answer (the "max" level has no thinking budget) has the agent's time limit: cancelled at the limit,
     saved with finish "timeout" and a note."""

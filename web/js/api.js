@@ -101,13 +101,16 @@ async function stream(path, opts, onEvent) {
   return readSSE(res, onEvent);
 }
 
-// Runs task() now and again after delay(result, error) ms. kick() runs it at once; stop() ends the loop.
+// Runs task() now and again after delay(result, error) ms. kick() runs it at once; stop() ends the loop. While the
+// page is hidden (for example, the window is minimized), the loop waits and runs again when the page shows.
 export function poll(task, delay) {
   let timer = null;
   let seq = 0;
   let stopped = false;
+  let paused = false;
   async function run() {
     clearTimeout(timer);
+    paused = false;
     const mine = ++seq;
     let result, error;
     try {
@@ -116,14 +119,23 @@ export function poll(task, delay) {
       error = e;
     }
     if (stopped || mine !== seq) return;
-    timer = setTimeout(run, delay(result, error));
+    timer = setTimeout(due, delay(result, error));
   }
+  function due() {
+    if (document.hidden) paused = true;
+    else run();
+  }
+  function shown() {
+    if (paused && !document.hidden && !stopped) run();
+  }
+  document.addEventListener('visibilitychange', shown);
   run();
   return {
     kick: run,
     stop() {
       stopped = true;
       clearTimeout(timer);
+      document.removeEventListener('visibilitychange', shown);
     },
   };
 }

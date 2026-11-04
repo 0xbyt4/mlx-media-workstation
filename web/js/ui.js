@@ -375,6 +375,26 @@ export function menu(anchor, items) {
 
 // ---------- media ----------
 
+// Audio and video get their source only when they come near the screen: with preload=metadata, each player asks the
+// server for its file at once, and Jobs with 2,000 finished jobs made about 1,000 such requests when it opened.
+let nearScreen = null;
+function lazySrc(el, url) {
+  if (typeof IntersectionObserver !== 'function') {
+    el.src = url;
+    return el;
+  }
+  nearScreen = nearScreen || new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting && e.target.isConnected) continue;
+      nearScreen.unobserve(e.target);
+      if (e.isIntersecting) e.target.src = e.target.dataset.src;
+    }
+  }, {rootMargin: '600px 0px'});
+  el.dataset.src = url;
+  nearScreen.observe(el);
+  return el;
+}
+
 // A job output ({url, kind, name, note}) as real media. opts.onOpen(output) runs when an image is clicked;
 // opts.actions are nodes placed in the caption (Send to, Download). Returns null for a URL off this origin.
 export function media(output, opts = {}) {
@@ -387,9 +407,9 @@ export function media(output, opts = {}) {
       onclick: () => (opts.onOpen ? opts.onOpen(output) : lightbox([{url, name}], 0))},
     h('img', {src: url, alt: name, loading: 'lazy'}));
   } else if (output.kind === 'audio') {
-    el = h('div', {class: 'media-audio'}, h('audio', {controls: true, preload: 'metadata', src: url, 'aria-label': name}));
+    el = h('div', {class: 'media-audio'}, lazySrc(h('audio', {controls: true, preload: 'metadata', 'aria-label': name}), url));
   } else if (output.kind === 'video') {
-    el = h('video', {controls: true, playsinline: true, preload: 'metadata', src: url, 'aria-label': name});
+    el = lazySrc(h('video', {controls: true, playsinline: true, preload: 'metadata', 'aria-label': name}), url);
   } else {
     el = h('div', {class: 'art r11'}, icon('file', 'ic-lg'));
   }

@@ -824,7 +824,7 @@ function detachLive() {
 function onEvent(live, ev) {
   const m = live.msg;
   if (live.agent && onAgentEvent(live, ev)) {
-    if (!live.frame) live.frame = requestAnimationFrame(() => paintLive(live));
+    schedulePaint(live);
     return;
   }
   if (ev.event === 'waiting') {
@@ -844,7 +844,23 @@ function onEvent(live, ev) {
     live.waiting = null;
     Object.assign(m, {finish: 'error', error: ev.message});
   }
-  if (!live.frame) live.frame = requestAnimationFrame(() => paintLive(live));
+  schedulePaint(live);
+}
+
+// The next paint of the live answer, in the next frame. Each paint renders the whole answer again, and a long answer
+// (30 KB) takes about 100 ms, so the paint after it waits 3 times as long as the last one took: the page keeps most of
+// its time for scrolling and typing.
+function schedulePaint(live) {
+  if (live.frame || live.wait) return;
+  const wait = (live.paintedAt || 0) + 3 * (live.paintCost || 0) - performance.now();
+  if (wait <= 0) {
+    live.frame = requestAnimationFrame(() => paintLive(live));
+    return;
+  }
+  live.wait = setTimeout(() => {
+    live.wait = 0;
+    live.frame = requestAnimationFrame(() => paintLive(live));
+  }, wait);
 }
 
 // ---------- the live answer ----------
@@ -877,10 +893,17 @@ function newLive(chatId) {
 function paintLive(live) {
   live.frame = 0;
   if (!s || s.live !== live) return;
-  if (live.agent) {
-    paintAgent(live);
-    return;
+  const t0 = performance.now();
+  try {
+    if (live.agent) paintAgent(live);
+    else paintAnswer(live);
+  } finally {
+    live.paintedAt = performance.now();
+    live.paintCost = live.paintedAt - t0;
   }
+}
+
+function paintAnswer(live) {
   const stick = nearBottom();
   const m = live.msg;
   if (m.reasoning) {

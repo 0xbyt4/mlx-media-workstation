@@ -74,6 +74,9 @@ export default {
 | `job:finished` | the job | a job goes from queued or running to done, failed or cancelled |
 | `tick` | none | every second, for live clocks |
 
+While the page is hidden (for example, the window is minimized), no source is polled. When the page shows again,
+each source that is due is fetched at once.
+
 Other store functions:
 
 - `store.refresh(key)` fetches a source now, for example after a submit or a download start.
