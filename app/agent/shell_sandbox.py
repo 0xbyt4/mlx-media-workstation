@@ -73,6 +73,11 @@ SANDBOX_FILTER_GLOBAL_NAME = 2
 SANDBOX_CHECK_NO_REPORT = 0x40000000
 REAP_SECONDS = 5.0  # how long the end of a run hunts for its processes before it gives up and leaves it to a thread
 CALM_SECONDS = 0.3  # the hunt ends after this long without finding a process of the run
+# Between full looks (every process of the user), the hunt checks only the QUICK_LOOK newest processes: a process
+# that forks and exits in a loop is always among the newest, and a full look over the ~750 processes of a busy Mac
+# is slower than such a loop.
+FULL_LOOK_SECONDS = 0.05
+QUICK_LOOK = 64
 
 _libc = (
     ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
@@ -87,7 +92,8 @@ if _libc is not None:
 
 
 def user_pids() -> list[int]:
-    """The ids of every process of this user."""
+    """The ids of every process of this user, the newest first (the kernel's order). Do not sort them: ids wrap
+    around at 99,999, and a loop of forks uses up thousands of ids a second, so a high id is not a new process."""
     if _libc is None:
         return []
     uid = os.getuid()
@@ -128,13 +134,20 @@ def reap(marker: str, other: str, seconds: float = REAP_SECONDS) -> bool:
     """SIGKILL every process of the run, each one the moment a look finds it (the newest first), and keep looking
     without a pause until no look found one for CALM_SECONDS: True. False when that did not happen within `seconds`.
     A process that forks and exits in a loop can slip between two looks; it cannot do that for hundreds of looks in
-    a row."""
+    a row. Between full looks (FULL_LOOK_SECONDS) a look checks only the QUICK_LOOK newest processes; the calm time
+    is longer than that, so the hunt never ends without full looks that found nothing."""
     deadline = time.monotonic() + seconds
     last_hit = time.monotonic()
+    full_at = 0.0  # when the next full look is due
     while (now := time.monotonic()) < deadline:
         if now - last_hit >= CALM_SECONDS:
             return True
-        for pid in sorted(user_pids(), reverse=True):
+        pids = user_pids()
+        if now >= full_at:
+            full_at = now + FULL_LOOK_SECONDS
+        else:
+            pids = pids[:QUICK_LOOK]
+        for pid in pids:
             if in_sandbox(pid, marker, other):
                 last_hit = time.monotonic()
                 try:

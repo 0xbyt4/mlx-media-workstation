@@ -361,6 +361,19 @@ HOPPER = (
 )
 
 
+def test_user_pids_lists_the_newest_first() -> None:
+    """reap() checks the newest processes first and, between full looks, only those: it relies on the kernel's
+    order, because ids wrap around and a loop of forks uses them up fast."""
+    procs = [subprocess.Popen(["/bin/sleep", "5"]) for _ in range(3)]
+    try:
+        pids = ss.user_pids()
+        assert [pids.index(p.pid) for p in procs] == [2, 1, 0]
+    finally:
+        for p in procs:
+            p.kill()
+            p.wait()
+
+
 def test_processes_that_hop_to_new_sessions_are_stopped(
     box: ss.SeatbeltShell, work: Path
 ) -> None:
