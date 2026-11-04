@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -458,6 +459,28 @@ def test_thumbnails_of_an_image_and_a_video_are_made_once(
         f"/api/library/{job_id}/image.png", headers={"Origin": "http://127.0.0.1:7870"}
     )
     assert r.status_code == 200 and not thumb.exists()
+
+
+@needs_ffmpeg
+def test_two_requests_for_one_new_thumbnail_both_get_it(tmp_path: Path) -> None:
+    src = tmp_path / "image.png"
+    ffmpeg("-f", "lavfi", "-i", "testsrc=s=1024x576", "-frames:v", "1", str(src))
+    dst = tmp_path / ".thumbs" / "image.png.jpg"
+    errors: list[Exception] = []
+
+    def make() -> None:
+        try:
+            library.make_thumb(src, dst, "image")
+        except Exception as e:  # noqa: BLE001 - collected for the assert
+            errors.append(e)
+
+    threads = [threading.Thread(target=make) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    assert not errors and size_of(dst) == (640, 360)
+    assert [p.name for p in dst.parent.iterdir()] == ["image.png.jpg"]  # no temporary file left
 
 
 @needs_ffmpeg

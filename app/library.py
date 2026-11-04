@@ -254,7 +254,8 @@ def make_thumb(src: Path, dst: Path, kind: str) -> None:
     """Write the thumbnail of an image or video output to dst. An image with alpha is laid on white (a JPEG has no
     alpha); a video gives its frame at 0.1 s, as the Library's video cards do. Raises ValueError."""
     dst.parent.mkdir(exist_ok=True)
-    tmp = dst.with_name(f".{dst.name}.tmp.jpg")
+    # one name per request: two requests for the same new thumbnail must not write one file
+    tmp = dst.with_name(f".{dst.name}.{threading.get_ident()}.tmp.jpg")
     vf = f"scale='min({THUMB_SIDE},iw)':'min({THUMB_SIDE},ih)':force_original_aspect_ratio=decrease"
     seek = ["-ss", "0.1"] if kind == "video" else []
     filters = tools.image_filter(src, vf) if kind == "image" else ["-vf", vf]
