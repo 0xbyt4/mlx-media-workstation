@@ -120,7 +120,7 @@ PREVIEW = 4000  # characters of a tool result in the page's event; the saved cha
 MAX_FILES = 20  # files of one tool result linked on the page
 # the largest workspace file the page may fetch (run_python writes at most 50 MB a file)
 MAX_SERVED = 64 * 1024 * 1024
-OFF_BY_DEFAULT = ("run_python", "run_shell")  # see default_agent()
+OFF_BY_DEFAULT = ("run_python", "run_shell", "run_shortcut")  # see default_agent()
 # The tools in a chat's tools array, per mode, when they are on and can run (docs/AGENT.md, "Core and deferred
 # tools"). Every other tool of the chat is deferred: tool_search, tool_describe and tool_call reach it. A workstation
 # chat has few tools, so all of them are core.
@@ -215,6 +215,11 @@ LABELS = {
     "tool_search": "Find a tool",
     "tool_describe": "Tool details",
     "read_result": "Read a long result",
+    "spotlight_search": "Spotlight search",
+    "speak": "Speak",
+    "convert_document": "Convert a document",
+    "list_shortcuts": "Shortcuts",
+    "run_shortcut": "Run a shortcut",
 }
 # workspace files the page shows inline (images) or as text; anything else is a download
 INLINE_TYPES = {
@@ -600,10 +605,16 @@ def agent_of(chat: dict[str, Any]) -> dict[str, Any]:
     OFF_BY_DEFAULT), while a tool the user turned off stays off. The providers' tools that the chat froze count as
     its tools too. A tool that starts on here changes no prompt: the model hears of it in a notice."""
     saved = chat.get("agent")
-    extra = [str(n) for n in (chat.get("prompt") or {}).get("providers") or []]
+    p = chat.get("prompt")
+    if isinstance(p, dict) and "providers" in p:
+        extra = [str(n) for n in p["providers"] or []]
+    else:  # before the first turn: the tools the providers would give now, so the Tools menu can turn them off
+        extra = [t.name for t in preview_tools()] if uses_tools(chat) else []
     if not isinstance(saved, dict):
         state = default_agent(mode_of(chat))
-        state["tools"] += [n for n in extra if n not in state["tools"]]
+        state["tools"] += [
+            n for n in extra if n not in state["tools"] and n not in OFF_BY_DEFAULT
+        ]
         state["known"] += [n for n in extra if n not in state["known"]]
         return state
     try:
@@ -797,9 +808,31 @@ def ensure_prompt(chat_id: str) -> dict[str, Any]:
         return chat["prompt"]
 
 
+def preview_tools() -> list[Tool]:
+    """The providers' tools that a first turn would freeze now. Only Provider.tools() is asked: core() and section()
+    can start servers or write a snapshot, so they run once, at the freeze. A provider that raises or whose names
+    clash is left out, as collect() does."""
+    out: list[Tool] = []
+    seen = set(deferred.BRIDGE)  # chat_tools() leaves out a name the app has
+    for prov in providers.load():
+        try:
+            tools = list(prov.tools())
+        except Exception:  # noqa: BLE001 - collect() at the freeze names the problem
+            continue
+        names = {t.name for t in tools}
+        if names & seen:
+            continue
+        seen |= names
+        out += tools
+    return out
+
+
 def provider_tools(chat: dict[str, Any]) -> list[Tool]:
-    """The providers' tools of a frozen chat. They are kept per chat while the app runs; after a restart the
-    providers are asked again, and a tool that is gone is left out (a call to it gets "no such tool")."""
+    """The providers' tools of a chat: before its first turn, what the providers give now (preview_tools); after
+    it, the tools it froze. Those are kept per chat while the app runs; after a restart the providers are asked
+    again, and a tool that is gone is left out (a call to it gets "no such tool")."""
+    if not frozen(chat):
+        return preview_tools()
     names = (chat.get("prompt") or {}).get("providers") or []
     if not names:
         return []

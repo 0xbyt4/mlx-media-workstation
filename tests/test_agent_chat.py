@@ -424,6 +424,7 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
 
 def test_the_agent_prompt_does_not_change_between_turns(client):
     cid = agent_chat(client)
+    send(client, cid, "hi")
     before = chat.system_prompt(saved(client, cid))
     send(client, cid, script([call("job_status", job_id="x")], "RESULT"))
     after = chat.system_prompt(saved(client, cid))
@@ -956,7 +957,11 @@ def test_tools_menu_state(client, reg):
     cid = agent_chat(client)
     view = client.get(f"/api/chats/{cid}/agent").json()
     by = {t["name"]: t for t in view["tools"]}
-    assert list(by) == reg.names()
+    # the app's tools, then the providers' tools a first turn would freeze (app/agent/providers.py)
+    assert list(by)[: len(reg.names())] == reg.names()
+    if "run_shortcut" in by:  # host tools: /usr/bin/shortcuts exists
+        assert by["run_shortcut"]["enabled"] is False
+        assert by["run_shortcut"]["label"] == "Run a shortcut"
     assert by["run_python"]["enabled"] is False and by["web_search"]["enabled"] is True
     assert "Asks before every call" in by["run_python"]["risk_text"]
     assert by["run_shell"]["enabled"] is False and by["run_shell"]["risk"] == 3
