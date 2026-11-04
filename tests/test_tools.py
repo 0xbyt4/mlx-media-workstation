@@ -1,5 +1,6 @@
 """The tool catalogue, the small helpers in app/tools.py, the ffmpeg/ffprobe wrappers and validate()."""
 
+import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -29,6 +30,12 @@ def test_groups_follow_the_sidebar_order() -> None:
     assert [t["group"] for t in tools.TOOLS] == sorted(
         (t["group"] for t in tools.TOOLS), key=groups.index
     )
+
+
+def test_every_description_gives_a_time() -> None:
+    # before the first job a tool has no measured time, and the Create screen points to the description
+    for t in tools.TOOLS:
+        assert re.search(r"\b(min|s|seconds|real time)\b", t["description"]), t["id"]
 
 
 def test_every_model_tool_lists_what_it_needs() -> None:
