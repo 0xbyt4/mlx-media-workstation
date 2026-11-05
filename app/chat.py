@@ -1532,9 +1532,6 @@ class Turn:
 
     def __init__(self, chat_id: str, level: str, run: Live) -> None:
         self.chat_id, self.level, self.run = chat_id, level, run
-        self.thinking = level != "off"
-        # the room the input leaves for a step's thinking and answer; each step's own limits: generate()
-        self.max_tokens = effort.reserve(level)
         self.started = time.monotonic()
         # moved later by the time a request waits for memory (generate): a media job's run does not count
         self.deadline = self.started + TURN_SECONDS
@@ -1545,6 +1542,10 @@ class Turn:
         # and system text
         self.prompt: dict[str, Any] = chat["prompt"]
         self.array: list[str] = list(self.prompt.get("tools") or [])
+        # the thinking plan of each step (effort.agent_level: a short thought at "off" when it can queue jobs)
+        self.plan = effort.agent_level(level, self.array)
+        # the room the input leaves for a step's thinking and answer; each step's own limits: generate()
+        self.max_tokens = effort.reserve(self.plan)
         self.reg, self.catalog = chat_registry(
             chat, lambda: frozenset(self.state()["tools"]) | set(ALWAYS_ON)
         )
@@ -1701,7 +1702,7 @@ class Turn:
         for ev in llm.generate(
             messages,
             images,
-            **effort.options(self.level, self.steps, room(messages, images, schemas)),
+            **effort.options(self.plan, self.steps, room(messages, images, schemas)),
             chat=self.chat_id,
             tools=schemas or None,
             tool_choice="none" if last else None,

@@ -811,6 +811,10 @@ saved message keeps both. The time that the answer waits for memory (a media job
 - In an agent answer, the budget applies to each step. The first step gets the full budget. Each later step gets 40%
   of it (`high`: 6,144, then 2,457 a step). The template effort is the same in every step: it is part of the system
   prompt, and a change would make the model read the whole chat again.
+- An agent answer at `off` whose tools have `create_job` thinks briefly (`quick` in `app/effort.py`, not a level that
+  you can pick): template effort `low`, a budget of 256 tokens in the first step and 102 in each later step. Without a
+  thought, the model often wrote a draft answer and stopped without the call. With a short thought, 20 of 20 voice
+  requests queued their job; without it, 12 of 20 did.
 - `thinking=true` of the older API is the level `high`.
 
 ### Agent mode
