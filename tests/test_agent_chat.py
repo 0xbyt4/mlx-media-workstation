@@ -414,7 +414,7 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
     )
     assert (
         "To put a file that a media job made into the user's folder, call export_from_workspace with its "
-        "Library reference as path." in prompt
+        "Library reference as path and the new file name as to." in prompt
     )
     assert "You reach the internet only through" in prompt
     assert (

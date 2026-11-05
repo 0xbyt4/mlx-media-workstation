@@ -439,7 +439,7 @@ def agent_prompt(lay: "Layout") -> str:
         files += " Save a text result, such as a transcript, with write_file."
         files += (
             " To put a file that a media job made into the user's folder, call export_from_workspace with its "
-            "Library reference as path."
+            "Library reference as path and the new file name as to."
             if "export_from_workspace" in lay.state["tools"]
             else " A file that a media job made stays in the Library: give the user its Library reference."
         )
