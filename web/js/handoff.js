@@ -35,9 +35,12 @@ function queue(toolId, item) {
   router.go('create', {tool: toolId});
 }
 
-// A field that takes file name suffixes (".srt,.vtt") takes only a file whose name has one: not transcript.txt.
+// A field that takes only file name suffixes (".srt,.vtt") takes only a file whose name has one: not transcript.txt.
+// A field that also takes a media type ("image/*,.pdf") takes the kinds that SEND_TARGETS gives it.
 function takesName(field, name) {
-  const suffixes = (field.accept || '').split(',').map((a) => a.trim().toLowerCase()).filter((a) => a.startsWith('.'));
+  const accept = (field.accept || '').split(',').map((a) => a.trim().toLowerCase());
+  if (accept.some((a) => a.includes('/'))) return true;
+  const suffixes = accept.filter((a) => a.startsWith('.'));
   return !suffixes.length || !name || suffixes.some((x) => name.toLowerCase().endsWith(x));
 }
 
