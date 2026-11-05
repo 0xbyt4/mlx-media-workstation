@@ -375,6 +375,24 @@ def test_transcribe_queues_a_job_and_returns_the_text(
     assert reg.get("transcribe_audio").risk == Risk.R2
 
 
+def test_transcribe_uses_nemotron_when_only_it_is_installed(
+    files: FakeWorkstation, fctx: Context
+) -> None:
+    files.tools = [
+        {**t, "fallback": {"model": "nemotron"}} if t["id"] == "voice.transcribe" else t
+        for t in files.tools
+    ]
+    reg = build_registry(files, Settings())
+    finish_transcript(
+        files, "20261103-130000-0001", "Language: unknown\n\n[0:00-0:01] Hi.\n"
+    )
+    r = reg.call("transcribe_audio", {"audio": "folder:talk.wav"}, fctx)
+    assert r.status == "ok", r.content
+    assert files.created == [
+        ("voice.transcribe", {"language": "auto", "model": "nemotron"})
+    ]
+
+
 def test_transcribe_still_running_then_read_by_job_id(
     files: FakeWorkstation, fctx: Context
 ) -> None:

@@ -1455,6 +1455,17 @@ def installed(tool: str) -> bool:
     )
 
 
+def fallback(tool: str) -> dict[str, str] | None:
+    """The form value that runs the tool when only a choice is installed (Transcribe with Nemotron only:
+    {"model": "nemotron"}); None when the tool's own paths exist or no choice is installed."""
+    if all(p.exists() for p in REQUIRES.get(tool, [])):
+        return None
+    for (t, name, value), paths in CHOICE_REQUIRES.items():
+        if t == tool and all(p.exists() for p in paths):
+            return {name: value}
+    return None
+
+
 def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) -> None:
     """Checks that need more than the field rules, run when a job is submitted. Raises ValueError (shown to the user)."""
     picked = [

@@ -519,7 +519,7 @@ def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
         if tool is None or not tool.get("installed", True):
             raise ToolError(
                 "Speech recognition is not installed on this Mac. It needs the Qwen3-ASR 0.6B model and the Fish "
-                "Drama 3 environment: the user can install them in Models."
+                "Drama 3 environment, or Nemotron 3.5 Transcribe: the user can install them in Models."
             )
         if bool(args.get("audio")) == bool(args.get("job_id")):
             raise ToolError("Give either audio (a file reference) or job_id.")
@@ -532,7 +532,10 @@ def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
             if language is None:
                 raise ToolError(f"language: one of {', '.join(options.values())}.")
             job_id = queue(
-                TRANSCRIBE, {"language": language}, {"audio": [args["audio"]]}, ctx
+                TRANSCRIBE,
+                {"language": language, **(tool.get("fallback") or {})},
+                {"audio": [args["audio"]]},
+                ctx,
             )
         else:
             job_id = args["job_id"]

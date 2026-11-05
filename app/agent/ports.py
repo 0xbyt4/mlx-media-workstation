@@ -28,7 +28,8 @@ class InputFile:
 class WorkstationPort(Protocol):
     def list_tools(self) -> list[dict[str, Any]]:
         """The media tools as in app/tools.TOOLS (id, label, group, description, fields), each with "installed":
-        whether its model files are on disk."""
+        whether its model files are on disk, and "fallback": the form values that a job needs when only a choice
+        is installed ({"model": "nemotron"} for Transcribe with Nemotron only), else None."""
         ...
 
     def job_status(self, job_id: str) -> dict[str, Any] | None:

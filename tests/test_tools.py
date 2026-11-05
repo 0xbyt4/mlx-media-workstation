@@ -490,7 +490,11 @@ def test_a_tool_is_installed_when_its_paths_or_a_choice_s_paths_exist(
     assert not tools.installed("voice.transcribe")
     weights.mkdir()  # only Nemotron: the job runs with "model": "nemotron"
     assert tools.installed("voice.transcribe")
+    assert tools.fallback("voice.transcribe") == {"model": "nemotron"}
     assert tools.installed("edit.mix")  # needs nothing
+    assert tools.fallback("edit.mix") is None
+    drama.touch()  # the default model is there: no fallback
+    assert tools.fallback("voice.transcribe") is None
 
 
 def test_speakers_need_nemotron_and_at_most_5_min(

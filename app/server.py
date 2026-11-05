@@ -854,7 +854,14 @@ class Workstation:
     waits for the agent turn's memory lease. wait_job does not wait for a job that needs that memory (needs_memory)."""
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return [{**t, "installed": tools.installed(t["id"])} for t in tools.TOOLS]
+        return [
+            {
+                **t,
+                "installed": tools.installed(t["id"]),
+                "fallback": tools.fallback(t["id"]),
+            }
+            for t in tools.TOOLS
+        ]
 
     def job_status(self, job_id: str) -> dict[str, Any] | None:
         with lock:
@@ -985,7 +992,7 @@ class Workstation:
             queue = [short(j) for j in queued_jobs("model") + queued_jobs("light")]
         fit = []
         for t in self.list_tools():
-            peak = models.tool_peak(t["id"])
+            peak = models.tool_peak(t["id"], t.get("fallback"))
             if not models.fits(peak, mem["mem_total_gb"]):
                 state = "too_big"
             elif not loaded or llm.fits_with(peak):

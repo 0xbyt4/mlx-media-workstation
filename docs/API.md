@@ -53,8 +53,11 @@ added to it.
   (`tools.validate`, which `POST /api/jobs` and the agent's `create_job` share). The Create form turns the checkbox
   off when text comes into the field, and marks the field at Generate while the checkbox is on.
 
-`GET /api/tools?installed=true` adds `"installed"` to each tool: `true` when its model files are on disk
-(`tools.REQUIRES`). The MCP server ([MCP.md](MCP.md)) uses it.
+`GET /api/tools?installed=true` adds `"installed"` and `"fallback"` to each tool. `"installed"` is `true` when its
+model files are on disk (`tools.REQUIRES`), or the files of one of its choices (`tools.CHOICE_REQUIRES`).
+`"fallback"` is the form value that a job needs when only a choice is installed (`{"model": "nemotron"}` for
+Transcribe with Nemotron only), else `null`. The agent's `transcribe_audio` adds it to its job, and `system_status`
+gives that choice's peak. The MCP server ([MCP.md](MCP.md)) uses it.
 
 ## Jobs
 
@@ -519,11 +522,11 @@ with llm.session(abort=lambda: False, limit=600.0) as s: ...
   `ValueError`.
 - `allow_emoji=False` (the default) makes the worker ban emoji tokens. It never bans them inside a tool call's
   arguments (from the call marker to its end), where an emoji can be data.
+- With `thinking=False` the template closes the thinking block itself. When the model still writes a `</think>`, the
+  text before it was a draft: the worker moves it to `reasoning`, and `content` is the text after the marker.
 
 ### Faster answers
 
-- With `thinking=False` the template closes the thinking block itself. When the model still writes a `</think>`, the
-  text before it was a draft: the worker moves it to `reasoning`, and `content` is the text after the marker.
 With `[app] llm_draft = true`, each request gives the worker the folder of the DFlash2 draft model
 (`z-lab/Qwen3.8-27B-DFlash2`, `[paths] qwen_draft`). The worker then uses speculative decoding:
 
