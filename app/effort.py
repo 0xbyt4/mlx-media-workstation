@@ -9,6 +9,12 @@ The numbers come from the speed of this model on an M5 Pro: about 17 tokens a se
 An answer may take at most 10 minutes (chat.TURN_SECONDS for an agent answer; a waiting media job stops the model
 after llm.JOB_WAIT), so "xhigh" thinks for at most about 8 minutes and leaves about 2 for the answer.
 
+An agent answer at "off" that can queue media jobs (its tools have create_job) thinks for a short time instead
+("quick", not a level the user picks): without a thought, the model picks its route (queue the job, write prompt
+blocks or ask) in its first sampled sentence, and often writes a draft answer and stops without the call. A short
+thought makes the choice stable: 20 of 20 voice requests queued their job with thinking against 12 of 20 without (same prompt). The
+decision is in the first ~50 tokens of the thought, so QUICK keeps the extra time short.
+
 In an agent answer the budget applies to each model step: the first step plans the work and gets the full budget,
 later steps get LATER_STEPS of it. The template effort stays the same in every step: it is part of the system
 prompt, and a change would make the model read the whole chat again.
@@ -27,12 +33,17 @@ LATER_STEPS = 0.4  # the part of the budget an agent step after the first gets
 PLANS: dict[str, tuple[str | None, int | None]] = {
     "off": (None, 0),  # thinking off: the template closes the thinking block at once
     "low": ("low", 1024),  # about 1 minute
+    "quick": (
+        "low",
+        256,
+    ),  # about 15 s: an "off" agent answer that can queue media jobs (QUICK)
     "medium": ("medium", 3072),  # about 3 minutes
     "high": ("xhigh", 6144),  # about 6 minutes
     "xhigh": ("xhigh", 8192),  # about 8 minutes
     # until the model stops, the context is full or the answer's time ends
     "max": ("xhigh", None),
 }
+QUICK = "quick"
 # the room "max" keeps for its answer when the input is built: the max_tokens of "xhigh", so it keeps as much history
 MAX_RESERVE = 8192 + ANSWER_TOKENS
 
@@ -50,6 +61,11 @@ def parse(effort: Any, thinking: Any) -> str | None:
     if thinking is not None and str(thinking) != "":
         return THINKING_ON if str(thinking).strip().lower() == "true" else "off"
     return None
+
+
+def agent_level(level: str, tools: list[str]) -> str:
+    """The plan of an agent answer at this level with these tools: QUICK for "off" when it can queue media jobs."""
+    return QUICK if level == "off" and "create_job" in tools else level
 
 
 def reserve(level: str) -> int:

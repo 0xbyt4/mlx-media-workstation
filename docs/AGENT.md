@@ -874,6 +874,12 @@ U+1F000 to U+1FFFF. Arrows, box drawing, math signs and (c) stay allowed. Inside
 marker token to the end marker token) nothing is banned: the arguments are data, such as the text of a file that
 `write_file` writes. A request with `"allow_emoji": true` (`llm.generate(allow_emoji=True)`) has no ban.
 
+With thinking off, the worker applies the model card's presence penalty itself (`Presence` in `app/llm_worker.py`,
+`PRESENCE`: 1.5 over the last 20 tokens). It counts only the text that the answer writes outside the tool-call
+blocks. It does not penalize a token inside a call block or the token right after a call's end marker. mlx-vlm's
+own penalty also counted the prompt and the calls. Then the "\n" that starts the next call always had the penalty,
+but the end of the turn never had it, so the model often stopped after one call.
+
 ### The prompt and the prompt cache
 
 The worker keeps a chat's prompt cache only while each new prompt extends the one before: Qwen3.8's linear-attention
@@ -1042,7 +1048,9 @@ Stop (a waiting approval ends as stopped) and a few seconds to save what it has.
 Each model request of an answer uses the thinking level of the message (`app/effort.py`; docs/API.md, "Thinking
 levels"). The budget applies to each step: the first step gets the full thinking budget to plan the work, each later
 step gets 40% of it. The template effort stays the same in every step, so the prompt cache stays valid. At `max` no
-step has a budget; a long thought can then reach the 10-minute limit of the answer.
+step has a budget; a long thought can then reach the 10-minute limit of the answer. An answer at `off` whose tools have
+`create_job` thinks briefly (`effort.QUICK`: `low`, 256 tokens in the first step): without a thought the model picked
+its route (queue, prompt blocks or ask) in its first sampled sentence and often stopped without the call.
 
 In an agent chat, a Markdown link shows its host after its label ("label (host)"), and a long bare URL is shortened
 with the whole URL in its tooltip. A web page can tell the model to write a link that carries private text in its

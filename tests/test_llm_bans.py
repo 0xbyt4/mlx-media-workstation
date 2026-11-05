@@ -13,10 +13,12 @@ from app.llm_worker import (
     BanIds,
     ByteBan,
     NoEmoji,
+    Presence,
     ToolText,
     bans,
     byte_decoder,
     finish_tools,
+    penalties,
     token_pieces,
     trailing_calls,
 )
@@ -66,8 +68,23 @@ class Lists:
     """The part of mlx.core that the processors use, over Python lists (one sequence: 1-D logits)."""
 
     @staticmethod
-    def array(value):
+    def array(value, dtype=None):
         return value
+
+    @staticmethod
+    def zeros(shape, dtype=None):
+        return Logits([0.0] * shape[0])
+
+    @staticmethod
+    def concatenate(parts):
+        return [v for part in parts for v in part]
+
+    @staticmethod
+    def put_along_axis(a, indices, values, axis=None):
+        out = Logits(a)
+        for i in indices:
+            out[i] = values
+        return out
 
     @staticmethod
     def take(a, index, axis=None):
@@ -83,9 +100,18 @@ class Lists:
 
 
 class Logits(list):
+    dtype = float
+
     @property
     def shape(self):
         return (len(self),)
+
+    def __getitem__(self, index):
+        got = super().__getitem__(index)
+        return Logits(got) if isinstance(index, slice) else got
+
+    def __sub__(self, other):
+        return Logits(a - b for a, b in zip(self, other, strict=True))
 
 
 @pytest.fixture(scope="module")
@@ -185,6 +211,68 @@ def test_bans_follow_the_request():
     # without tools there is no call to ban; a marker of several tokens cannot be banned
     assert len(bans(Lists, {"tool_choice": "none"}, table, VOCAB, "<tool_call>")) == 1
     assert len(bans(Lists, {**req, "tool_choice": "none"}, table, VOCAB, "<x>")) == 1
+
+
+# ---------- the presence penalty ----------
+
+
+def penalized(
+    ids: list[int], size: int = 20, calls: tuple[int, int] | None = None
+) -> list[set[int]]:
+    """The penalized ids before each token of `ids` is sampled, and after the last one."""
+    proc = Presence(Lists, 1.5, size, calls)
+    tokens, out = [0, 1, 99], []  # the prompt
+    for i in [None, *ids]:
+        if i is not None:
+            tokens.append(i)
+        logits = proc(tokens, Logits([0.0] * 24))
+        assert set(logits) <= {0.0, -1.5}  # once for a token, however often it came
+        out.append({t for t, v in enumerate(logits) if v == -1.5})
+    return out
+
+
+def test_the_presence_penalty_counts_only_the_written_tokens():
+    seen = penalized([11, 0, 11, 19])
+    assert seen[0] == set()  # the prompt's tokens are not counted
+    assert seen[1] == {11} and seen[2] == seen[3] == {0, 11}
+    assert seen[4] == {0, 11, 19}
+
+
+def test_the_presence_window_holds_the_last_tokens():
+    assert penalized([11, 0, 19, 19, 1], size=3) == [
+        set(),
+        {11},
+        {0, 11},
+        {0, 11, 19},
+        {0, 19},
+        {1, 19},
+    ]
+
+
+def test_call_blocks_get_no_presence_penalty():
+    """The text of a call is not counted and is not penalized; nor is the token after its end marker (the "\n"
+    that starts the next call), so a second call is as likely as the end of the turn."""
+    seen = penalized([11, 20, 0, 1, 21, 11, 20, 0, 21, 19], calls=(20, 21))
+    assert seen[1] == {11}  # before the call marker
+    assert seen[2] == seen[3] == seen[4] == set()  # inside the block
+    assert seen[5] == set()  # right after the end marker
+    assert seen[6] == {11}  # the call's text and its markers are not in the window
+    assert seen[7] == seen[8] == seen[9] == set()
+    assert seen[10] == {11, 19}
+    # without the marker ids (a request without tools) every token counts
+    assert penalized([20, 0, 21], calls=None)[3] == {0, 20, 21}
+
+
+def test_penalties_follow_the_request():
+    req = {"tools": [{"type": "function"}]}
+    (proc,) = penalties(Lists, req, VOCAB, "<tool_call>")
+    assert type(proc) is Presence and (proc.penalty, proc.size) == (1.5, 20)
+    assert proc.calls == (20, 21)
+    assert penalties(Lists, {}, VOCAB, "<tool_call>")[0].calls is None
+    assert penalties(Lists, req, VOCAB, "<tool_call>", "<x>")[0].calls is None
+    # thinking on: the model card sets no penalty
+    assert penalties(Lists, {**req, "thinking": True}, VOCAB, "<tool_call>") == []
+    assert "presence_penalty" not in llm_worker.NO_THINKING
 
 
 def test_generate_checks_tool_choice():

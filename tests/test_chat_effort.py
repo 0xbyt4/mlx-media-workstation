@@ -256,15 +256,27 @@ def test_an_agent_answer_has_a_budget_per_step(client):
     assert all(s["thinking"] for s in steps)
 
 
-def test_an_agent_answer_without_thinking(client):
+def test_an_off_agent_answer_that_can_queue_jobs_thinks_briefly(client):
     cid = new_chat(client, "agent")
-    evs = send(
-        client,
-        cid,
-        text=script([{"name": "list_workstation_tools", "arguments": {}}], "RESULT"),
-    )
-    s = evs[-1]["stats"]["seen"]
-    assert (s["thinking"], s["reasoning_effort"], s["thinking_budget"]) == (
+    text = script([{"name": "list_workstation_tools", "arguments": {}}], "RESULT")
+    evs = send(client, cid, text=text)
+    msgs = client.get(f"/api/chats/{cid}").json()["messages"]
+    steps = [m["stats"]["seen"] for m in msgs[:-1] if m["role"] == "assistant"]
+    steps.append(evs[-1]["stats"]["seen"])
+    assert [s["thinking_budget"] for s in steps] == [256, 102]
+    assert [s["max_tokens"] for s in steps] == [256 + 4096, 102 + 4096]
+    # the same template effort in every step: a change would read the chat again
+    assert {s["reasoning_effort"] for s in steps} == {"low"}
+    assert all(s["thinking"] for s in steps)
+
+
+def test_the_agent_plan():
+    assert effort.agent_level("off", ["create_job", "job_status"]) == effort.QUICK
+    assert effort.agent_level("off", ["read_file", "web_search"]) == "off"
+    assert effort.agent_level("high", ["create_job"]) == "high"
+    assert effort.QUICK not in effort.LEVELS  # the user cannot pick it
+    o = effort.options("off")
+    assert (o["thinking"], o["reasoning_effort"], o["thinking_budget"]) == (
         False,
         None,
         None,

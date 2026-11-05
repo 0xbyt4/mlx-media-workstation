@@ -349,8 +349,42 @@ def test_the_file_room_counts_the_tool_schemas_of_a_workstation_chat():
 
 def test_the_workstation_prompt_asks_for_a_recording_of_the_user_s_own_voice():
     prompt = chat.workstation_prompt(["create_job", "search_library"], [], [])
-    assert "Speech in the user's own voice needs a recording of the user." in prompt
+    assert (
+        "Speech in the user's own voice (the user asks for their own voice, for example "
+        '"my voice") needs a recording of the user.' in prompt
+    )
     assert "A take that a voice tool made is not their voice." in prompt
+
+
+def test_the_workstation_prompt_asks_for_several_jobs_in_one_step():
+    prompt = chat.workstation_prompt(["create_job", "search_library"], [], [])
+    assert (
+        "write all their create_job calls in one reply, one after another, before any "
+        "result comes back." in prompt
+    )
+    # images have no takes field: a take is a job of its own there
+    assert "for the other tools, queue one job for each seed." in prompt
+    # the chat profile has no tools
+    assert "several jobs" not in chat.workstation_prompt()
+
+
+def test_the_workstation_prompt_leaves_the_approval_to_the_app():
+    prompt = chat.workstation_prompt(["create_job", "search_library"], [], [])
+    assert "The user approves the job before it is queued." not in prompt
+    assert (
+        "The app asks the user to approve each job, so do not ask for confirmation in "
+        "the chat: make the call." in prompt
+    )
+    # the summary comes after the calls, so the model does not claim a job it did not queue
+    assert "After the create_job results come back, answer" in prompt
+
+
+def test_the_workstation_prompt_queues_a_request_that_gives_the_words():
+    prompt = chat.workstation_prompt(["create_job", "search_library"], [], [])
+    assert (
+        "A request that gives the exact words to speak or sing is clear: queue it with "
+        "those words. Do not only write them in a prompt block." in prompt
+    )
 
 
 def test_the_workstation_prompt_names_the_tools_that_are_not_installed():

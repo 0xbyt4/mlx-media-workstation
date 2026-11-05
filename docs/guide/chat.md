@@ -162,6 +162,8 @@ The model can think before it answers. A higher level thinks longer and answers 
 - A new chat starts with the level in [Settings > Local LLM](settings.md#local-llm) ("Thinking in a new chat").
 - The times assume about 17 tokens a second, as on an M5 Pro. A slower Mac thinks for fewer words in that time.
 - In an agent answer, the limit applies to each step. Steps after the first get 40% of it.
+- An answer that can queue media jobs thinks for about 15 s also at Off. This short thought makes the model queue
+  the job instead of only describing it.
 
 The thought shows in a block above the answer, folded. Click "Thinking" to open it. The token budgets are in
 [API.md](../API.md#thinking-levels).
