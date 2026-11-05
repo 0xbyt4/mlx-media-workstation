@@ -85,6 +85,7 @@ a time, so only the peak of one tool must fit.
 | Local LLM (Chat and "Improve") | 18 GB | 32 GB |
 | MOSS-Image | 22 GB | 32 GB |
 | ACE-Step 1.5 | 23 GB | 32 GB |
+| Transcribe with Nemotron 3.5 Transcribe | 29 GB | 48 GB |
 | Text to Video, Image to Video, Voice to Video, Extend Video | 35 GB | 48 GB |
 | Fish Drama 3 | 39 GB | 48 GB |
 
@@ -297,7 +298,7 @@ Secrets go to the macOS Keychain. [docs/guide/mcp-servers.md](docs/guide/mcp-ser
 | Image | FLUX.3 Klein | FLUX.3 Klein (mflux, 8-bit) | about 40 s | 14 GB |
 | Image | Klein Edit (references) | FLUX.3 Klein with 1-10 reference images | about 1-4 min | 14 GB |
 | Voice | Fish Drama 3 | Fish Audio Drama 3 (mlx-audio, 4-bit); Qwen3-ASR checks each take | about 2x real time | 39 GB |
-| Voice | Transcribe | Qwen3-ASR 0.6B (mlx-audio, 8-bit): speech to text, with a time for about every 30 s; SRT and VTT subtitles as an option | a few seconds for a minute of speech | 3 GB |
+| Voice | Transcribe | Qwen3-ASR 0.6B (mlx-audio, 8-bit): speech to text, with a time for about every 30 s; SRT and VTT subtitles as an option. Nemotron 3.5 Transcribe (NVFP4) is the other model choice, with word times for the subtitles and speakers as an option | a few seconds for a minute of speech (Nemotron: 55 s in about 16 s, with the model load) | 3 GB (Nemotron: 29 GB) |
 | Music | ACE-Step 1.5 | ACE-Step 1.5 turbo (MLX DiT and LM) | two takes in about 30 s | 23 GB |
 | Video | Text to Video | LTX-2.5 distilled (ltx-2-mlx, q8), with sound | 5 s at 704x1280 in about 3 min, at 576x1024 in about 2 min | 35 GB |
 | Video | Image to Video | LTX-2.5 from a start image | 4 s in about 2 min | 35 GB |
@@ -307,8 +308,8 @@ Secrets go to the macOS Keychain. [docs/guide/mcp-servers.md](docs/guide/mcp-ser
 | Edit | Join clips | ffmpeg only: 2-10 videos and still images in one video, cuts or crossfades, one size and frame rate, about -14 LUFS | under 1 s for 10 s at 704x1280 | none |
 | Edit | Add Subtitles | ffmpeg (and macOS's text system for a burn): an SRT or WebVTT file as a subtitle track (mov_text) with a language tag, or burned into the picture | a few seconds; a burn about 4x real time at 1080p | none |
 
-The peak memory is the value that the app plans with: the highest peak of the tools that use the same model. Most
-jobs use less. We measured these ranges: MOSS-Image 20-22 GB, FLUX.3 Klein 11-14 GB, Fish Drama 3 26-39 GB (short
+The peak memory is the value that the app plans with: the highest peak of the tools that use the same model. A
+Transcribe job plans with the peak of the model that it uses. Most jobs use less. We measured these ranges: MOSS-Image 20-22 GB, FLUX.3 Klein 11-14 GB, Fish Drama 3 26-39 GB (short
 lines use less), Text to Video 23-29 GB, Image to Video about 28 GB, Voice to Video about 28 GB and Extend Video
 29-35 GB.
 
@@ -361,6 +362,7 @@ Read each model's licence before you download it (see [Model licences](#model-li
 | FLUX.3 Klein (gated) | 20.3 GB | FLUX.3 Klein, Klein Edit |
 | Fish Audio Drama 3, 4-bit | 23.8 GB | Fish Drama 3 |
 | Qwen3-ASR 0.6B, 8-bit | 1.0 GB | Fish Drama 3, Transcribe |
+| Nemotron 3.5 Transcribe, NVFP4 (optional) | 21.6 GB | Transcribe (Model: Nemotron) |
 | ACE-Step 1.5 turbo | 10.1 GB | ACE-Step 1.5 |
 | LTX-2.5 q8 (gated) | 54.1 GB | Text to Video, Image to Video, Voice to Video, Extend Video |
 | Qwen3.8 27B, 4-bit | 16.1 GB | Chat, prompt help |
@@ -441,6 +443,29 @@ The Transcribe tool needs this environment and Qwen3-ASR, but not the Fish Drama
 
 The 4-bit build fits a 48 GB Mac. The 8-bit build peaked at about 49 GB.
 
+### Voice: Nemotron 3.5 Transcribe (optional)
+
+The Transcribe tool can use Nemotron 3.5 Transcribe instead of Qwen3-ASR (the Model field). It runs in the local LLM
+environment (mlx-audio 0.6.4) and loads the weights from `nemotron_model`. Its peak is about 29 GB, so it needs a
+48 GB Mac. On a 48 GB Mac, the chat model unloads during the job.
+
+1. Make the local LLM environment (step 1 of [Local LLM](#local-llm-qwen38-27b-mlx-vlm)). It does not need the Fish
+   Drama 3 environment or Qwen3-ASR. An environment that you made before mlx-audio was in that step needs it once:
+
+   ```sh
+   uv pip install --python ~/mlx-media/venv-qwen/bin/python "mlx-audio==0.6.4"
+   ```
+
+2. Download the weights:
+
+   ```sh
+   hf download nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4 --revision 66c6adc4020179567074d0399cda2a4eeb2bb347 \
+     --local-dir ~/mlx-media/models/nemotron-3.5-transcribe-nvfp4
+   ```
+
+The checkpoint has a time for each word, so its subtitles start and end with the words. Speakers names the speaker
+of each line, for audio of up to 5 min.
+
 ### Music: ACE-Step 1.5
 
 1. Get ACE-Step at the tested commit and make its environment:
@@ -492,7 +517,7 @@ the weights from `qwen_model`.
 
    ```sh
    uv venv --python /opt/homebrew/bin/python3.12 ~/mlx-media/venv-qwen
-   uv pip install --python ~/mlx-media/venv-qwen/bin/python "mlx-vlm==0.7.11" "mlx==0.32.4" "transformers==5.22.1"
+   uv pip install --python ~/mlx-media/venv-qwen/bin/python "mlx-vlm==0.7.11" "mlx==0.32.4" "transformers==5.22.1" "mlx-audio==0.6.4"
    ```
 
 2. Download the weights:
@@ -518,6 +543,7 @@ keys; a change takes effect after a restart.
 | `ltx_model` | `~/mlx-media/models/ltx-2.5-mlx-q8` | The LTX-2.5 weights |
 | `qwen_python` | `~/mlx-media/venv-qwen/bin/python` | The Python of the local LLM environment |
 | `qwen_model` | `~/mlx-media/models/qwen3.8-27b-4bit` | The Qwen3.8 27B weights |
+| `nemotron_model` | `~/mlx-media/models/nemotron-3.5-transcribe-nvfp4` | The Nemotron 3.5 Transcribe weights (a Transcribe model) |
 
 ## Model licences
 
@@ -534,6 +560,7 @@ model or its output.
 | FLUX.3 Klein | FLUX Kommunity License v1.0 | Non-commercial use is allowed. Commercial use of the outputs is allowed only when your gross annual revenue (affiliates included) is less than US$5M. Then you must filter or review the outputs for unlawful content, and mark them as AI-made where the law requires it. Other commercial use needs a licence from Black Forest Labs. Do not use the outputs to improve a similar model. | [Model card](https://huggingface.co/black-forest-labs/flux-3-image-klein), [LICENSE.md](https://huggingface.co/black-forest-labs/flux-3-image-klein/blob/8454017f9ebaada30c998fccd9f67a80c7580f68/LICENSE.md) |
 | Fish Audio Drama 3 | Fish Audio Community License v1.0 | Allowed while your annual revenue is less than US$500,000. No hosted text-to-speech service. Do not imitate a real person's voice without consent, do not remove the watermark, and do not train other speech models on the output. A product that uses it shows "Built with Fish Audio". | [LICENSE](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit/blob/1ac1b2108b63c2ef5bade463a121569363e293ce/LICENSE) |
 | Qwen3-ASR 0.6B | Apache-2.0 | Allowed. | [Model card](https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit) |
+| Nemotron 3.5 Transcribe (NVFP4) | OpenMDW-1.1 | Allowed. Keep the licence and its notices with the weights. | [LICENSE](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4/blob/66c6adc4020179567074d0399cda2a4eeb2bb347/LICENSE) |
 | ACE-Step 1.5 | MIT | Allowed. | [Model card](https://huggingface.co/ACE-Step/Ace-Step1.5) |
 | LTX-2.5 | LTX-2.x Community License Agreement | Free for entities with less than US$10M annual revenue. At or above that, commercial use needs a paid licence from Lightricks. Keep the watermarks and AI disclosures, and follow the AI laws that apply to you. | [LICENSE-2_x](https://github.com/Lightricks/LTX-2/blob/main/LICENSE-2_x) |
 | Qwen3.8 27B | Apache-2.0 | Allowed. | [LICENSE of the base model](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE) |

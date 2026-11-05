@@ -453,6 +453,54 @@ def test_validate_names_missing_installs(
     )
 
 
+def test_validate_names_the_missing_installs_of_a_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    there, weights = tmp_path / "python", tmp_path / "nemotron"
+    there.touch()
+    monkeypatch.setattr(tools, "REQUIRES", {"voice.transcribe": [there]})
+    monkeypatch.setattr(
+        tools,
+        "CHOICE_REQUIRES",
+        {("voice.transcribe", "model", "nemotron"): [there, weights]},
+    )
+    tools.validate("voice.transcribe", {"model": "qwen3-asr"}, {})
+    with pytest.raises(ValueError, match=f"^Not installed: {weights}\\."):
+        tools.validate("voice.transcribe", {"model": "nemotron"}, {})
+    # the choice needs its own paths instead of the tool's: here not the default model's environment
+    monkeypatch.setattr(tools, "REQUIRES", {"voice.transcribe": [tmp_path / "drama"]})
+    weights.mkdir()
+    tools.validate("voice.transcribe", {"model": "nemotron"}, {})
+    with pytest.raises(ValueError, match="^Not installed: .*drama"):
+        tools.validate("voice.transcribe", {"model": "qwen3-asr"}, {})
+
+
+def test_speakers_need_nemotron_and_at_most_5_min(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tools, "REQUIRES", {})
+    monkeypatch.setattr(tools, "CHOICE_REQUIRES", {})
+    monkeypatch.setattr(tools, "has_audio", lambda path: True)
+    length = {"s": 300.0}
+    monkeypatch.setattr(tools, "media_seconds", lambda path: length["s"])
+    files = {"audio": [Path("talk.wav")]}
+    with pytest.raises(ValueError, match="^Speakers: only with the model Nemotron"):
+        tools.validate(
+            "voice.transcribe", {"model": "qwen3-asr", "speakers": "true"}, files
+        )
+    tools.validate("voice.transcribe", {"model": "nemotron", "speakers": "true"}, files)
+    length["s"] = 301.0
+    with pytest.raises(
+        ValueError, match=r"^Speakers: at most 5 min of audio \(it is 5\.0 min\)\."
+    ):
+        tools.validate(
+            "voice.transcribe", {"model": "nemotron", "speakers": "true"}, files
+        )
+    tools.validate(
+        "voice.transcribe", {"model": "nemotron", "speakers": "false"}, files
+    )
+
+
 def test_validate_passes_when_installed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

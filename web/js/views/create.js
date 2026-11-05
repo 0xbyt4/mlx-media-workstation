@@ -135,13 +135,14 @@ function buildPicker() {
   updatePicker();
 }
 
-function toolFacts(toolId) {
-  const peak = store.toolPeak(toolId);
+// values: the open form's values (a choice such as Transcribe's model changes the peak); null = the tool's defaults
+function toolFacts(toolId, values = null) {
+  const peak = store.toolPeak(toolId, values);
   const mem = store.memTotal();
   return {
     peak,
     mem,
-    installed: store.toolInstalled(toolId),
+    installed: store.toolInstalled(toolId, values),
     fit: peak === null ? null : fit(peak, mem, store.reserve()),
     time: store.toolTime(toolId),
   };
@@ -245,8 +246,9 @@ function buildForm(tool) {
 
 function renderHead() {
   const tool = s.tool;
-  const f = toolFacts(tool.id);
-  const models = (store.toolModels(tool.id) || []).filter((m) => m.kind === 'download');
+  const values = collectValues();
+  const f = toolFacts(tool.id, values);
+  const models = (store.toolModels(tool.id, values) || []).filter((m) => m.kind === 'download');
   const sig = JSON.stringify([tool.id, f.peak, f.installed, f.time, models.map((m) => m.label)]);
   if (sig === s.headSig) return;
   s.headSig = sig;
@@ -266,7 +268,7 @@ function renderHead() {
 
   s.els.notice.replaceChildren();
   if (f.installed === false) {
-    const missing = (store.toolModels(tool.id) || []).filter((m) => !m.installed).map((m) => m.label);
+    const missing = (store.toolModels(tool.id, values) || []).filter((m) => !m.installed).map((m) => m.label);
     s.els.notice.append(h('div', {class: 'banner banner-warn'}, icon('alert'),
       h('div', {class: 'banner-body'},
         h('strong', null, missing.join(', ') + (missing.length === 1 ? ' is' : ' are') + ' not installed'),
@@ -664,6 +666,7 @@ function onFormChange(e) {
   if (!s) return; // a field that loses the focus while the view closes sends its change after unmount()
   scheduleSave();
   const ctl = s.controls.get(e.target.name);
+  if (ctl && ctl.field.type === 'select') refreshFacts(); // a model choice changes the peak and what must be installed
   if (!ctl || ctl.isFile || e.target !== ctl.input || (ctl.get() === '' && !e.target.validity.badInput)) return;
   // a checkbox turned on marks the text fields that it now keeps from being used
   for (const c of [ctl, ...dependents(ctl)]) {
@@ -703,6 +706,7 @@ function applyValues(values) {
     const ctl = s.controls.get(name);
     if (ctl && !ctl.isFile) ctl.set(v);
   }
+  refreshFacts(); // a model choice in the values changes the peak
 }
 
 function collectValues() {
@@ -771,6 +775,7 @@ function resetForm() {
   const tool = s.tool;
   const before = collectValues();
   for (const ctl of s.controls.values()) ctl.reset();
+  refreshFacts();
   for (const name of s.controls.keys()) improve.delete(s.tool.id + ':' + name);
   lsRemove(KEY.form(s.tool.id));
   clearMessages();
@@ -811,7 +816,7 @@ function buildFormData(tool) {
 // ---------- submit ----------
 
 async function submit() {
-  if (!s || !s.tool || s.submitting || store.toolInstalled(s.tool.id) === false) return;
+  if (!s || !s.tool || s.submitting || store.toolInstalled(s.tool.id, collectValues()) === false) return;
   const tool = s.tool;
   showSubmitError(null);
   let firstBad = null;
@@ -1019,7 +1024,7 @@ function buildRail() {
 function updateGenerate() {
   const els = s.els;
   const tool = s.tool;
-  const installed = tool ? store.toolInstalled(tool.id) : null;
+  const installed = tool ? store.toolInstalled(tool.id, collectValues()) : null;
   const lane = tool ? store.toolLane(tool.id) : 'model';
   const busy = store.get('jobs').some((j) => store.ACTIVE.has(j.status) && store.laneOf(j) === lane);
   // The server checks the files again and says what is missing.
@@ -1042,7 +1047,7 @@ function preRow(iconName, ...body) {
 
 function renderPre() {
   const tool = s.tool;
-  const f = toolFacts(tool.id);
+  const f = toolFacts(tool.id, collectValues());
   const rows = [h('h3', {id: 'pre-h'}, 'On this Mac')];
   if (f.peak !== null && f.mem && f.fit) {
     const reserveGb = store.reserve();

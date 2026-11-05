@@ -236,6 +236,8 @@ def cost(job: dict[str, Any], text: str) -> tuple[tuple[Any, ...], float] | None
     if tool == "voice.drama3":
         words = len(SPOKEN.sub(" ", str(p.get("text", ""))).split())
         return (), float(DRAMA_LOAD_WORDS + words * num(p, "takes", 2))
+    if tool == "voice.transcribe":  # Nemotron takes several times as long as Qwen3-ASR
+        return (p.get("model") or "qwen3-asr",), 1.0
     if tool == "music.ace":
         return (num(p, "duration"), num(p, "takes")), 1.0
     if tool.startswith("video."):

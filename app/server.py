@@ -506,7 +506,7 @@ def run_next(job: dict[str, Any]) -> None:
         with lock:
             claiming.add(job["id"])
         go = llm.claim(
-            models.tool_peak(job["tool"]),
+            models.tool_peak(job["tool"], job.get("params")),
             lambda j=job: j["status"] != "queued" or stopping.is_set(),
         )
         with lock:
@@ -840,7 +840,9 @@ def needs_memory(job: dict[str, Any]) -> bool:
         return False
     queued = queued_jobs("model")
     ahead = queued[: queued.index(job) + 1] if job in queued else [job]
-    return any(not llm.fits_with(models.tool_peak(j["tool"])) for j in ahead)
+    return any(
+        not llm.fits_with(models.tool_peak(j["tool"], j.get("params"))) for j in ahead
+    )
 
 
 class Workstation:

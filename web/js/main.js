@@ -180,7 +180,7 @@ function renderMem() {
   const qwen = llm && llm.state === 'ready' ? Math.min(llm.peak_gb, used) : 0;
   const run = store.runningJob();
   const showJob = !chatOnly() || !!run; // the chat profile shows a job only while one runs (from a full window)
-  const jobPeak = run ? (llm && llm.media_peak_gb) || store.toolPeak(run.tool) || 0 : 0;
+  const jobPeak = run ? (llm && llm.media_peak_gb) || store.toolPeak(run.tool, run.params) || 0 : 0;
   const job = Math.min(jobPeak, Math.max(0, used - qwen));
   const other = Math.max(0, used - job - qwen);
   const w = (x) => (total > 0 ? Math.min(100, (x / total) * 100).toFixed(1) + '%' : '0%');

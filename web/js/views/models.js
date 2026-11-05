@@ -19,6 +19,7 @@ const LICENCE_NOTES = {
   'FLUX Kommunity License': 'Output generation only, under US$5M revenue; other commercial use needs a licence from Black Forest Labs.',
   'Fish Audio Community License': 'Commercial use under US$500k revenue; no hosted speech service; no imitation of a voice without consent; keep its watermark; show "Built with Fish Audio".',
   'LTX-2.x Community License Agreement': 'Free under US$10M revenue; keep its watermarks and AI disclosures.',
+  'OpenMDW-1.1': 'Commercial use allowed; keep the licence and its notices.',
 };
 const CHAT_GROUP = 'Chat';
 const GROUP_TITLE = {Image: 'Image', Voice: 'Voice', Music: 'Music', Video: 'Video', Edit: 'Edit', [CHAT_GROUP]: 'Chat and prompt help'};
@@ -650,6 +651,7 @@ function defaultPicks(d) {
   for (const m of d.models) {
     // the full profile leaves out what no tool uses (the LLM); in the chat profile the LLM is the point
     if (m.kind !== 'download' || blockedWhy(m, byId) || (!(m.tools || []).length && !chatOnly())) continue;
+    if (m.choice) continue; // a model that a form choice picks (Transcribe's Nemotron) is the user's own pick
     if (missingEnvs(m, d).length) continue;
     const f = fit(m.peak_gb, d.machine.mem_total_gb, d.machine.mem_reserve_gb);
     if (f && f.k !== 'no') picks.add(m.id);

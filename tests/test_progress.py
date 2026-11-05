@@ -246,6 +246,14 @@ def test_cost_of_ltx_waits_for_the_stage_size() -> None:
     assert progress.cost(j, log("ltx_extend.log")) == ((False,), 6160.0)
 
 
+def test_cost_of_transcribe_is_per_model() -> None:
+    assert progress.cost(job("a", "voice.transcribe"), "") == (("qwen3-asr",), 1.0)
+    assert progress.cost(job("b", "voice.transcribe", model="nemotron"), "") == (
+        ("nemotron",),
+        1.0,
+    )
+
+
 def test_cost_of_drama_counts_spoken_words_per_take() -> None:
     text = "<|speaker:0|> One two [laughs] three. <|speaker:1|> Four."
     assert progress.cost(job("a", "voice.drama3", takes="2", text=text), "") == (

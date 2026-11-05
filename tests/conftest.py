@@ -62,6 +62,8 @@ def model_paths(monkeypatch: pytest.MonkeyPatch) -> None:
         "DRAMA_MODEL": MODELS / "drama-3",
         "ACE_DIR": MODELS / "ace",
         "ACE_PY": MODELS / "ace" / ".venv" / "bin" / "python",
+        "LLM_PY": MODELS / "llm" / "bin" / "python",
+        "NEMOTRON_MODEL": MODELS / "nemotron",
     }
     for name, path in fixed.items():
         monkeypatch.setattr(tools, name, path)

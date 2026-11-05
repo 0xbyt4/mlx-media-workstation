@@ -292,7 +292,7 @@ function buildRunning(job) {
   r.left = h('span', {class: 'left'});
   r.elapsed = h('span');
   r.log = h('pre', {class: 'log'});
-  const peak = store.toolPeak(job.tool);
+  const peak = store.toolPeak(job.tool, job.params);
   const logKey = job.id + ':runlog';
   const logBtn = h('button', {type: 'button', class: 'btn btn-sm btn-ghost', 'aria-expanded': 'false'});
   const showLog = (open) => {

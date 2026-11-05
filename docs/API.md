@@ -186,6 +186,9 @@ The queue has two lanes. Each lane has its own worker and runs its jobs one at a
   `edit.mix`, `edit.concat` and `edit.subtitle` (ffmpeg; a mix about 0.1 GB, a join of 704x1280 clips about 1 GB,
   a subtitle burn at 1080p about 1.2 GB).
   `voice.transcribe` loads Qwen3-ASR (about 3 GB), so it is in the model lane.
+- A job claims the peak of the models that its form values pick (`models.tool_peak(tool, params)`). A
+  `voice.transcribe` job with `"model": "nemotron"` claims 29 GB (Nemotron 3.5 Transcribe); the default
+  `"qwen3-asr"` claims 3 GB.
 - A light job does not claim memory. It does not change the chat model's state or the held peak of the running model
   job. So a mix starts at once, also while a video job of several minutes runs.
 - The light lane runs one job at a time. So at most one ffmpeg job runs next to a model job, and the model job keeps
@@ -326,6 +329,7 @@ sent. Without the session cookie the answer has only `proof` and `profile`. A ba
       "fits": true,
       "disk_free_gb": 412.3,
       "needs": null,
+      "choice": null,
       "install": null,
       "install_path": null,
       "download": {"status": "queued | running | done | failed | cancelled", "position": null, "error": null,
@@ -351,6 +355,9 @@ sent. Without the session cookie the answer has only `proof` and `profile`. A ba
 - `features` lists the app features outside the tool list that need the entry (`"Prompt help"`, `"Chat"`). The chat
   profile shows only the entries whose `features` hold `"Chat"`. `used_by` is the tool labels plus `features`.
 - `path_key` is the `config.toml` key of the install path; `null` means the Hugging Face cache.
+- `choice` is `[field, value]` for weights that a job loads only when its form has that value, else `null`. Today
+  this is Nemotron 3.5 Transcribe: `["model", "nemotron"]` of `voice.transcribe`. The setup card does not pick
+  these weights by default.
 - `install_path` is where the `install` commands put a manual entry: the default path of `path_key`. When it differs
   from `path`, the user sets `path_key` to it after the install. It is `null` for downloads.
 - `fits` is true when `peak_gb` plus `mem_reserve_gb` is at most `mem_total_gb`.

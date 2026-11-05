@@ -197,20 +197,29 @@ export function reserve() {
   return state.models ? state.models.machine.mem_reserve_gb : DEFAULT_RESERVE_GB;
 }
 
-export function toolModels(toolId) {
-  return state.models ? state.models.models.filter((m) => (m.tools || []).includes(toolId)) : null;
+// The models of a tool that a job with these form values loads (models.job_models in app/models.py): the models that
+// the values pick by a choice ([field, value], as Transcribe's Nemotron) and the entries they need, else the tool's
+// models without a choice (also without values).
+export function toolModels(toolId, values = null) {
+  if (!state.models) return null;
+  const all = state.models.models;
+  const mine = all.filter((m) => (m.tools || []).includes(toolId));
+  const picked = mine.filter((m) => m.choice && !!values && String(values[m.choice[0]]) === m.choice[1]);
+  if (!picked.length) return mine.filter((m) => !m.choice);
+  const needs = all.filter((e) => picked.some((m) => m.needs === e.id));
+  return [...picked, ...needs];
 }
 
 // Peak memory in GB of a job of this tool (README numbers, measured on a 48 GB M5 Pro); 0 = no model; null = unknown.
-export function toolPeak(toolId) {
-  const ms = toolModels(toolId);
+export function toolPeak(toolId, values = null) {
+  const ms = toolModels(toolId, values);
   if (!ms) return null;
   return ms.reduce((max, m) => Math.max(max, m.peak_gb || 0), 0);
 }
 
 // true or false from /api/models; null while the models are not loaded yet.
-export function toolInstalled(toolId) {
-  const ms = toolModels(toolId);
+export function toolInstalled(toolId, values = null) {
+  const ms = toolModels(toolId, values);
   return ms ? ms.every((m) => m.installed) : null;
 }
 

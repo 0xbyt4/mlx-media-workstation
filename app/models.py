@@ -90,6 +90,8 @@ class Model:
     ignore: tuple[str, ...] = ()
     features: tuple[str, ...] = ()  # app features outside the tool list that use it
     needs: str | None = None  # the manual entry to install first
+    # the form choice (field, value) that makes a job load it instead of its tools' other models; None = the default
+    choice: tuple[str, str] | None = None
     install: str | None = None  # the README commands of a manual entry
 
     @property
@@ -208,6 +210,34 @@ uv pip install --python ~/mlx-media/venv-drama/bin/python "mlx-audio==0.6.1" sci
         licence_url="https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit",
         peak_gb=3.0,
     ),
+    # the Transcribe tool's "Nemotron" model: NVIDIA's NVFP4 checkpoint, with the CTC head (word times) and the
+    # speaker encoder. mlx-audio loads it from its folder. Peak: 26.7 GB
+    # measured (/usr/bin/time -l, 55 s of speech with word times), plus 2 GB
+    Model(
+        id="nemotron-3.5-transcribe-nvfp4",
+        label="Nemotron 3.5 Transcribe (NVFP4)",
+        tools=("voice.transcribe",),
+        path_key="nemotron_model",
+        files=(
+            "config.json",
+            "model-00001-of-00002.safetensors",
+            "model-00002-of-00002.safetensors",
+            "model-ctc-bf16.safetensors",
+            "model-mtp-fp8.safetensors",
+            "model.safetensors.index.json",
+            "perception.safetensors",
+            "tokenizer.json",
+            "tokenizer_config.json",
+        ),
+        repo="nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4",
+        revision="66c6adc4020179567074d0399cda2a4eeb2bb347",
+        size_gb=21.6,
+        licence="OpenMDW-1.1",
+        licence_url="https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4/blob/66c6adc4020179567074d0399cda2a4eeb2bb347/LICENSE",
+        peak_gb=29.0,
+        needs="qwen-venv",
+        choice=("model", "nemotron"),
+    ),
     Model(
         id="ace-step-checkout",
         label="ACE-Step 1.5 checkout",
@@ -289,7 +319,7 @@ uv pip install --python ~/mlx-media/venv-ltx/bin/python \\
         path_key="qwen_python",
         files=(),
         install="""uv venv --python /opt/homebrew/bin/python3.12 ~/mlx-media/venv-qwen
-uv pip install --python ~/mlx-media/venv-qwen/bin/python "mlx-vlm==0.7.11" "mlx==0.32.4" "transformers==5.22.1\"""",
+uv pip install --python ~/mlx-media/venv-qwen/bin/python "mlx-vlm==0.7.11" "mlx==0.32.4" "transformers==5.22.1" "mlx-audio==0.6.4\"""",
         features=("Prompt help", "Chat"),
     ),
     # peak not measured yet: the 16.1 GB of weights plus a short-context KV cache
@@ -407,9 +437,21 @@ def fits(peak_gb: float, mem_gb: float) -> bool:
     return peak_gb + RESERVE_GB <= mem_gb
 
 
-def tool_peak(tool_id: str) -> float:
-    """The peak memory in GB of a job of this tool (0 for tools that load no model)."""
-    return max((m.peak_gb or 0.0 for m in MODELS if tool_id in m.tools), default=0.0)
+def job_models(tool_id: str, params: dict[str, Any] | None = None) -> list[Model]:
+    """The models that a job of this tool with these form values loads: the models its values pick by a choice, else
+    the tool's models without a choice (also without values)."""
+    mine = [m for m in MODELS if tool_id in m.tools]
+    picked = [
+        m
+        for m in mine
+        if m.choice and str((params or {}).get(m.choice[0])) == m.choice[1]
+    ]
+    return picked or [m for m in mine if m.choice is None]
+
+
+def tool_peak(tool_id: str, params: dict[str, Any] | None = None) -> float:
+    """The peak memory in GB of a job of this tool with these form values (0 for tools that load no model)."""
+    return max((m.peak_gb or 0.0 for m in job_models(tool_id, params)), default=0.0)
 
 
 def remote_sizes(m: Model) -> dict[str, int]:
@@ -837,6 +879,7 @@ def view(m: Model, mem_gb: float) -> dict[str, Any]:
         "fits": None if m.peak_gb is None else fits(m.peak_gb, mem_gb),
         "disk_free_gb": None if m.manual else round(disk_free(m) / 1e9, 1),
         "needs": m.needs,
+        "choice": list(m.choice) if m.choice else None,
         "install": m.install,
         "install_path": str(p) if (p := install_target(m)) else None,
         "download": progress(m),

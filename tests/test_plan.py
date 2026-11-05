@@ -1152,6 +1152,40 @@ def test_transcribe_makes_16k_mono_speech_and_a_job_file(
         tools.plan("voice.transcribe", params("voice.transcribe"), {}, tmp_path)
 
 
+def test_transcribe_with_nemotron_runs_in_the_llm_environment(
+    tmp_path: Path, media: FakeMedia
+) -> None:
+    clip, spec = tmp_path / "in_audio_0.mp4", tmp_path / "transcribe_job.json"
+    plan = tools.plan(
+        "voice.transcribe",
+        params("voice.transcribe", model="nemotron"),
+        {"audio": [clip]},
+        tmp_path,
+    )
+    assert plan.commands == [
+        [
+            str(MODELS / "llm/bin/python"),
+            str(tools.APP / "runners/transcribe.py"),
+            str(spec),
+        ]
+    ]
+    assert plan.env == OFFLINE
+    assert json.loads(spec.read_text())["model"] == str(MODELS / "nemotron")
+    assert json.loads(spec.read_text())["speakers"] is False
+    tools.plan(
+        "voice.transcribe",
+        params("voice.transcribe", model="nemotron", speakers="true"),
+        {"audio": [clip]},
+        tmp_path,
+    )
+    assert json.loads(spec.read_text())["speakers"] is True
+    # the default model: the Drama 3 environment and no model in the job file
+    tools.plan(
+        "voice.transcribe", params("voice.transcribe"), {"audio": [clip]}, tmp_path
+    )
+    assert "model" not in json.loads(spec.read_text())
+
+
 def test_the_transcription_input_is_read_only_as_one_media_file(
     tmp_path: Path, media: FakeMedia
 ) -> None:
