@@ -131,7 +131,7 @@ def test_first_start_without_models(
     )
     groups = [t["group"] for t in client.get("/api/tools").json()]
     assert groups == sorted(
-        groups, key=["Image", "Voice", "Music", "Video", "Edit"].index
+        groups, key=["Image", "Voice", "Music", "Video", "Edit", "Document"].index
     )
     # every list a new user opens is empty, and none of them fails
     assert client.get("/api/jobs").json() == []

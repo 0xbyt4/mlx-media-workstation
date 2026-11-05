@@ -108,6 +108,9 @@ KINDS = {
     ".txt": "text",
     ".srt": "text",
     ".vtt": "text",
+    ".md": "text",
+    # an input of Read Text (OCR) only; its pages become in_page_*.png images
+    ".pdf": "document",
 }
 INPUT_NAMES = {
     "start.png",

@@ -46,6 +46,7 @@ LABELS = {
     "ace_dir": "ACE-Step 1.5 checkout",
     "qwen_python": "Local LLM python",
     "qwen_model": "Local LLM weights",
+    "ocr_model": "OvisOCR3 weights",
 }
 # features that use a path although no entry in app/models.py names it (app/llm.py starts the LLM with qwen_python)
 FEATURES = {"qwen_python": llm.MODEL.features}

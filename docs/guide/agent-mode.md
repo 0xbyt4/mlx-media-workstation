@@ -44,6 +44,7 @@ The Tools menu lists each tool with a pill that names its risk. The pill sets wh
 | Wait for a job | App only | Waits until a job ends, for at most 300 s. |
 | Cancel a job | Uses this Mac | Cancels a job that this chat queued. It cannot cancel your other jobs. |
 | Transcribe | Uses this Mac | Speech to text for an audio or video file, as a Transcribe job. |
+| Read text (OCR) | Uses this Mac | The text of a photo, a scan or PDF pages, as a Read Text (OCR) job. |
 | System status | App only | Shows the Mac's memory, the running jobs, the queue, the chat model and which media tools fit now. |
 | List files | Your folder | Lists a folder inside the granted folder. |
 | Read a file | Your folder | Reads a text file in the granted folder. |
@@ -59,7 +60,7 @@ The Tools menu lists each tool with a pill that names its risk. The pill sets wh
 | Python | Runs code | Runs Python in a sandbox with no network and no access to your files. |
 | Shell | Runs code | Runs shell commands in a sandbox with no network. It reads the granted folder without changing it. |
 
-The chat profile has no media tools, jobs, Library or Transcribe: it shows only the other tools.
+The chat profile has no media tools, jobs, Library, Transcribe or Read text (OCR): it shows only the other tools.
 
 ### Tools the model loads
 
@@ -113,7 +114,7 @@ comes into a chat, the Tools menu shows a note. It starts with "Web pages, files
 A document or audio file that you attach to a message counts as such content too. An attached image does not.
 
 From then on, every "Uses this Mac", "Leaves this Mac" and "Writes files" call asks, also after "Allow in this chat".
-Web search, Read a web page and Transcribe ask every time after their first result. Read each card before you allow
+Web search, Read a web page, Transcribe and Read text (OCR) ask every time after their first result. Read each card before you allow
 it.
 
 ## Turn tools on or off

@@ -7,9 +7,9 @@ service.
 
 ![The Create screen with the Text to Video form](docs/images/create.png)
 
-- **13 tools in 5 groups**: images (MOSS-Image, FLUX.3 Klein, Klein Edit), voice (Fish Drama 3, Transcribe), music
-  (ACE-Step 1.5), video with sound (LTX-2.5: text, image, voice and extend) and edits (video + music mix, join
-  clips, add subtitles).
+- **14 tools in 6 groups**: images (MOSS-Image, FLUX.3 Klein, Klein Edit), voice (Fish Drama 3, Transcribe), music
+  (ACE-Step 1.5), video with sound (LTX-2.5: text, image, voice and extend), edits (video + music mix, join
+  clips, add subtitles) and documents (Read Text: OCR of photos, scans and PDF pages).
 - **Prompt help**: "Improve" under a prompt field asks the local LLM to rewrite your draft for that tool.
 - **Chat**: talk with a local Qwen3.8 27B. Attach images, documents (PDF, Word, Excel, text and code) or audio,
   pick a thinking level, and let it write prompts for the tools or queue the jobs itself.
@@ -81,6 +81,7 @@ a time, so only the peak of one tool must fit.
 |---|---|---|
 | Mix (video + music), Join clips, Add Subtitles | none (ffmpeg only) | any |
 | Transcribe | 3 GB | 16 GB |
+| Read Text (OCR) | 6 GB | 16 GB |
 | FLUX.3 Klein, Klein Edit (references) | 14 GB | 24 GB |
 | Local LLM (Chat and "Improve") | 18 GB | 32 GB |
 | MOSS-Image | 22 GB | 32 GB |
@@ -90,7 +91,7 @@ a time, so only the peak of one tool must fit.
 
 In short:
 
-- **16 GB**: Transcribe and the Edit tools.
+- **16 GB**: Transcribe, Read Text (OCR) and the Edit tools.
 - **24 GB**: also FLUX.3 Klein and Klein Edit.
 - **32 GB or 36 GB**: also MOSS-Image, ACE-Step 1.5, Chat and prompt help.
 - **48 GB or more**: every tool.
@@ -306,6 +307,7 @@ Secrets go to the macOS Keychain. [docs/guide/mcp-servers.md](docs/guide/mcp-ser
 | Edit | Mix (video + music) | ffmpeg only: music under a video's own sound, ducked under speech, about -14 LUFS | a few seconds | none |
 | Edit | Join clips | ffmpeg only: 2-10 videos and still images in one video, cuts or crossfades, one size and frame rate, about -14 LUFS | under 1 s for 10 s at 704x1280 | none |
 | Edit | Add Subtitles | ffmpeg only: an SRT or WebVTT file as a subtitle track (mov_text) with a language tag | a few seconds | none |
+| Document | Read Text (OCR) | OvisOCR3 0.8B (mlx-vlm, bf16): the text of a photo, a scan or PDF pages as Markdown (tables as HTML, formulas as LaTeX) or plain text | about 2 s for a short page, longer for a full page of small print | 6 GB |
 
 The peak memory is the value that the app plans with: the highest peak of the tools that use the same model. Most
 jobs use less. We measured these ranges: MOSS-Image 20-22 GB, FLUX.3 Klein 11-14 GB, Fish Drama 3 26-39 GB (short
@@ -364,6 +366,7 @@ Read each model's licence before you download it (see [Model licences](#model-li
 | ACE-Step 1.5 turbo | 10.1 GB | ACE-Step 1.5 |
 | LTX-2.5 q8 (gated) | 54.1 GB | Text to Video, Image to Video, Voice to Video, Extend Video |
 | Qwen3.8 27B, 4-bit | 16.1 GB | Chat, prompt help |
+| OvisOCR3 0.8B | 1.7 GB | Read Text (OCR) |
 
 ### Gated models
 
@@ -502,6 +505,21 @@ the weights from `qwen_model`.
      --local-dir ~/mlx-media/models/qwen3.8-27b-4bit
    ```
 
+### Documents: OvisOCR3 (mlx-vlm)
+
+Read Text (OCR) runs OvisOCR3 with the Python of the local LLM environment (`qwen_python`). It does not need the
+Qwen3.8 27B weights.
+
+1. Make the local LLM environment (step 1 above).
+2. Download the weights. The model repository also holds Python files; the app does not use them, so download only
+   the weights, the tokenizer and the configuration:
+
+   ```sh
+   hf download ATH-MaaS/OvisOCR3 --revision 17f255e2c8ae6d18d5d5edb0a474bd4ed39aef90 \
+     --include "*.safetensors" --include "*.json" --include merges.txt --include chat_template.jinja \
+     --local-dir ~/mlx-media/models/ovisocr3
+   ```
+
 ### Model paths
 
 `config.toml` tells the app where each model is. A key that you leave out takes the default from
@@ -518,6 +536,7 @@ keys; a change takes effect after a restart.
 | `ltx_model` | `~/mlx-media/models/ltx-2.5-mlx-q8` | The LTX-2.5 weights |
 | `qwen_python` | `~/mlx-media/venv-qwen/bin/python` | The Python of the local LLM environment |
 | `qwen_model` | `~/mlx-media/models/qwen3.8-27b-4bit` | The Qwen3.8 27B weights |
+| `ocr_model` | `~/mlx-media/models/ovisocr3` | The OvisOCR3 weights (Read Text) |
 
 ## Model licences
 
@@ -537,6 +556,7 @@ model or its output.
 | ACE-Step 1.5 | MIT | Allowed. | [Model card](https://huggingface.co/ACE-Step/Ace-Step1.5) |
 | LTX-2.5 | LTX-2.x Community License Agreement | Free for entities with less than US$10M annual revenue. At or above that, commercial use needs a paid licence from Lightricks. Keep the watermarks and AI disclosures, and follow the AI laws that apply to you. | [LICENSE-2_x](https://github.com/Lightricks/LTX-2/blob/main/LICENSE-2_x) |
 | Qwen3.8 27B | Apache-2.0 | Allowed. | [LICENSE of the base model](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE) |
+| OvisOCR3 | Apache-2.0 | Allowed. | [LICENSE](https://huggingface.co/ATH-MaaS/OvisOCR3/blob/17f255e2c8ae6d18d5d5edb0a474bd4ed39aef90/LICENSE) |
 
 The Fish Drama 3 tool is Built with Fish Audio.
 

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import chat, config, llm, models
-from app.agent import Registry, plan_tool, ws_tools
+from app.agent import Registry, deferred, plan_tool, ws_tools
 from tests.conftest import app_client
 from tests.fake_workstation import FakeWorkstation
 from tests.test_agent_chat import (
@@ -29,6 +29,10 @@ from tests.test_agent_chat import (
 FAKE = Path(__file__).with_name("fake_llm_worker.py")
 # the tools of a workstation chat: every tool of app/agent/ws_tools.py, so a new Workstation tool joins them
 WS_TOOLS = [t.name for t in ws_tools.build(FakeWorkstation())]
+# the tools array of a workstation chat: every tool but ocr_document (deferred: most chats never read a scan), then
+# the bridge that reaches it
+WS_CORE = [n for n in WS_TOOLS if n != "ocr_document"]
+WS_ARRAY = WS_CORE + list(deferred.BRIDGE)
 
 
 def test_the_workstation_tools_are_the_media_side_only():
@@ -107,11 +111,10 @@ def test_a_workstation_chat_offers_only_the_workstation_tools(client):
     res = next(e for e in evs if e["event"] == "tool_result")
     assert res["status"] == "ok" and "image.klein" in res["content"]
     seen = evs[-1]["stats"]["seen"]
-    assert [t["function"]["name"] for t in seen["tools"]] == WS_TOOLS
+    assert [t["function"]["name"] for t in seen["tools"]] == WS_ARRAY
     system = seen["messages"][0]["content"]
     assert (
-        "You can run the app's media tools with these tool calls: "
-        + ", ".join(WS_TOOLS)
+        "You can run the app's media tools with these tool calls: " + ", ".join(WS_CORE)
         in system
     )
     assert "queue it with create_job" in system and "write prompt blocks" in system
@@ -174,6 +177,20 @@ def test_create_job_asks_first_and_queues_the_job(client, ws):
     assert "approval" not in kinds(evs) and len(ws.created) == 2
 
 
+def test_a_workstation_chat_calls_the_deferred_ocr_tool_by_name(client, ws):
+    """ocr_document is not in the tools array, but the prompt names it: a call by name reaches it and asks first."""
+    cid = workstation_chat(client)
+    t, box = start(
+        client, cid, script([call("ocr_document", file="library:x/a.png")], "RESULT")
+    )
+    ask = pending(cid)
+    assert ask["name"] == "ocr_document" and ask["risk"] == 2
+    assert approve(client, cid, ask["id"], "once").status_code == 200
+    t.join(5)
+    res = next(e for e in events(box["r"]) if e["event"] == "tool_result")
+    assert res["name"] == "ocr_document" and "There is no tool" not in res["content"]
+
+
 def test_cancel_job_keeps_its_approval(client, ws):
     cid = workstation_chat(client)
     ws.jobs["20261103-120000-abcd"]["chat"] = cid
@@ -222,7 +239,9 @@ def test_the_tools_menu_of_a_workstation_chat(client):
     res = next(e for e in evs if e["event"] == "tool_result")
     assert res["status"] == "refused" and "off in this chat" in res["content"]
     seen = evs[-1]["stats"]["seen"]
-    assert [t["function"]["name"] for t in seen["tools"]] == on
+    assert [t["function"]["name"] for t in seen["tools"]] == [
+        n for n in WS_ARRAY if n in on or n in deferred.BRIDGE
+    ]
     assert (
         "These tools are off in this chat: create_job, cancel_job."
         in seen["messages"][0]["content"]
@@ -295,7 +314,7 @@ def test_a_saved_workstation_chat_without_tool_state(client):
     evs = send(client, cid, "hello")
     assert [
         t["function"]["name"] for t in evs[-1]["stats"]["seen"]["tools"]
-    ] == WS_TOOLS
+    ] == WS_ARRAY
 
 
 def test_a_tool_added_to_the_app_starts_on_in_saved_chats():

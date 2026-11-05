@@ -730,8 +730,8 @@ def test_system_prompt_names_every_field_of_every_tool():
     assert system.count("Same seed and settings = same result.") == 1
     assert "emoji" in system and "```prompt music.ace lyrics" in system
     # compact: it goes into every workstation chat (2,748 characters before the fields; tools add their rules; the
-    # join and subtitle tools add about 1,630)
-    assert len(system) < 11200
+    # join and subtitle tools add about 1,630, Read Text about 590)
+    assert len(system) < 11800
 
 
 def test_system_prompt_follows_the_mode(monkeypatch):

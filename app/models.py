@@ -285,7 +285,7 @@ uv pip install --python ~/mlx-media/venv-ltx/bin/python \\
     Model(
         id="qwen-venv",
         label="Local LLM environment (mlx-vlm)",
-        tools=(),
+        tools=("doc.ocr",),
         path_key="qwen_python",
         files=(),
         install="""uv venv --python /opt/homebrew/bin/python3.12 ~/mlx-media/venv-qwen
@@ -312,6 +312,30 @@ uv pip install --python ~/mlx-media/venv-qwen/bin/python "mlx-vlm==0.7.11" "mlx=
         licence_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
         peak_gb=18.0,
         features=("Prompt help", "Chat"),
+    ),
+    # Read Text runs it with mlx-vlm in the local LLM environment; the repo's document_crosspage.py and assets are
+    # not downloaded (the runner holds its two prompts)
+    Model(
+        id="ovisocr3",
+        label="OvisOCR3 (0.8B, OCR)",
+        tools=("doc.ocr",),
+        path_key="ocr_model",
+        files=(
+            "chat_template.jinja",
+            "config.json",
+            "model.safetensors",
+            "preprocessor_config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+        ),
+        repo="ATH-MaaS/OvisOCR3",
+        revision="17f255e2c8ae6d18d5d5edb0a474bd4ed39aef90",
+        size_gb=1.7,
+        licence="Apache-2.0",
+        licence_url="https://huggingface.co/ATH-MaaS/OvisOCR3/blob/17f255e2c8ae6d18d5d5edb0a474bd4ed39aef90/LICENSE",
+        peak_gb=6.0,  # measured 5.7 GB on a 2481x3508 page, 5.0 GB at 1240x1753
+        allow=("*.safetensors", "*.json", "merges.txt", "chat_template.jinja"),
+        needs="qwen-venv",
     ),
 ]
 BY_ID = {m.id: m for m in MODELS}

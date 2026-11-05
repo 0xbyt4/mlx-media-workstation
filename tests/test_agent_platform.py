@@ -227,8 +227,12 @@ def test_a_workstation_chat_hears_of_an_installed_media_tool(client, monkeypatch
     send(client, cid, "and now?")
     assert "Now installed: video.t2v." in steps_of(client, cid)[-1]["notice"]
     assert len(set(prefixes(client, cid))) == 1
-    # a workstation chat has few tools: all of them are core, no bridge
-    assert deferred.SEARCH not in saved(client, cid)["prompt"]["tools"]
+    # a workstation chat has few tools: all of them are core but ocr_document, which the bridge reaches
+    prompt = saved(client, cid)["prompt"]
+    assert prompt["deferred"] == ["ocr_document"]
+    assert deferred.SEARCH in prompt["tools"] and "ocr_document" not in prompt["tools"]
+    assert "Media jobs: ocr_document" in prompt["system"]
+    assert "call ocr_document: it returns the text" in prompt["system"]
 
 
 # ---------- P2 and P3: core and deferred tools ----------

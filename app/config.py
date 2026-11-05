@@ -31,6 +31,7 @@ DEFAULTS = {
     "ace_dir": "~/mlx-media/ace-step",
     "qwen_python": "~/mlx-media/venv-qwen/bin/python",
     "qwen_model": "~/mlx-media/models/qwen3.8-27b-4bit",
+    "ocr_model": "~/mlx-media/models/ovisocr3",
 }
 ASSIST_DEFAULTS = {"provider": "local"}
 APP_DEFAULTS: dict[str, bool | int | str] = {
@@ -55,6 +56,7 @@ class Paths:
     ace_dir: Path  # the ACE-Step 1.5 checkout (its .venv and checkpoints inside)
     qwen_python: Path  # python of the local LLM environment (prompt help and chat)
     qwen_model: Path  # Qwen3.8 27B 4-bit weights folder
+    ocr_model: Path  # OvisOCR3 weights folder (Read Text runs it with qwen_python)
 
 
 @dataclass(frozen=True)

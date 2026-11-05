@@ -26,7 +26,7 @@ def test_tool_ids_are_unique_and_indexed() -> None:
 
 def test_groups_follow_the_sidebar_order() -> None:
     groups = list(dict.fromkeys(t["group"] for t in tools.TOOLS))
-    assert groups == ["Image", "Voice", "Music", "Video", "Edit"]
+    assert groups == ["Image", "Voice", "Music", "Video", "Edit", "Document"]
     # each group is one block, so the sidebar does not repeat a heading
     assert [t["group"] for t in tools.TOOLS] == sorted(
         (t["group"] for t in tools.TOOLS), key=groups.index

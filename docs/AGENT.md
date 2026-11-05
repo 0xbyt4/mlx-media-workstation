@@ -1,7 +1,7 @@
 # Agent mode
 
 In an agent chat the local model can call tools. It can read the Workstation's state, queue, wait for and cancel media
-jobs, transcribe speech, read and write files in one folder, read media facts, look at images, search the web, read
+jobs, transcribe speech, read the text of images and PDF pages, read and write files in one folder, read media facts, look at images, search the web, read
 web pages, and run Python and shell commands in a sandbox. The code is in `app/agent/`. The chat loop
 that uses it is in `app/chat.py`. The endpoints and events are in `docs/API.md` under "Agent mode".
 
@@ -13,7 +13,7 @@ Each tool has a risk level. `app/agent/policy.py` decides from that level whethe
 |---|---|---|
 | R0 | Reads app state only. | Runs. |
 | R1 | Reads the user's files in the granted folder, or copies one into the chat's work folder. | Runs when the chat has a granted folder. Refused without one. The grant is the consent. `media_info` and `view_image` also run without a folder: they read the chat's work folder and the Library too. |
-| R2 | Sends text off this Mac, queues minutes of compute, cancels a job, or writes a new file in the granted folder. | Asks on the first use in a chat. The user can answer "Allow in this chat", except for a tool whose result taints the chat (web_search, fetch_url, transcribe_audio): after its first result it asks every time, so a chat-wide grant would do nothing. When the chat is tainted, every R2 call asks, also with that grant. |
+| R2 | Sends text off this Mac, queues minutes of compute, cancels a job, or writes a new file in the granted folder. | Asks on the first use in a chat. The user can answer "Allow in this chat", except for a tool whose result taints the chat (web_search, fetch_url, transcribe_audio, ocr_document): after its first result it asks every time, so a chat-wide grant would do nothing. When the chat is tainted, every R2 call asks, also with that grant. |
 | R3 | Runs code, changes an existing file, or has effects the app cannot check. | Asks every time. "Allow in this chat" is not offered. |
 
 A tool that is off in the chat's Tools menu is refused. An unknown tool name is refused. The model gets the reason as
@@ -31,6 +31,7 @@ the tools in the chat's tools array.
 | `wait_for_job` | R0 | Waits until a job ends (120 s by default, at most 300 s), then shows it as `job_status` does. |
 | `cancel_job` | R2 | Cancels a queued or running job that this chat queued. |
 | `transcribe_audio` | R2 | Speech to text for an audio or video file (Qwen3-ASR 0.6B as a media job): the text with a time for about every 30 s, and the language. Its result is untrusted. |
+| `ocr_document` | R2 | The text of a photo, a scan or PDF pages (OvisOCR3 0.8B as a `doc.ocr` media job), as Markdown or plain text. Its result is untrusted. |
 | `system_status` | R0 | Shows the Mac's memory, the running jobs and their progress, the queue, the chat model and whether each media tool fits now (`GET /api/status`). |
 | `list_files` | R1 | Lists a folder inside the granted folder (at most 500 lines). |
 | `read_file` | R1 | Reads a text file inside the granted folder (the first 1 MB), by line range (`start_line`, `end_line`). The result gives the line count and where to read on. It stops before the 12,000-character cap of a result. |
@@ -74,10 +75,11 @@ the results, and the time of a wait.
 
 A workstation chat in the full profile runs the same loop (`Turn`) with the Workstation tools only:
 `list_workstation_tools`, `job_status`, `search_library`, `create_job`, `list_jobs`, `wait_for_job`, `cancel_job`,
-`transcribe_audio` and `system_status`. `workstation_registry()` in `app/chat.py` builds them with `ws_tools.build(port)`.
+`transcribe_audio`, `ocr_document` and `system_status`. `workstation_registry()` in `app/chat.py` builds them with `ws_tools.build(port)`.
 
 - It has no file, web, media, plan, Python or shell tool. A call to one of them is refused: no such tool.
-- The tools keep their risk levels. `create_job`, `cancel_job` and `transcribe_audio` ask first, as above.
+- The tools keep their risk levels. `create_job`, `cancel_job`, `transcribe_audio` and `ocr_document` ask first, as
+  above.
 - The policy, the approval cards, the grants, the taint, the step limit and the memory lease are those of an agent
   chat. A job that needs the chat model's memory starts after the answer.
 - It has no folder. A folder grant is refused (HTTP 400), so a `folder:` file reference fails. A `library:`
@@ -94,7 +96,7 @@ A workstation chat in the full profile runs the same loop (`Turn`) with the Work
 ### Input files
 
 A file field of `create_job` (`"type": "file"`) takes one file reference. A `files` field takes a list of them (at
-most 10). `transcribe_audio` takes one in `audio`. A reference has one of these forms:
+most 10). `transcribe_audio` takes one in `audio`, `ocr_document` one in `file`. A reference has one of these forms:
 
 | Reference | The file |
 |---|---|
@@ -119,7 +121,7 @@ most 10). `transcribe_audio` takes one in `audio`. A reference has one of these 
 
 ### Waiting for a job
 
-`create_job` returns at once. `wait_for_job` and `transcribe_audio` wait for a job. The answer holds the model's
+`create_job` returns at once. `wait_for_job`, `transcribe_audio` and `ocr_document` wait for a job. The answer holds the model's
 memory lease. A job that fits next to the model (an image, a transcription on a 48 GB Mac) runs during the answer. A
 job that does not fit (a video, for example) waits for the lease, so it starts only after the answer.
 
@@ -154,6 +156,23 @@ track into 16 kHz mono first, so a video works too.
   text later with `transcribe_audio` and `job_id`.
 - When Qwen3-ASR or the Drama 3 environment is not installed, the tool is refused with a note to install them in
   Models. It downloads nothing.
+
+### Reading text (OCR)
+
+`ocr_document` queues a `doc.ocr` job: the Read Text (OCR) tool, which the Create page shows too. It takes `file` (a
+file reference to an image or a PDF), `pages` (PDF pages such as `1-3, 7`; empty = all, at most 50), `output`
+(`markdown` or `text`), `job_id` and `seconds`.
+
+- The job has two steps. `app/runners/pages.py` (the app's Python with macOS Quartz) draws each chosen page as a PNG
+  image. Then `app/runners/ocr.py` (the local LLM environment, mlx-vlm) reads each image with OvisOCR3.
+- The output is `document.md` or `document.txt`. In the text of a PDF, each page starts with `<!-- page N -->`.
+- OvisOCR3 needs about 6 GB at its peak, so the job uses the model lane. A short page takes about 2 s.
+- When the job ends in the wait, the tool returns the text. Else it returns the job id; the model reads the text
+  later with `ocr_document` and `job_id`.
+- The text comes from a picture or a document, so the result taints the chat. A page can hold words that look like
+  instructions.
+- When OvisOCR3 or the local LLM environment is not installed, the tool is refused with a note to install them in
+  Models.
 
 A new agent chat has every tool on except `run_python` and `run_shell`. A chat saved before `update_plan` existed
 keeps its own list, so the plan is off there until the user turns it on. The model writes `run_python`'s code and
@@ -405,7 +424,7 @@ characters) and `limit` (1 to 10 chats, 5 by default).
 
 Taint is a flag per chat. It is stored in `chat.json` with the grants.
 
-- These tools set it when they run: `search_library`, `transcribe_audio`, `list_files`, `read_file`,
+- These tools set it when they run: `search_library`, `transcribe_audio`, `ocr_document`, `list_files`, `read_file`,
   `search_files`, `copy_to_workspace`, `media_info`, `view_image`, `web_search`, `fetch_url`, `run_python`,
   `run_shell`, `search_chats`, `spotlight_search`, `convert_document`, `list_shortcuts` and `run_shortcut`. Their
   results can hold text from outside the app (an image can hold written text too).
@@ -911,10 +930,10 @@ the real tool. The tool message answers the model's `tool_call` by its id. The `
 | Mode | Core tools |
 |---|---|
 | Agent | `update_plan`, `web_search`, `fetch_url`, `list_workstation_tools`, `create_job`, `job_status`, `wait_for_job`, `search_library`, `list_files`, `read_file`, `write_file`, `edit_file`, `media_info`, `run_python` |
-| Workstation | all its tools (9): a workstation chat has no deferred tools unless a provider adds some |
+| Workstation | all its tools but `ocr_document` (9). `ocr_document` is deferred, because most chats never read a scan; the bridge tools reach it (memory's deferred `search_chats` puts them in the array anyway). The prompt names `ocr_document` and says that it returns the text of a picture. |
 | General | none: a general chat has no tools |
 
-The agent's deferred tools are `list_jobs`, `cancel_job`, `transcribe_audio`,
+The agent's deferred tools are `list_jobs`, `cancel_job`, `transcribe_audio`, `ocr_document`,
 `system_status`, `search_files`, `copy_to_workspace`, `export_from_workspace`, `view_image`, `run_shell` and
 `read_result` (the last one is not in the listing: the note of a cut result names it).
 
@@ -926,7 +945,7 @@ tokenizer, and characters / 3):
 | Agent, no folder, defaults | 14 tools, 3,088 tokens (3,621) | 10 tools, 2,520 tokens (2,963) |
 | Agent, a folder, `run_python` and `run_shell` on | 23 tools, 4,934 tokens (5,845) | 15 tools, 3,442 tokens (4,079) |
 | Agent, offline, no folder | - | 8 tools, 2,222 tokens (2,597) |
-| Workstation | 9 tools, 4,921 tokens (5,368) | the same |
+| Workstation | 9 tools, 4,921 tokens (5,368) | the same, before Read Text. With `ocr_document` deferred and the default providers (memory and skills), the bridge is already in the array (memory defers `search_chats`), so `ocr_document` adds 45 tokens; as a core tool it would add 370 (system text and schemas only, measured 2026-11-05) |
 | General | 78 tokens (105) | the same |
 
 The eval showed that the agent spent steps to find `wait_for_job` and `search_library`, so they became core

@@ -142,8 +142,11 @@ checks of an agent's job (see docs/AGENT.md, "Input files": a file must have a m
   `[name @ 0x...]` prefixes removed). When a model fails, it is `The model process exited with code N. See the log.`
 - Only one model job runs at a time (each model needs most of the memory of a 32-48 GB Mac). One light job can run
   at the same time.
-- `kind: "text"` is a `.txt`, `.srt` or `.vtt` output: the transcript of a `voice.transcribe` job. With
-  `subtitles` on, the job also writes `transcript.srt` and `transcript.vtt`.
+- `kind: "text"` is a `.txt`, `.md`, `.srt` or `.vtt` output: the transcript of a `voice.transcribe` job, or the
+  `document.md` or `document.txt` of a `doc.ocr` job. With `subtitles` on, a transcription also writes
+  `transcript.srt` and `transcript.vtt`.
+- `.pdf` is a kind (`document`) only so that a PDF upload keeps its suffix (`in_file_0.pdf`). A job lists no PDF as
+  an output.
 - A job that an agent chat queued has `"chat": "<chat id>"` in its `job.json`; a job from the MCP server has
   `"chat": "mcp"`. `GET /api/jobs` lists the job like any other job, without this key.
 
@@ -173,7 +176,8 @@ The queue has two lanes. Each lane has its own worker and runs its jobs one at a
   the chat model unloads when the job does not fit next to it. After the job, the worker releases the memory.
 - The light lane runs the tools that load no model: the tools whose peak (`models.tool_peak`) is 0. Today this is
   `edit.mix`, `edit.concat` and `edit.subtitle` (ffmpeg; a mix about 0.1 GB, a join of 704x1280 clips about 1 GB).
-  `voice.transcribe` loads Qwen3-ASR (about 3 GB), so it is in the model lane.
+  `voice.transcribe` loads Qwen3-ASR (about 3 GB) and `doc.ocr` loads OvisOCR3 (about 6 GB), so they are in the
+  model lane.
 - A light job does not claim memory. It does not change the chat model's state or the held peak of the running model
   job. So a mix starts at once, also while a video job of several minutes runs.
 - The light lane runs one job at a time. So at most one ffmpeg job runs next to a model job, and the model job keeps
@@ -621,7 +625,7 @@ The mode of a chat sets its system prompt. The page calls the modes presets: Gen
 
 A workstation chat in the full profile answers with the agent loop (see [Agent mode](#agent-mode)), but with the
 Workstation tools only: `list_workstation_tools`, `job_status`, `search_library`, `create_job`, `list_jobs`,
-`wait_for_job`, `cancel_job`, `transcribe_audio` and `system_status`. It has no file, web, media, plan, Python or shell tool, and no
+`wait_for_job`, `cancel_job`, `transcribe_audio`, `ocr_document` and `system_status`. It has no file, web, media, plan, Python or shell tool, and no
 folder. The policy, the approval cards, the Tools menu, the grants and the taint are those of an agent chat. Its
 prompt tells the model to queue a job when the user asks it to make something, and to write `prompt` blocks when the
 request is unclear or the user wants to edit the text first. In the chat profile a workstation chat has no tools and
@@ -677,7 +681,7 @@ turns an audio file into a transcript. Only macOS tools and the standard library
 |---|---|---|
 | Text and code | `.txt`, `.md`, `.csv`, `.tsv`, `.json`, `.xml`, `.yaml`, `.toml`, `.log`, `.srt`, source code (`.py`, `.js`, `.ts`, `.swift`, `.c`, `.go`, `.rs`, `.sh`, `.sql` and more: `TEXT` in `app/attachments.py`) | Decoded as UTF-8. A byte order mark picks UTF-8 or UTF-16. Other bytes decode as Windows-1252. A file with a NUL byte or many control characters is refused as binary. |
 | HTML | `.html`, `.htm` | The readable text (`app/agent/html_text.py`): no scripts, styles, forms or navigation. Nothing is loaded. |
-| PDF | `.pdf` | PDFKit (pyobjc) in a child process, at most 60 s. Each page starts with `--- Page n ---`. A PDF with no text on any page (a scan) is refused: the app has no OCR. A PDF with a password is refused. |
+| PDF | `.pdf` | PDFKit (pyobjc) in a child process, at most 60 s. Each page starts with `--- Page n ---`. A PDF with no text on any page (a scan) is refused with a note to use Read Text (OCR) (`doc.ocr`). A PDF with a password is refused. |
 | Word, RTF, OpenDocument text | `.doc`, `.docx`, `.rtf`, `.odt` | `/usr/bin/textutil -convert txt` into a temporary folder, at most 60 s. |
 | Spreadsheet | `.xlsx`, `.ods` | `zipfile` and `xml.etree`. Each sheet starts with `--- Sheet <name> ---`, then one row per line with the cells separated by tabs. A formula gives its stored value. A date stays a number. |
 | Audio | `.wav`, `.mp3`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`, `.aiff`, `.aif` | A `voice.transcribe` job (Qwen3-ASR), as the agent tool `transcribe_audio` makes it. |
@@ -798,7 +802,7 @@ The chat's agent state is in `chat.json` under `agent`:
 
 ```json
 {"tools": ["update_plan", "list_workstation_tools", "job_status", "search_library", "create_job", "list_jobs",
-           "wait_for_job", "cancel_job", "transcribe_audio", "system_status", "list_files", "read_file",
+           "wait_for_job", "cancel_job", "transcribe_audio", "ocr_document", "system_status", "list_files", "read_file",
            "search_files", "write_file", "edit_file", "copy_to_workspace", "export_from_workspace", "media_info",
            "view_image", "web_search", "fetch_url"],
  "folder": null, "grants": [], "tainted": false,
@@ -888,7 +892,7 @@ Events. The message stream of an agent chat has these events besides `waiting`, 
 - `{"event": "approval_done", "id", "decision"}` with `once`, `chat`, `deny`, `timeout` or `stopped`. After edited
   arguments it also has `"arguments"` (the arguments that run) and `"edited": true`.
 - `{"event": "tool_result", "id", "name", "status", "content", "truncated", "files", "seconds", "approval", "risk",
-  "network"}`, plus `"job": "<job id>"` when the call queued or read a media job (`create_job`, `transcribe_audio`),
+  "network"}`, plus `"job": "<job id>"` when the call queued or read a media job (`create_job`, `transcribe_audio`, `ocr_document`),
   and `"edited": true` when it ran with edited arguments.
   `status` is `ok`, `error`, `cancelled`, `denied`, `refused`, `skipped` or `repeat` (the same call a second time
   after an `ok` result: it did not run). `content` is the first 4,000 characters. `files` are `{path, url, kind}`.
@@ -927,15 +931,15 @@ Rules of the loop (`app/chat.py`, `Turn`):
 5. The same call (name and arguments) a second time in one answer, after the first one returned `ok`, does not run:
    its tool message (`status: "repeat"`) says that the call already ran and its result is above. A third time ends
    the answer with a note. The rule does not apply to the tools whose result can change (`job_status`, `list_jobs`,
-   `wait_for_job`, `transcribe_audio`, `system_status`, `search_library`, `list_files`, `read_file`, `search_files`,
-   `media_info`, `view_image`, `fetch_url`). After a call that changes state ran (a tool that writes files, `run_python`,
-   `run_shell`, `copy_to_workspace`, `create_job`, `cancel_job`, `transcribe_audio`), the rule forgets the earlier
-   calls; that call itself still counts.
+   `wait_for_job`, `transcribe_audio`, `ocr_document`, `system_status`, `search_library`, `list_files`, `read_file`,
+   `search_files`, `media_info`, `view_image`, `fetch_url`). After a call that changes state ran (a tool that writes
+   files, `run_python`, `run_shell`, `copy_to_workspace`, `create_job`, `cancel_job`, `transcribe_audio`,
+   `ocr_document`), the rule forgets the earlier calls; that call itself still counts.
 6. An approval waits at most 10 minutes (less when the answer's time runs out). No answer counts as a denial.
-7. `create_job` queues the job and returns its id at once. `wait_for_job` and `transcribe_audio` wait only for a job
-   that fits next to the model. A job that needs the model's memory (or a job behind one in the queue) waits for the
-   answer's memory lease, so the wait returns at once and says that the job starts after the answer. A wait takes at
-   most 300 s, ends at Stop and leaves the answer's last 60 s for its next steps. It counts against the 10 minutes.
+7. `create_job` queues the job and returns its id at once. `wait_for_job`, `transcribe_audio` and `ocr_document` wait
+   only for a job that fits next to the model. A job that needs the model's memory (or a job behind one in the
+   queue) waits for the answer's memory lease, so the wait returns at once and says that the job starts after the
+   answer. A wait takes at most 300 s, ends at Stop and leaves the answer's last 60 s for its next steps. It counts against the 10 minutes.
 8. Every call of a step gets a tool message, also when the answer ends before the call runs.
 9. When the app closes, every running answer gets Stop, as with the Stop button. The server waits a few
    seconds for the answers to save what they have.

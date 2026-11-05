@@ -126,7 +126,7 @@ MAX_SERVED = 64 * 1024 * 1024
 OFF_BY_DEFAULT = ("run_python", "run_shell", "run_shortcut")  # see default_agent()
 # The tools in a chat's tools array, per mode, when they are on and can run (docs/AGENT.md, "Core and deferred
 # tools"). Every other tool of the chat is deferred: tool_search, tool_describe and tool_call reach it. A workstation
-# chat has few tools, so all of them are core.
+# chat has few tools, so all of them are core except ocr_document: most chats never read a scan.
 CORE = {
     "agent": (
         "update_plan",
@@ -203,6 +203,7 @@ LABELS = {
     "create_job": "Queue a media job",
     "cancel_job": "Cancel a job",
     "transcribe_audio": "Transcribe",
+    "ocr_document": "Read text (OCR)",
     "system_status": "System status",
     "list_files": "List files",
     "read_file": "Read a file",
@@ -322,6 +323,11 @@ def workstation_prompt(
             if off
             else ""
         )
+        if "ocr_document" in (names or []) or "ocr_document" in more:
+            more += (
+                "\n- To read the text in a picture, a scan or PDF pages, call ocr_document: it returns the text. "
+                "create_job with doc.ocr only makes a file."
+            )
         run = f"""
 
 You can run the app's media tools with these tool calls: {", ".join(names or []) or "none"}.{off_line}{more}

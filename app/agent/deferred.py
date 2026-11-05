@@ -48,6 +48,7 @@ GROUPS = {
     "wait_for_job": "Media jobs",
     "cancel_job": "Media jobs",
     "transcribe_audio": "Media jobs",
+    "ocr_document": "Media jobs",
     "system_status": "Media jobs",
     "list_files": "Files",
     "read_file": "Files",

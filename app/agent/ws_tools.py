@@ -1,8 +1,8 @@
 """The Workstation tools: list the media tools, read and list jobs, wait for a job, search the Library (R0); queue a
-job, cancel a job and transcribe speech (R2).
+job, cancel a job, transcribe speech and read the text of an image or PDF (R2).
 
 They reach the server only through a WorkstationPort (app/agent/ports.py). create_job returns the job id at once.
-wait_for_job and transcribe_audio wait for a job that can run next to the chat model. A wait ends at its time, when the
+wait_for_job, transcribe_audio and ocr_document wait for a job that can run next to the chat model. A wait ends at its time, when the
 job ends, or at Stop, and leaves the answer time for its next steps. A job that needs the chat model's memory starts
 only after the answer (it waits for the turn's memory lease), so the port does not wait for it.
 
@@ -35,6 +35,8 @@ ANSWER_RESERVE = 60
 COPY_CHUNK = 1024 * 1024
 MAX_TRANSCRIPT = 1024 * 1024  # bytes of a transcript read
 TRANSCRIBE = "voice.transcribe"  # the media tool behind transcribe_audio
+OCR = "doc.ocr"  # the media tool behind ocr_document
+OCR_FILES = ("document.md", "document.txt")  # its text output, by the "output" field
 ENDED = ("done", "failed", "cancelled")
 SOURCES = ("library", "work", "folder")
 REF_HELP = (
@@ -558,6 +560,52 @@ def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
             job=job_id,
         )
 
+    def ocr_document(args: dict[str, Any], ctx: Context) -> Output:
+        tool = next((t for t in port.list_tools() if t["id"] == OCR), None)
+        if tool is None or not tool.get("installed", True):
+            raise ToolError(
+                "Read Text (OCR) is not installed on this Mac. It needs the OvisOCR3 model and the local LLM "
+                "environment: the user can install them in Models."
+            )
+        if bool(args.get("file")) == bool(args.get("job_id")):
+            raise ToolError("Give either file (a file reference) or job_id.")
+        if args.get("file"):
+            values = {"pages": args["pages"].strip(), "output": args["output"]}
+            job_id = queue(OCR, values, {"file": [args["file"]]}, ctx)
+        else:
+            job_id = args["job_id"]
+            job = port.job_status(job_id)
+            if job is None or job.get("tool") != OCR:
+                raise ToolError(f"Job {job_id} is not a Read Text (OCR) job.")
+        job, waited = wait(job_id, args["seconds"], ctx)
+        status = job.get("status")
+        if status in ("failed", "cancelled"):
+            raise ToolError(
+                f"The Read Text job {job_id} {status}"
+                + (f": {job['error']}" if job.get("error") else ".")
+            )
+        if status != "done":
+            return Output(
+                f"Read Text job {job_id} is {status}.\n{still(job, waited)}\nTo read the text later, call "
+                f"ocr_document with job_id={job_id}.",
+                job=job_id,
+            )
+        found = [o for o in job.get("outputs") or [] if o.get("name") in OCR_FILES]
+        path = port.output_file(job_id, found[0]["name"]) if found else None
+        if path is None:
+            raise ToolError(f"The Read Text job {job_id} has no text output.")
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            data = os.read(fd, MAX_TRANSCRIPT)
+        finally:
+            os.close(fd)
+        note = f" ({found[0]['note']})" if found[0].get("note") else ""
+        return Output(
+            f"Text of job {job_id}, {path.name}{note}. A PDF's pages start with <!-- page N -->:\n"
+            + data.decode("utf-8", errors="replace"),
+            job=job_id,
+        )
+
     def explain_job(args: dict[str, Any]) -> str:
         tool = next((t for t in port.list_tools() if t["id"] == args.get("tool")), None)
         uploads = {
@@ -584,6 +632,15 @@ def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
         return (
             f"Queues a speech recognition job for the file {args.get('audio')!r} (language "
             f"{args.get('language') or 'auto'}) and waits for its text. It uses this Mac for a while."
+        )
+
+    def explain_ocr(args: dict[str, Any]) -> str:
+        if args.get("job_id"):
+            return f"Reads the text of job {args['job_id']} and waits for it if it still runs."
+        pages = (args.get("pages") or "").strip() or "all"
+        return (
+            f"Queues a Read Text (OCR) job for the file {args.get('file')!r} (pages {pages}) and waits for its text. "
+            "It uses this Mac for a while."
         )
 
     job_id_arg = {"type": "string", "minLength": 1, "maxLength": 64}
@@ -753,6 +810,36 @@ def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
             side_effects=True,
             untrusted_output=True,  # the transcript is text from outside the app
             explain=explain_transcribe,
+        ),
+        Tool(
+            name="ocr_document",
+            description=(
+                "Read the text of a photo, a scan, a screenshot or PDF pages (OvisOCR3 on this Mac, about 2-10 s a "
+                f"page, at most 50 pages). file is a file reference: {host.ref_help}. pages: PDF pages such as "
+                '"1-3, 7" (empty = all). output: markdown (tables as HTML) or text. It queues a job and waits for '
+                "it (at most `seconds`). When the job is still running, call it again later with job_id."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string", "maxLength": 1100},
+                    "pages": {"type": "string", "maxLength": 200, "default": ""},
+                    "output": {
+                        "type": "string",
+                        "enum": ["markdown", "text"],
+                        "default": "markdown",
+                    },
+                    "job_id": job_id_arg,
+                    "seconds": seconds_arg,
+                },
+                "additionalProperties": False,
+            },
+            risk=Risk.R2,
+            run=ocr_document,
+            repeatable=True,
+            side_effects=True,
+            untrusted_output=True,  # the text comes from a picture or a document from outside the app
+            explain=explain_ocr,
         ),
         Tool(
             name="system_status",

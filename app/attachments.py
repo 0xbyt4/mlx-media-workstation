@@ -228,8 +228,8 @@ def read_pdf(path: Path) -> Extract:
     ]
     if not any(t.strip() for t in texts):
         raise AttachmentError(
-            "the PDF has no text layer (it may be a scan). The app does not read text in pictures: attach the pages "
-            "as images instead, or a PDF with text."
+            "the PDF has no text layer (it may be a scan). A chat attachment does not read text in pictures: run "
+            "Read Text (OCR) in Create on the PDF, or attach the pages as images instead."
         )
     sections = [
         (f"Page {i}", t.strip() or "[This page has no text layer.]")
