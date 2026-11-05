@@ -5,6 +5,7 @@ each one is installed comes from config.toml (app/config.py, README.md); default
 the models' own guides (docs/PROMPTING.md).
 """
 
+import html
 import json
 import math
 import os
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import PATHS
-from app.runners import subtitles
+from app.runners import burn_subtitles, subtitles
 
 APP = Path(__file__).resolve().parent
 MFLUX = PATHS.mflux_bin
@@ -188,6 +189,17 @@ SUB_LANGUAGES = [
     ("tur", "Turkish"),
     ("vie", "Vietnamese"),
 ]
+# Burn into picture: off (a subtitle track) or the text's look, its size (app/runners/burn_subtitles.py SIZES: a share
+# of the picture's short side) and its place
+BURN_SIZES = [("small", "Small"), ("medium", "Medium"), ("large", "Large")]
+BURN_PLACES = [("bottom", "Bottom"), ("top", "Top")]
+BURN_STYLES = [
+    ("off", "Off: a subtitle track"),
+    ("outline", "White text, dark outline"),
+    ("box", "White text on a dark box"),
+]
+# the burn's second input: the ffconcat list that the first step writes (the concat demuxer and the PNGs it names)
+BURN_FORMATS = "concat,image2,png_pipe"
 # subtitles from Transcribe with word times: Qwen3-ForcedAligner by its Hugging Face name. None (the default) until
 # the owner adds the model to the model list: the runner then times the words from short parts of the audio
 SUB_ALIGNER: str | None = None
@@ -804,8 +816,8 @@ TOOLS: list[dict[str, Any]] = [
         "id": "edit.subtitle",
         "group": "Edit",
         "label": "Add Subtitles",
-        "description": "Adds an SRT or WebVTT file to a video as a subtitle track that the player turns on or "
-        "off. Picture and sound are copied. Loads no model; seconds.",
+        "description": "Adds an SRT or WebVTT file to a video: a subtitle track the player turns on or off, or "
+        "text burned into the picture. Loads no model; seconds.",
         "fields": [
             field(
                 "video",
@@ -828,6 +840,29 @@ TOOLS: list[dict[str, Any]] = [
                 "select",
                 default="und",
                 options=opts(SUB_LANGUAGES),
+            ),
+            field(
+                "burn",
+                "Burn into picture",
+                "select",
+                default="off",
+                options=opts(BURN_STYLES),
+            ),
+            field(
+                "burn_size",
+                "Text size",
+                "select",
+                default="medium",
+                options=opts(BURN_SIZES),
+                advanced=True,
+            ),
+            field(
+                "burn_place",
+                "Text place",
+                "select",
+                default="bottom",
+                options=opts(BURN_PLACES),
+                advanced=True,
             ),
         ],
     },
@@ -2087,6 +2122,12 @@ def plan_subtitle(
         )
     for c in kept:
         c.end = min(c.end, length)
+    if str(params.get("burn") or "off") != "off":
+        return plan_burn(params, video, kept, len(cues), length, sub.suffix, out)
+    if sub.suffix.lower() == ".vtt":
+        # ffmpeg's SRT reader shows &amp; as it is, and its WebVTT reader leaves &nbsp; and &#39; (as of ffmpeg 9)
+        for c in kept:
+            c.text = subtitles.vtt_to_srt(c.text)
     clean = out / "in_subtitles_clean.srt"
     clean.write_text(subtitles.srt(kept))
     codec = stream_codec(video, "V")
@@ -2121,6 +2162,73 @@ def plan_subtitle(
         note += f"; picture ({codec}) encoded again as H.264"
     (out / "notes.json").write_text(json.dumps({"subtitled.mp4": note}))
     return Plan([cmd], {})
+
+
+def plan_burn(
+    params: dict[str, Any],
+    video: Path,
+    cues: list[subtitles.Cue],
+    given: int,
+    length: float,
+    suffix: str,
+    out: Path,
+) -> Plan:
+    """edit.subtitle with burn on, in two steps. app/runners/burn_subtitles.py draws each subtitle as a PNG of a band
+    across the picture and writes an ffconcat list that times them; ffmpeg lays that list over the picture (overlay)
+    and encodes it as H.264. The sound is copied as in the track mode. A picture with an odd side loses one pixel row
+    or column (H.264 4:2:0 needs even sides). The colour tags of the video stay (ffmpeg takes them from its frames)."""
+    w0, h0, _ = video_shape(video)
+    w, h = w0 - w0 % 2, h0 - h0 % 2
+    size = str(params.get("burn_size") or "medium")
+    place = str(params.get("burn_place") or "bottom")
+    style = str(params.get("burn"))
+    if style not in burn_subtitles.STYLES:
+        raise ValueError(f"Unknown burn style {style!r}.")
+    lay = burn_subtitles.layout(w, h, size, place)
+    # WebVTT escapes &, < and > (Transcribe writes &amp;): the picture shows the characters. The tags go first, so an
+    # escaped "&lt;i&gt;" stays text.
+    vtt = suffix.lower() == ".vtt"
+    texts = []
+    for c in cues:
+        body = burn_subtitles.plain(c.text)
+        texts.append((c.start, c.end, html.unescape(body) if vtt else body))
+    folder = out / "in_burn"  # an in_* name: never listed as an output
+    folder.mkdir(exist_ok=True)
+    texts = [t for t in texts if t[2]]  # a cue of tags only has no text to draw
+    spec = folder / "spec.json"
+    spec.write_text(burn_subtitles.spec(lay, style, length, texts, "subtitled.mp4"))
+    draw = [sys.executable, str(APP / "runners" / "burn_subtitles.py"), str(spec)]
+    # the list's times are STRETCH times longer: settb and setpts make them short again, in steps of 1 ms
+    text = f"[1:v:0]settb=1/1000,setpts=PTS/{burn_subtitles.STRETCH},format=rgba[text]"
+    if (w, h) == (w0, h0):
+        graph = f"{text};[0:V:0][text]"
+    else:
+        graph = f"{text};[0:V:0]crop={w}:{h}:0:0[pic];[pic][text]"
+    graph += f"overlay=x=0:y={lay.y}:format=yuv420:eof_action=pass[v]"
+    sound = stream_codec(video, "a")
+    audio = (
+        []
+        if sound is None
+        else ["-c:a", "copy"]
+        if sound in SUB_COPY_AUDIO
+        else ["-c:a", "aac", "-b:a", "192k"]
+    )
+    cmd = [
+        "ffmpeg", "-v", "error", "-y", *GUARD, "-i", str(video),
+        "-protocol_whitelist", "file", "-format_whitelist", BURN_FORMATS, "-f", "concat",
+        "-i", str(folder / "cues.ffconcat"),
+        "-filter_complex", graph, "-map", "[v]", "-map", "0:a?",
+        "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", *audio,
+        "-movflags", "+faststart", str(out / "subtitled.mp4"),
+    ]  # fmt: skip
+    look = f"{dict(BURN_SIZES)[size]} text, {dict(BURN_PLACES)[place]}, {dict(BURN_STYLES)[style]}"
+    note = f"{len(texts)} subtitle{'' if len(texts) == 1 else 's'} burned into the picture ({look.lower()})"
+    if len(cues) < given:
+        note += f"; {given - len(cues)} after the video's end left out"
+    if (w, h) != (w0, h0):
+        note += f"; cut to {w}x{h} (H.264 needs even sides)"
+    (out / "notes.json").write_text(json.dumps({"subtitled.mp4": note}))
+    return Plan([draw, cmd], {})
 
 
 if __name__ == "__main__":

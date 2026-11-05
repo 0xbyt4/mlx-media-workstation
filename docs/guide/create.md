@@ -202,7 +202,7 @@ With Subtitles on, the tool cuts the audio into parts of about 6 s at quiet poin
 - Qwen3-ASR gives no time for each word. The words of a part share the time from its first to its last loud sound,
   by their length. So a subtitle can start or end about 1 s early or late.
 
-Use `transcript.srt` in Add Subtitles, or open it with the video in a player.
+Use `transcript.srt` in Add Subtitles ("Send to" on the file), or open it with the video in a player.
 
 ### ACE-Step 1.5
 
@@ -401,32 +401,55 @@ file. The job note shows the clips, the size, the frame rate, the length and the
 
 ### Add Subtitles
 
-Adds a subtitle file to a video as a subtitle track. The viewer turns the subtitles on or off in the player. It needs no
-model.
+Adds a subtitle file to a video as a subtitle track. The viewer turns the subtitles on or off in the player. Or it
+burns the text into the picture, for players that show no subtitle track (YouTube Shorts, many phone apps). It needs
+no model.
 
 | Field | Default | Notes |
 |---|---|---|
-| Video | | Its picture and sound are copied. |
+| Video | | Its sound is copied. Its picture is copied too, unless you burn the text into it. |
 | Subtitle file | | An SRT or WebVTT file in UTF-8. |
 | Language | Not set | The language tag of the track (an ISO 639-2 code, for example `tur`). Players show it in the subtitle menu. |
+| Burn into picture | Off: a subtitle track | White text with a dark outline, or white text on a dark box, in the picture. |
+| Text size (advanced) | Medium | Small, Medium or Large: 4.5%, 5.5% or 7% of the picture's short side. |
+| Text place (advanced) | Bottom | Bottom or Top. |
 
 How the tool reads the subtitle file:
 
 - It keeps the `<i>`, `<b>` and `<u>` tags and removes other tags, for example `<font>` and WebVTT voice tags.
+- In a WebVTT file, it changes `&amp;`, `&lt;`, `&gt;`, `&nbsp;` and the other character references to their
+  characters. So the track shows `Tom & Jerry`, not `Tom &amp; Jerry`.
 - It leaves out a subtitle that starts after the video ends. A subtitle that runs past the end stops at the end.
 - It refuses a file that is not UTF-8 or UTF-16 text. Save the file as UTF-8 and try again.
 
 The picture is copied when an MP4 file can hold it, as in Mix. A sound track that an MP4 file cannot hold, for example
 PCM, is encoded as AAC. The output is `subtitled.mp4`.
 
-The subtitles are a separate track, not part of the picture. This tool cannot burn subtitles into the picture.
+With Burn into picture off, the subtitles are a separate track, not part of the picture.
+
+With Burn into picture on:
+
+- The tool draws the text with the macOS system font. A script that the font does not have, for example Arabic or
+  Japanese, gets another macOS font.
+- A line is at most 90% of the picture's width (80% in a tall video). A subtitle longer than two lines shows in parts
+  of two lines. Each part gets a share of the subtitle's time by its length.
+- The text is 7% of the height over the bottom edge. In a tall video it is 20% over the bottom edge, above the
+  buttons and the title of the Shorts player.
+- When two subtitles overlap, the one that starts later shows. The earlier one shows again when the later one ends.
+  Two subtitles with the same start and end show together, on two lines.
+- The tool removes the `<i>`, `<b>` and `<u>` tags. The text has no italics.
+- The picture is encoded again (H.264), at about 4x real time for a 1080p video. The colour tags of the video stay.
+  The sound is copied as in a subtitle track. The file has no subtitle track and no language tag.
+- H.264 needs even sides: a picture of 853x481 becomes 852x480.
 
 To subtitle a video:
 
 1. Open Transcribe. Choose the video, set the language and turn Subtitles on. Press Generate.
-2. When the job is done, download `transcript.srt` from the job card. Check the text and fix it in a text editor.
+2. When the job is done, check the text of `transcript.srt` on the job card. To fix the text, download the file and
+   fix it in a text editor. Then choose the fixed file as the subtitle file in step 4.
 3. On the video job, press "Send to" and pick Add Subtitles.
-4. Choose the `.srt` file as the subtitle file. Set the language. Press Generate.
+4. On `transcript.srt`, press "Send to" and pick Add Subtitles. Set the language, or choose Burn into picture.
+5. Press Generate.
 
 ## Use outputs in other tools
 
@@ -437,6 +460,7 @@ To subtitle a video:
 | Image | Image to Video, Voice to Video (talking), Klein Edit (references), Join clips |
 | Audio | Voice to Video (talking), Mix (video + music), Fish Drama 3 (voice reference of speaker 0 or 1) |
 | Video | Extend Video, Mix (video + music), Join clips, Add Subtitles (video) |
+| Subtitle file (`.srt`, `.vtt`) | Add Subtitles (subtitle file) |
 
 "Use these settings" fills the tool's form with the settings of a job. It does not bring back the files: add them
 again.

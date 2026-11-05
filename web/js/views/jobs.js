@@ -543,7 +543,7 @@ function diagnose(job) {
 }
 
 function sendButton(job, o) {
-  const targets = s.ctx.handoff.targets(o.kind);
+  const targets = s.ctx.handoff.targets(o.kind, o.name);
   if (!targets.length) return null;
   const btn = h('button', {type: 'button', class: 'btn btn-sm', 'aria-haspopup': 'menu', 'aria-expanded': 'false'},
     icon('arrow', 'ic-sm'), 'Send to', icon('chev-down', 'ic-sm'));

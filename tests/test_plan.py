@@ -1,5 +1,6 @@
 """tools.plan(): the exact commands, environment and output names for each tool."""
 
+import importlib.util
 import json
 import re
 import shutil
@@ -11,6 +12,7 @@ from typing import Any
 import pytest
 
 from app import tools
+from app.runners import burn_subtitles, subtitles
 from tests.conftest import MODELS, FakeMedia
 
 OFFLINE = {"HF_HUB_OFFLINE": "1"}
@@ -1488,3 +1490,160 @@ def test_subtitle_refuses_a_bad_file_or_a_video_it_does_not_cover(
         media.codecs = {}
         sub.write_text("1\n00:00:01,000 --> 00:00:02,000\nok\n")
         tools.plan("edit.subtitle", params("edit.subtitle", language="xx"), files, tmp_path)  # fmt: skip
+
+
+BURN_INPUT = ["-protocol_whitelist", "file", "-format_whitelist", "concat,image2,png_pipe", "-f", "concat"]  # fmt: skip
+
+
+def burn_graph(y: int, crop: str = "") -> str:
+    main = f"[0:V:0]{crop}[pic];[pic]" if crop else "[0:V:0]"
+    return (
+        "[1:v:0]settb=1/1000,setpts=PTS/40,format=rgba[text];"
+        f"{main}[text]overlay=x=0:y={y}:format=yuv420:eof_action=pass[v]"
+    )
+
+
+def test_subtitle_burn_draws_first_then_lays_one_list_over_the_picture(
+    tmp_path: Path, media: FakeMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """300 subtitles give the same two steps as one: a drawing step and one overlay that reads the list."""
+    monkeypatch.setattr(tools, "video_shape", lambda path: (1080, 1920, "30/1"))
+    media.seconds = {"in_video_0.mp4": 100.0}
+    video, sub = tmp_path / "in_video_0.mp4", tmp_path / "in_subtitles_0.srt"
+    cues = [subtitles.Cue(i * 0.4, i * 0.4 + 0.3, f"<i>Satır</i> {i}") for i in range(300)]  # fmt: skip
+    sub.write_text(subtitles.srt(cues))
+    p = params("edit.subtitle", burn="outline", language="tur")
+    files = {"video": [video], "subtitles": [sub]}
+    tools.validate("edit.subtitle", p, files)
+    plan = tools.plan("edit.subtitle", p, files, tmp_path)
+    spec = tmp_path / "in_burn" / "spec.json"
+    lay = burn_subtitles.layout(1080, 1920)
+    assert plan.commands == [
+        [sys.executable, str(tools.APP / "runners" / "burn_subtitles.py"), str(spec)],
+        ["ffmpeg", "-v", "error", "-y", *GUARD, "-i", str(video),
+         *BURN_INPUT, "-i", str(tmp_path / "in_burn" / "cues.ffconcat"),
+         "-filter_complex", burn_graph(lay.y), "-map", "[v]", "-map", "0:a?",
+         "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy",
+         "-movflags", "+faststart", str(tmp_path / "subtitled.mp4")],
+    ]  # fmt: skip
+    data = json.loads(spec.read_text())
+    assert data["layout"]["y"] == lay.y and data["layout"]["font"] == 59
+    assert (data["style"], data["length"], data["output"]) == ("outline", 100.0, "subtitled.mp4")  # fmt: skip
+    # the cues that start before the end, without tags; no clean SRT and no subtitle track
+    assert len(data["cues"]) == 250
+    assert data["cues"][1] == [0.4, pytest.approx(0.7), "Satır 1"]
+    assert not (tmp_path / "in_subtitles_clean.srt").exists()
+    assert note(tmp_path, "subtitled.mp4") == (
+        "250 subtitles burned into the picture (medium text, bottom, white text, dark outline); "
+        "50 after the video's end left out"
+    )
+
+
+def test_subtitle_burn_reads_webvtt_crops_an_odd_size_and_encodes_pcm(
+    tmp_path: Path, media: FakeMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tools, "video_shape", lambda path: (853, 481, "25/1"))
+    media.seconds = {"in_video_0.mov": 5.0}
+    video, sub = tmp_path / "in_video_0.mov", tmp_path / "in_subtitles_0.vtt"
+    # Transcribe's WebVTT escapes &, < and >: the picture shows the characters
+    sub.write_text(
+        "WEBVTT\n\n00:01.000 --> 00:02.000\n<v Ana>Tom &amp; Jerry &lt;3</v> <i>&lt;i&gt;</i>\n"
+    )
+    p = params("edit.subtitle", burn="box", burn_size="large", burn_place="top")
+    files = {"video": [video], "subtitles": [sub]}
+    monkeypatch.setattr(
+        tools,
+        "stream_codec",
+        lambda path, kind: "prores" if kind == "V" else "pcm_s16le",
+    )
+    plan = tools.plan("edit.subtitle", p, files, tmp_path)
+    lay = burn_subtitles.layout(852, 480, "large", "top")
+    cmd = plan.commands[1]
+    assert cmd[cmd.index("-filter_complex") + 1] == burn_graph(
+        lay.y, "crop=852:480:0:0"
+    )
+    assert cmd[cmd.index("-c:a") : cmd.index("-c:a") + 4] == [
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+    ]
+    data = json.loads((tmp_path / "in_burn" / "spec.json").read_text())
+    # the tags go before the characters are decoded: an escaped "<i>" stays text
+    assert data["cues"] == [[1.0, 2.0, "Tom & Jerry <3 <i>"]] and data["style"] == "box"
+    assert note(tmp_path, "subtitled.mp4") == (
+        "1 subtitle burned into the picture (large text, top, white text on a dark box); "
+        "cut to 852x480 (H.264 needs even sides)"
+    )
+    # a video without sound: no sound options; a style the tool does not know is refused
+    monkeypatch.setattr(tools, "stream_codec", lambda path, kind: "h264" if kind == "V" else None)  # fmt: skip
+    cmd = tools.plan("edit.subtitle", p, files, tmp_path).commands[1]
+    assert "-c:a" not in cmd
+    with pytest.raises(ValueError, match="Unknown burn style"):
+        tools.plan("edit.subtitle", {**p, "burn": "neon"}, files, tmp_path)
+
+
+def bright(path: Path, frame: int) -> int:
+    """The pixels of one frame that are near white."""
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-vf", f"select=eq(n\\,{frame}),format=gray",
+         "-frames:v", "1", "-f", "rawvideo", "-"],
+        capture_output=True, check=True,
+    ).stdout  # fmt: skip
+    return sum(b > 200 for b in raw)
+
+
+@needs_ffmpeg
+@pytest.mark.skipif(
+    importlib.util.find_spec("AppKit") is None, reason="AppKit (pyobjc) draws the text"
+)
+def test_subtitle_burn_real_ffmpeg_shows_the_text_only_in_its_time(
+    tmp_path: Path,
+) -> None:
+    video, sub = tmp_path / "in_video_0.mp4", tmp_path / "in_subtitles_0.srt"
+    ffmpeg("-f", "lavfi", "-i", "color=c=black:s=320x180:r=25:d=2", "-f", "lavfi", "-i", "sine=duration=2",
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(video))  # fmt: skip
+    sub.write_text("1\n00:00:00,400 --> 00:00:01,200\nIşık ğüşçö İ\n")
+    files = {"video": [video], "subtitles": [sub]}
+    p = params("edit.subtitle", burn="outline")
+    tools.validate("edit.subtitle", p, files)
+    run_plan(tools.plan("edit.subtitle", p, files, tmp_path))
+    out = tmp_path / "subtitled.mp4"
+    found = streams(out)
+    assert [s["codec_name"] for s in found] == ["h264", "aac"]  # no subtitle track
+    assert (found[0]["width"], found[0]["height"]) == (320, 180)
+    # 25 fps: frames 10-29 are 0.4-1.16 s
+    assert bright(out, 9) == 0 and bright(out, 30) == 0
+    assert bright(out, 10) > 50 and bright(out, 29) > 50
+    data = out.read_bytes()
+    assert data.index(b"moov") < data.index(b"mdat")
+
+
+def first_sample_text(path: Path) -> str:
+    """The text of the first mov_text sample: a 2-byte length, then the text (style boxes follow)."""
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:s:0", "-c:s", "copy", "-f", "data", "-"],
+        capture_output=True, check=True,
+    ).stdout  # fmt: skip
+    return raw[2 : 2 + int.from_bytes(raw[:2], "big")].decode()
+
+
+@needs_ffmpeg
+def test_subtitle_real_ffmpeg_decodes_webvtt_characters_in_the_track(
+    tmp_path: Path, clips: list[Path]
+) -> None:
+    """ffmpeg's SRT reader shows &amp; as it is and drops <3 ...> as a tag: the clean SRT has the characters."""
+    sub = tmp_path / "in_subtitles_0.vtt"
+    sub.write_text(
+        "WEBVTT\n\n00:00.000 --> 00:00.900\n"
+        "Tom &amp; Jerry &lt;3 &gt; a&nbsp;b x&lrm;y &#39;q&#39; <i>it</i> C:\\Notes\n"
+    )
+    files = {"video": [clips[0]], "subtitles": [sub]}
+    run_plan(tools.plan("edit.subtitle", params("edit.subtitle"), files, tmp_path))
+    j = "\u2060"  # the word joiner that keeps ffmpeg from reading < and \\N as markup
+    assert (tmp_path / "in_subtitles_clean.srt").read_text() == (
+        f"1\n00:00:00,000 --> 00:00:00,900\nTom & Jerry <{j}3 > a\xa0b x\u200ey 'q' <i>it</i> C:\\{j}Notes\n\n"
+    )
+    assert first_sample_text(tmp_path / "subtitled.mp4") == (
+        f"Tom & Jerry <{j}3 > a\xa0b x\u200ey 'q' it C:\\{j}Notes"
+    )

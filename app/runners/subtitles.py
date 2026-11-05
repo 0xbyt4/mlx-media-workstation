@@ -5,6 +5,7 @@ The app imports it as app.runners.subtitles (edit.subtitle checks and cleans the
 runner, which runs in the Drama 3 environment, imports it as subtitles from its own folder.
 """
 
+import html
 import re
 from dataclasses import dataclass
 
@@ -22,6 +23,11 @@ TIME = r"(?:(\d+):)?(\d{1,2}):(\d{1,2})[,.](\d{1,3})"
 TIME_LINE = re.compile(rf"^\s*{TIME}\s*-->\s*{TIME}(?:\s.*)?$")
 # tags other than <i>, <b> and <u> (WebVTT voices, classes, inline times; SRT font tags) and {\an8}-style overrides
 OTHER_TAGS = re.compile(r"<(?!/?[ibu]>)[^>]*>|\{\\[^}]*\}")
+KEPT_TAGS = re.compile(r"(</?[ibu]>)")
+# ffmpeg's SRT reader takes <x...> for a tag and {\...}, \N, \n and \h for ASS codes. A word joiner (invisible, no
+# width) after the < or the \ keeps such text as it is.
+SRT_CODES = re.compile(r"<(?=\S)|\{(?=\\)|\\(?=[Nnh])")
+JOINER = "\u2060"
 
 
 @dataclass
@@ -93,6 +99,16 @@ def parse(text: str) -> list[Cue]:
     if not cues:
         raise ValueError("The subtitle file has no cues.")
     return sorted(cues, key=lambda c: c.start)
+
+
+def vtt_to_srt(text: str) -> str:
+    """A WebVTT cue's text (from parse) for an SRT file that ffmpeg reads: character references such as &amp;, &lt;,
+    &nbsp; and &lrm; become their characters, and the <i>, <b> and <u> tags stay. A < or a backslash that ffmpeg would read as
+    a tag or a code gets a word joiner, so it shows as it is."""
+    parts = KEPT_TAGS.split(text)  # text, tag, text, ...
+    for i in range(0, len(parts), 2):
+        parts[i] = SRT_CODES.sub(lambda m: m[0] + JOINER, html.unescape(parts[i]))
+    return "".join(parts)
 
 
 def clock(t: float, sep: str = ",") -> str:

@@ -4,7 +4,7 @@
 //   handoff.send({tool, field, file: {url, name, kind}})  an output file goes to a tool's file field
 //   handoff.useText({tool, field, text})                  a text (from Chat) goes to a tool's text field
 //   handoff.useSettings(job)                              a job's params fill its tool's form (not its files)
-//   handoff.targets(kind)                                 the "Send to" menu entries for an output kind
+//   handoff.targets(kind, name)                           the "Send to" menu entries for an output kind (and name)
 //   handoff.take(toolId)                                  Create only: the waiting items for that tool, oldest first
 
 import {safeFileUrl} from './api.js';
@@ -17,6 +17,7 @@ export const SEND_TARGETS = {
   image: [['video.i2v', 'image'], ['video.a2v', 'image'], ['image.klein_edit', 'references'], ['edit.concat', 'clips']],
   audio: [['video.a2v', 'audio'], ['edit.mix', 'music'], ['voice.drama3', 'ref0'], ['voice.drama3', 'ref1']],
   video: [['video.extend', 'video'], ['edit.mix', 'video'], ['edit.concat', 'clips'], ['edit.subtitle', 'video']],
+  text: [['edit.subtitle', 'subtitles']],
 };
 
 const pending = new Map();
@@ -33,12 +34,18 @@ function queue(toolId, item) {
   router.go('create', {tool: toolId});
 }
 
+// A field that takes file name suffixes (".srt,.vtt") takes only a file whose name has one: not transcript.txt.
+function takesName(field, name) {
+  const suffixes = (field.accept || '').split(',').map((a) => a.trim().toLowerCase()).filter((a) => a.startsWith('.'));
+  return !suffixes.length || !name || suffixes.some((x) => name.toLowerCase().endsWith(x));
+}
+
 // [{tool, field, label, sub}] for the tools and file fields that exist.
-export function targets(kind) {
+export function targets(kind, name) {
   const out = [];
   for (const [toolId, fieldName] of SEND_TARGETS[kind] || []) {
     const t = findField(toolId, fieldName, ['file', 'files']);
-    if (t) out.push({tool: t.tool.id, field: t.field.name, label: t.tool.label, sub: t.field.label});
+    if (t && takesName(t.field, name)) out.push({tool: t.tool.id, field: t.field.name, label: t.tool.label, sub: t.field.label});
   }
   return out;
 }

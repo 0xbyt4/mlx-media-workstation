@@ -5,7 +5,7 @@ license: MIT
 compatibility: Needs the Transcribe model (Qwen3-ASR) from the Models screen. Works offline.
 metadata:
   author: mlx-media-workstation
-  version: "1.0"
+  version: "1.1"
 allowed-tools: transcribe_audio
 ---
 
@@ -68,7 +68,8 @@ Save the SRT:
 ## Step 3: add the subtitles to the video
 
 A soft subtitle track goes into an MP4 without a new encode. The Homebrew ffmpeg has no filter that burns text
-into the picture (no libass), so do not promise burned-in subtitles.
+into the picture (no libass). To burn the subtitles into the picture (for example for a Short), use `edit.subtitle`
+with `burn` (step 0). In `run_shell`, add a soft track only.
 
 1. This step needs `run_shell` and a granted folder that holds the video and the SRT. When `run_shell` is off, tell
    the user: "Turn on run_shell in this chat's Tools menu to add the subtitles to the video, or open the video and
