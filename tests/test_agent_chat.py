@@ -413,8 +413,8 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
         in prompt
     )
     assert (
-        "A file that a media job made stays in the Library: give the user its Library reference."
-        in prompt
+        "To put a file that a media job made into the user's folder, call export_from_workspace with its "
+        "Library reference as path." in prompt
     )
     assert "You reach the internet only through" in prompt
     assert (
@@ -422,6 +422,18 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
         in prompt
     )
     assert "write a short plan with update_plan" in prompt
+    # without export_from_workspace, a media job's file stays in the Library
+    client.patch(
+        f"/api/chats/{cid}/agent",
+        json={"tools": ["create_job", "write_file"]},
+        headers=ORIGIN,
+    )
+    prompt = chat.system_prompt(saved(client, cid))
+    assert (
+        "A file that a media job made stays in the Library: give the user its Library reference."
+        in prompt
+    )
+    assert "export_from_workspace with its" not in prompt
     client.patch(
         f"/api/chats/{cid}/agent", json={"tools": ["job_status"]}, headers=ORIGIN
     )
@@ -686,13 +698,35 @@ def test_polling_calls_run_again(client, ws):
 
 
 def test_only_an_ok_result_counts_as_made(client):
-    """An identical call after an error runs again (here: invalid arguments each time); it never ends the
-    answer."""
+    """An identical call after an error runs again once (an error can pass), with a note; the third identical
+    failure is not run and ends the answer. An ok result in between starts the count again."""
     cid = agent_chat(client)
     bad = [call("update_plan", items=[{"step": "Look", "status": "bogus"}])]
     evs = send(client, cid, script(bad, bad, bad, "RESULT"))
-    assert [e["status"] for e in evs if e["event"] == "tool_result"] == ["error"] * 3
-    assert evs[-1]["finish"] == "stop"
+    results = [e for e in evs if e["event"] == "tool_result"]
+    assert [r["status"] for r in results] == ["error", "error", "skipped"]
+    assert chat.FAILED_AGAIN not in results[0]["content"]
+    assert results[1]["content"].endswith(chat.FAILED_AGAIN)
+    assert evs[-1]["finish"] == "repeat" and evs[-1]["note"] == chat.NOTE_FAILED
+    good = [call("update_plan", items=[{"step": "Look", "status": "pending"}])]
+    evs = send(client, cid, script(bad, bad, good, bad, "RESULT"))
+    statuses = [e["status"] for e in evs if e["event"] == "tool_result"]
+    assert statuses == ["error", "error", "ok", "error"] and evs[-1]["finish"] == "stop"
+
+
+def test_a_malformed_call_written_again_ends_the_answer(client):
+    """The same text that does not parse, three times: the third is not run. The model sees its own text in the
+    next request (not an empty call), so it can fix it."""
+    cid = agent_chat(client)
+    bad = {"raw": "<function=job_status>\n<parameter=job_id>\nx\n"}
+    evs = send(client, cid, script([bad], [bad], [bad], "RESULT"))
+    results = [e for e in evs if e["event"] == "tool_result"]
+    assert [r["status"] for r in results] == ["error", "error", "skipped"]
+    assert chat.FAILED_AGAIN in results[1]["content"]
+    assert evs[-1]["finish"] == "repeat" and evs[-1]["note"] == chat.NOTE_FAILED
+    sent, _ = chat.model_input(saved(client, cid), 256)
+    first = next(m for m in sent if m.get("tool_calls"))["tool_calls"][0]
+    assert first["name"] == "job_status" and first["arguments"] == {"job_id": "x"}
 
 
 def test_a_call_that_changes_state_clears_the_repeat_rule(client, ws):

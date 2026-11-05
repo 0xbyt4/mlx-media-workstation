@@ -51,7 +51,7 @@ The Tools menu lists each tool with a pill that names its risk. The pill sets wh
 | Write a file | Writes files | Creates a new text file in the granted folder. It never overwrites a file. |
 | Change a file | Changes files | Changes a text file in the granted folder. The card shows the change. A copy of the old file goes to the chat's work folder first. |
 | Copy to work folder | Your folder | Copies a file from the granted folder into the chat's work folder, for Python. |
-| Save to your folder | Writes files | Copies a file from the work folder into the granted folder, under a new name. |
+| Save to your folder | Writes files | Copies a file from the work folder, or a media job's output from the Library, into the granted folder, under a new name. |
 | Media facts | Your folder | Reads the length, size and codecs of a media file in the granted folder, the work folder or the Library. It runs without a folder too. |
 | View an image | Your folder | Lets the model see an image in the granted folder, the work folder or the Library. It runs without a folder too. |
 | Web search | Leaves this Mac | Searches the web. It sends the query off this Mac. |

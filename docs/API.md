@@ -519,7 +519,10 @@ with llm.session(abort=lambda: False, limit=600.0) as s: ...
   "days": 2}}`. mlx-vlm's parser for the model (`qwen3_coder`) parses each call and converts each argument to the
   type in the schema. With one or more calls, `finish` is `"tool_calls"`; without, the list is empty.
 - A call that does not parse is still in the list, with `"arguments": {}`, an `"error": "Invalid tool call: ..."` and
-  its `"raw"` text. A call cut off by `max_tokens` gets an error too. The worker goes on with the next request.
+  its `"raw"` text. When one parameter is to blame, the error names it. A call cut off by `max_tokens` gets an error
+  too. The worker goes on with the next request.
+- Before it reports a call that does not parse, the worker puts each bare size (`1344x768`) outside a JSON string in
+  quotes, in the parameters whose schema type is `object` or `array`, and parses the call again.
 - The tool name is not checked against `tools`; the caller validates the name and the arguments.
 - `content` in `done` is the answer without call markup. Text the model wrote after its calls (the template asks for
   none) is sent as a last `content` delta and is in `content`.
@@ -943,6 +946,10 @@ Rules of the loop (`app/chat.py`, `Turn`):
    `media_info`, `view_image`, `fetch_url`). After a call that changes state ran (a tool that writes files, `run_python`,
    `run_shell`, `copy_to_workspace`, `create_job`, `cancel_job`, `transcribe_audio`), the rule forgets the earlier
    calls; that call itself still counts.
+   A call that failed (status `error` or `refused`) runs again once, and its result says that it failed the same way
+   before. The third identical failure is not run (`status: "skipped"`) and ends the answer with `finish` `repeat`
+   and a note. A malformed call counts as the same call when its text is the same. An `ok` result starts the count
+   again.
 6. An approval waits at most 10 minutes (less when the answer's time runs out). No answer counts as a denial.
 7. `create_job` queues the job and returns its id at once. `wait_for_job` and `transcribe_audio` wait only for a job
    that fits next to the model. A job that needs the model's memory (or a job behind one in the queue) waits for the

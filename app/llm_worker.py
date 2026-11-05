@@ -32,6 +32,7 @@ rule alone did not stop them. Inside a tool-call block (the arguments) nothing i
 bans the call marker, so the model answers with text while the tools stay in the prompt.
 """
 
+import ast
 import hashlib
 import json
 import os
@@ -62,6 +63,14 @@ NO_THINKING = {
 # Qwen3.8's tool-call markers (mlx-vlm's qwen3_coder parser); the worker takes them from the parser module
 TOOL_START, TOOL_END = "<tool_call>", "</tool_call>"
 FUNCTION = re.compile(r"<function=([^>\n]*)>")
+# one parameter of a call's text, as the qwen3_coder parser reads it: a closed block, or an unclosed last one
+PARAMETER = re.compile(r"<parameter=([^>\n]*)>(.*?)(</parameter>|\Z)", re.DOTALL)
+# a size such as 1344x768: models write it unquoted inside a JSON object, where it is never valid JSON
+SIZE = re.compile(r"\d+[xX]\d+")
+JSON_TYPES = (
+    "object",
+    "array",
+)  # the parameter types whose value the parser reads as JSON
 proto: Any = None  # the protocol's stdout, set by main()
 write_lock = threading.Lock()
 
@@ -191,13 +200,104 @@ def extend_ids(
     return cached + encode(prompt[len(text) :])
 
 
+def raw_params(raw: str) -> dict[str, str]:
+    """The parameters of a call's text as the model wrote them (name -> text), as the parser splits them."""
+    out = {}
+    for name, value, closer in PARAMETER.findall(raw.rsplit("</function>", 1)[0]):
+        value = value.removeprefix("\n")
+        # an unclosed last parameter runs to the end of the block
+        out[name.strip()] = value.removesuffix("\n") if closer else value.rstrip()
+    return out
+
+
+def properties(raw: str, tools: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """The parameter schemas of the tool that a call's text names."""
+    found = FUNCTION.search(raw)
+    name = found.group(1).strip() if found else ""
+    for t in tools or []:
+        fn = t.get("function") or {}
+        if fn.get("name") == name:
+            return (fn.get("parameters") or {}).get("properties") or {}
+    return {}
+
+
+def quote_sizes(text: str) -> str:
+    """JSON text with each bare size token outside a string ("size": 1344x768) put in double quotes. Such a token is
+    never valid JSON or a Python literal, so no text that parses changes meaning."""
+    out, i, in_string = [], 0, False
+    while i < len(text):
+        c = text[i]
+        if in_string:
+            if c == "\\":
+                out.append(text[i : i + 2])
+                i += 2
+                continue
+            in_string = c != '"'
+        elif c == '"':
+            in_string = True
+        elif (m := SIZE.match(text, i)) and not (
+            i and (text[i - 1].isalnum() or text[i - 1] in "._")
+        ):
+            after = text[m.end() : m.end() + 1]
+            if not (after.isalnum() or after in ("_", ".")):
+                out.append(f'"{m.group()}"')
+                i = m.end()
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def repair(raw: str, tools: list[dict[str, Any]] | None) -> str:
+    """The call's text with bare sizes quoted in its object and array parameters (quote_sizes); text parameters stay
+    as they are."""
+    props = properties(raw, tools)
+
+    def fix(m: re.Match[str]) -> str:
+        if (props.get(m.group(1).strip()) or {}).get("type") not in JSON_TYPES:
+            return m.group(0)
+        return f"<parameter={m.group(1)}>{quote_sizes(m.group(2))}{m.group(3)}"
+
+    return PARAMETER.sub(fix, raw)
+
+
+def explain(raw: str, tools: list[dict[str, Any]] | None) -> str:
+    """Which parameter of a call that did not parse is wrong, and where, so the model can write it again; "" when
+    no single parameter is to blame."""
+    props = properties(raw, tools)
+    for name, value in raw_params(raw).items():
+        kind = (props.get(name) or {}).get("type")
+        if kind in JSON_TYPES:
+            try:
+                json.loads(value)
+                continue
+            except json.JSONDecodeError as e:
+                why, near = e.msg, value[max(0, e.pos - 40) : e.pos + 20]
+            try:
+                ast.literal_eval(value)  # the parser takes a Python literal too
+                continue
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                pass
+            return (
+                f"the parameter {name} is not valid JSON ({why} at {near!r}). Write it as JSON, with every text "
+                'value in double quotes, for example "size": "1344x768"'
+            )
+        if kind in ("integer", "number"):
+            try:
+                float(value)
+            except ValueError:
+                return f"the parameter {name} must be a number, not {value[:60]!r}"
+    return ""
+
+
 def parse_calls(
     blocks: list[tuple[str, bool]],
     parse: Callable[[str, Any], Any],
     tools: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
     """The calls of an answer as {"id", "name", "arguments" (a dict)}; a call that does not parse gets an "error" (and
-    its "raw" text) instead of failing the answer. parse is the parser module's parse_tool_call(text, tools)."""
+    its "raw" text) instead of failing the answer. parse is the parser module's parse_tool_call(text, tools). A call
+    that fails only because of a bare size in an object parameter (repair) parses after the repair."""
     calls: list[dict[str, Any]] = []
     for raw, closed in blocks:
         found = FUNCTION.search(raw)
@@ -205,7 +305,14 @@ def parse_calls(
         try:
             if not closed:
                 raise ValueError(f"the call has no {TOOL_END} (the answer was cut off)")
-            parsed = parse(raw.strip(), tools)
+            # a failed parse is retried once with bare sizes quoted (repair), else reported below
+            try:
+                parsed = parse(raw.strip(), tools)
+            except Exception:
+                fixed = repair(raw, tools)
+                if fixed == raw:
+                    raise
+                parsed = parse(fixed.strip(), tools)
             for call in parsed if isinstance(parsed, list) else [parsed]:
                 args = call.get("arguments") or {}
                 if isinstance(args, str):
@@ -225,7 +332,8 @@ def parse_calls(
                     "id": f"call_{uuid.uuid4().hex[:12]}",
                     "name": name,
                     "arguments": {},
-                    "error": f"Invalid tool call: {type(e).__name__}: {e}",
+                    "error": "Invalid tool call: "
+                    + (explain(raw, tools) or f"{type(e).__name__}: {e}"),
                     "raw": raw,
                 }
             )
