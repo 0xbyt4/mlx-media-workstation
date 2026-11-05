@@ -85,6 +85,8 @@ def render_pdf_page(doc, n: int, dpi: float, dst: Path) -> tuple[int, int]:
         raise SystemExit(f"The PDF has no page {n}.")
     box = Quartz.CGPDFPageGetBoxRect(page, Quartz.kCGPDFCropBox)
     pw, ph = box.size.width, box.size.height
+    if pw <= 0 or ph <= 0:
+        raise SystemExit(f"Page {n} of the PDF has no size.")
     if Quartz.CGPDFPageGetRotationAngle(page) % 180 == 90:
         pw, ph = ph, pw
     scale = dpi / 72 * fit(pw * dpi / 72, ph * dpi / 72)

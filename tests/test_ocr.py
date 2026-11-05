@@ -288,6 +288,34 @@ def test_pages_fails_with_a_reason(tmp_path: Path) -> None:
     assert "could not be read as an image or a PDF" in r.stderr
 
 
+def test_pages_refuses_a_pdf_page_with_no_size(tmp_path: Path) -> None:
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 0 0] >>",
+    ]
+    data, offsets = b"%PDF-1.4\n", []
+    for i, body in enumerate(objs, 1):
+        offsets.append(len(data))
+        data += b"%d 0 obj\n%s\nendobj\n" % (i, body)
+    xref = len(data)
+    data += b"xref\n0 4\n0000000000 65535 f \n"
+    data += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    data += b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
+    src = tmp_path / "in_file_0.pdf"
+    src.write_bytes(data)
+    r = run_pages(
+        {
+            "source": str(src),
+            "pages": [{"page": 1, "image": str(tmp_path / "p.png")}],
+            "dpi": 200,
+        },
+        tmp_path,
+    )
+    assert r.returncode == 1
+    assert "Page 1 of the PDF has no size." in r.stderr
+
+
 # ocr.py (a stand-in for mlx-vlm)
 
 
