@@ -224,7 +224,8 @@ function localLlm() {
     h('div', {class: 'set-row'},
       h('div', {class: 'set-llm-info'}, h('div', {class: 'set-llm-head'}, L.name, L.pill), L.text, L.idle, L.err),
       h('div', {class: 'set-actions'}, L.models, L.unload)),
-    chatEffort()));
+    chatEffort(),
+    llmDraft()));
 }
 
 // The thinking level of a new chat ([app] chat_effort); a chat keeps the last level used in it.
@@ -236,6 +237,21 @@ function chatEffort() {
   return rowFor('chat_effort', 'Thinking in a new chat',
     'How long the model may think before it answers, at the start of a new chat. Change it per chat under the ' +
     'message box; each chat keeps its last level. Higher levels answer better and slower.', select);
+}
+
+// Faster answers ([app] llm_draft): speculative decoding with the DFlash2 draft model (app/llm.py). It can be turned
+// on only when the draft is downloaded; it applies from the next answer.
+function llmDraft() {
+  const a = s.data.app;
+  const d = s.data.draft || {installed: false, gb: 0};
+  const box = h('input', {type: 'checkbox', role: 'switch', checked: a.llm_draft,
+    disabled: Boolean(s.data.config.error) || s.appSaving === 'llm_draft' || (!d.installed && !a.llm_draft),
+    onchange: (e) => saveApp('llm_draft', e.target.checked)});
+  const help = 'A small draft model guesses the next words, and the chat model checks them in one step. The chat ' +
+    'model still picks every word, with the same rules. Answers come about 1.5 times faster, and about 2 times ' +
+    'faster for code and tool calls. Turkish answers gain little. It adds about ' + Math.round(d.gb) + ' GB of memory. It applies from the next answer.' +
+    (d.installed ? '' : ' First download "Qwen3.8 27B DFlash2 draft" on the Models screen.');
+  return rowFor('llm_draft', 'Faster answers', help, box);
 }
 
 function llmState(l) {

@@ -364,6 +364,7 @@ Read each model's licence before you download it (see [Model licences](#model-li
 | ACE-Step 1.5 turbo | 10.1 GB | ACE-Step 1.5 |
 | LTX-2.5 q8 (gated) | 54.1 GB | Text to Video, Image to Video, Voice to Video, Extend Video |
 | Qwen3.8 27B, 4-bit | 16.1 GB | Chat, prompt help |
+| Qwen3.8 27B DFlash2 draft (optional) | 3.85 GB | Faster chat answers |
 
 ### Gated models
 
@@ -502,6 +503,16 @@ the weights from `qwen_model`.
      --local-dir ~/mlx-media/models/qwen3.8-27b-4bit
    ```
 
+3. Optional, for faster answers: download the DFlash2 draft model, then turn on Settings > Local LLM > Faster
+   answers (`[app] llm_draft`). The chat model still picks every token, with the same rules. On an M5 Pro, answers
+   came about 1.5 times faster, and about 2 times faster for code and tool calls. The draft adds about 3 GB of
+   memory.
+
+   ```sh
+   hf download z-lab/Qwen3.8-27B-DFlash2 --revision 50307d4c4cde6860d4eee73e2547cd786fe8e8a4 \
+     config.json model.safetensors --local-dir ~/mlx-media/models/qwen3.8-27b-dflash2
+   ```
+
 ### Model paths
 
 `config.toml` tells the app where each model is. A key that you leave out takes the default from
@@ -518,6 +529,7 @@ keys; a change takes effect after a restart.
 | `ltx_model` | `~/mlx-media/models/ltx-2.5-mlx-q8` | The LTX-2.5 weights |
 | `qwen_python` | `~/mlx-media/venv-qwen/bin/python` | The Python of the local LLM environment |
 | `qwen_model` | `~/mlx-media/models/qwen3.8-27b-4bit` | The Qwen3.8 27B weights |
+| `qwen_draft` | `~/mlx-media/models/qwen3.8-27b-dflash2` | The DFlash2 draft model (optional, for faster answers) |
 
 ## Model licences
 
@@ -537,6 +549,7 @@ model or its output.
 | ACE-Step 1.5 | MIT | Allowed. | [Model card](https://huggingface.co/ACE-Step/Ace-Step1.5) |
 | LTX-2.5 | LTX-2.x Community License Agreement | Free for entities with less than US$10M annual revenue. At or above that, commercial use needs a paid licence from Lightricks. Keep the watermarks and AI disclosures, and follow the AI laws that apply to you. | [LICENSE-2_x](https://github.com/Lightricks/LTX-2/blob/main/LICENSE-2_x) |
 | Qwen3.8 27B | Apache-2.0 | Allowed. | [LICENSE of the base model](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE) |
+| Qwen3.8 27B DFlash2 draft | Apache-2.0 | Allowed. | [Model card](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) |
 
 The Fish Drama 3 tool is Built with Fish Audio.
 

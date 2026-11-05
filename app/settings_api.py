@@ -3,7 +3,7 @@ values in config.toml, and facts about the app.
 
 The app reads [paths] and [assist] once, at start (app/config.py), and [agent] once, when it builds the agent registry
 (app/agent/settings.py), so a change there takes effect after a restart. The [app] values (keep awake, notify, LLM idle
-unload, profile) apply at once: a write replaces config.APP and calls on_change. A write
+unload, profile, faster answers) apply at once: a write replaces config.APP and calls on_change. A write
 changes only the lines of the keys it sets: comments, blank lines, other keys and other sections stay as they are.
 The new text is parsed again before it replaces the file, and the replace is atomic (a temp file, then os.replace).
 Nothing here holds a secret. A write needs the Origin header of the app's own page (chat.same_origin), not only the
@@ -46,6 +46,7 @@ LABELS = {
     "ace_dir": "ACE-Step 1.5 checkout",
     "qwen_python": "Local LLM python",
     "qwen_model": "Local LLM weights",
+    "qwen_draft": "Local LLM draft (DFlash2)",
 }
 # features that use a path although no entry in app/models.py names it (app/llm.py starts the LLM with qwen_python)
 FEATURES = {"qwen_python": llm.MODEL.features}
@@ -196,6 +197,8 @@ def snapshot() -> dict[str, Any]:
             "saved_profile": saved_profile,
         },
         "llm": {"idle_stop_s": llm.idle_stop()},
+        # Settings > Local LLM > Faster answers: whether the draft model is there, and the memory it adds
+        "draft": {"installed": models.installed(llm.DRAFT), "gb": llm.DRAFT.peak_gb},
         "agent": agent,
         "about": {
             **version(),
@@ -374,6 +377,10 @@ def update(change: Change) -> list[str]:
             errors[f"app.{key}"] = "Unknown setting."
         elif error := config.check_app(key, value):
             errors[f"app.{key}"] = error
+        elif key == "llm_draft" and value and not models.installed(llm.DRAFT):
+            errors[f"app.{key}"] = (
+                f"The DFlash2 draft model is not at {models.target(llm.DRAFT)}. Download it on the Models screen first."
+            )
         else:
             switches[key] = value
     agent: dict[str, Any] = {}

@@ -91,6 +91,8 @@ class Model:
     features: tuple[str, ...] = ()  # app features outside the tool list that use it
     needs: str | None = None  # the manual entry to install first
     install: str | None = None  # the README commands of a manual entry
+    # not needed by any tool or feature: the setup card does not pick it or count it as missing
+    optional: bool = False
 
     @property
     def manual(self) -> bool:
@@ -312,6 +314,23 @@ uv pip install --python ~/mlx-media/venv-qwen/bin/python "mlx-vlm==0.7.11" "mlx=
         licence_url="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE",
         peak_gb=18.0,
         features=("Prompt help", "Chat"),
+    ),
+    # optional: speculative decoding for the local LLM ([app] llm_draft); peak_gb is the memory it adds to the LLM's
+    Model(
+        id="qwen3.8-27b-dflash2",
+        label="Qwen3.8 27B DFlash2 draft",
+        tools=(),
+        path_key="qwen_draft",
+        files=("config.json", "model.safetensors"),
+        repo="z-lab/Qwen3.8-27B-DFlash2",
+        revision="50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+        size_gb=3.85,
+        licence="Apache-2.0",
+        licence_url="https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2",
+        peak_gb=3.0,
+        allow=("config.json", "model.safetensors"),
+        features=("Chat",),
+        optional=True,
     ),
 ]
 BY_ID = {m.id: m for m in MODELS}
@@ -837,6 +856,7 @@ def view(m: Model, mem_gb: float) -> dict[str, Any]:
         "fits": None if m.peak_gb is None else fits(m.peak_gb, mem_gb),
         "disk_free_gb": None if m.manual else round(disk_free(m) / 1e9, 1),
         "needs": m.needs,
+        "optional": m.optional,
         "install": m.install,
         "install_path": str(p) if (p := install_target(m)) else None,
         "download": progress(m),

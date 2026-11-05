@@ -83,7 +83,7 @@ function renderNav() {
   const jobsList = store.get('jobs');
   const activeJobs = jobsList.filter((j) => store.ACTIVE.has(j.status)).length;
   const modelsData = store.get('models');
-  const missing = !!(modelsData && modelsData.models.some((m) => store.shownModel(m) && !m.installed));
+  const missing = !!(modelsData && modelsData.models.some((m) => store.shownModel(m) && !m.installed && !m.optional));
   const focused = document.activeElement && nav.contains(document.activeElement) ? document.activeElement.getAttribute('data-view') : null;
   const list = started ? router.views() : []; // no sections before the profile is known, so none flash
   nav.replaceChildren(...list.map((v, i) => {

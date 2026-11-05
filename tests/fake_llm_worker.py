@@ -13,7 +13,7 @@ With tools, the fake streams scripted tool-call text through the real worker's h
 finish_tools), with a small stand-in for mlx-vlm's qwen3_coder parser. The last message picks the script (see
 SCRIPTS); a tool result as the last message gets the answer "Result: <content>". The done stats then echo what the
 request carried ("seen"), so a test can check what reached the worker; a request without tools echoes its thinking
-settings (LIMITS) the same way.
+settings (LIMITS) the same way, and its "draft" folder when it names one.
 
 An agent test scripts a whole answer: the last user message holds "STEPS:" and a JSON list, one item per model step
 (the number of assistant messages after that user message picks the item; past the end the answer is "Done."). An
@@ -294,6 +294,7 @@ def tool_answer(req, cancel):
             "tool_choice",
             "chat",
             "allow_emoji",
+            "draft",
             *LIMITS,
         )
     }
@@ -406,7 +407,10 @@ def main():
                 "stats": {
                     "turns": len(req["messages"]),
                     "images": len(req["images"]),
-                    "seen": {k: req.get(k) for k in LIMITS},
+                    "seen": {
+                        **{k: req.get(k) for k in LIMITS},
+                        **({"draft": req["draft"]} if req.get("draft") else {}),
+                    },
                     "prefix": prefix(req),
                     **use_cache(req, finish),
                 },

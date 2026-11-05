@@ -601,7 +601,7 @@ function queueShown(d) {
 function setupVisible() {
   const d = data();
   if (!d) return false;
-  return setup.open || queueShown(d) || d.models.some((m) => m.kind === 'download' && !m.installed);
+  return setup.open || queueShown(d) || d.models.some((m) => m.kind === 'download' && !m.installed && !m.optional);
 }
 
 // Opens the card and moves focus to its heading. A finished run of downloads is not shown again on open.
@@ -649,7 +649,8 @@ function defaultPicks(d) {
   const picks = new Set();
   for (const m of d.models) {
     // the full profile leaves out what no tool uses (the LLM); in the chat profile the LLM is the point
-    if (m.kind !== 'download' || blockedWhy(m, byId) || (!(m.tools || []).length && !chatOnly())) continue;
+    // an optional entry (the LLM's draft model) is never picked for the user
+    if (m.kind !== 'download' || m.optional || blockedWhy(m, byId) || (!(m.tools || []).length && !chatOnly())) continue;
     if (missingEnvs(m, d).length) continue;
     const f = fit(m.peak_gb, d.machine.mem_total_gb, d.machine.mem_reserve_gb);
     if (f && f.k !== 'no') picks.add(m.id);
@@ -719,7 +720,7 @@ function renderSetup(d) {
   if (!showQueue && setup.open && setup.picks === null) setup.picks = defaultPicks(d);
   if (showQueue) mode = 'queue';
   else if (setup.open) mode = setup.step === 'licence' && pickedModels(d).some((m) => m.gated) ? 'licence' : 'pick';
-  else if (q.count || d.models.some((m) => m.kind === 'download' && !m.installed)) mode = 'teaser';
+  else if (q.count || d.models.some((m) => m.kind === 'download' && !m.installed && !m.optional)) mode = 'teaser';
   if (mode === 'queue') {
     setup.step = 'pick';
     setup.open = true; // the list stays when the run ends, until Done or Hide
@@ -790,7 +791,7 @@ function setupShell(eyebrow, title, step, ...body) {
 // The closed card: what is missing, or what the queue does.
 function setupTeaser(d) {
   const q = queueOf(d);
-  const missing = d.models.filter((m) => m.kind === 'download' && !m.installed);
+  const missing = d.models.filter((m) => m.kind === 'download' && !m.installed && !m.optional);
   const gb = missing.reduce((sum, m) => sum + (m.size_gb || 0), 0);
   const run = q.running ? d.models.find((m) => m.id === q.running) : null;
   const text = q.count ?

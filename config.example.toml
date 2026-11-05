@@ -15,6 +15,8 @@ ace_dir = "~/mlx-media/ace-step"
 # the local LLM's environment python and its weights (prompt help and chat)
 qwen_python = "~/mlx-media/venv-qwen/bin/python"
 qwen_model = "~/mlx-media/models/qwen3.8-27b-4bit"
+# the DFlash2 draft model for faster answers ([app] llm_draft below); optional, about 3.85 GB
+qwen_draft = "~/mlx-media/models/qwen3.8-27b-dflash2"
 
 [assist]
 # Prompt help ("Improve" under the prompt fields) and chat use the local LLM: provider = "local" (the only one built in)
@@ -34,6 +36,9 @@ llm_idle_minutes = 10
 profile = "full"
 # the thinking level of a new chat: "off", "low", "medium", "high", "xhigh" or "max" (docs/API.md, "Thinking levels")
 chat_effort = "off"
+# faster answers: the local LLM decodes with the DFlash2 draft model (qwen_draft). The model still samples every token;
+# the draft adds about 3 GB of memory. true or false; it applies from the next request
+llm_draft = false
 
 [agent]
 # Chat agent mode (docs/AGENT.md), also in Settings > Agent. Read at start: a change applies after a restart.

@@ -10,6 +10,11 @@ A multi-step turn (model, tool, model, ...) holds the memory between its request
 job's claim waits for like a running answer, so the model is not unloaded between the steps. Requests may carry tools
 (OpenAI-style function schemas); the worker then holds the tool-call text back and returns the parsed calls in "done".
 
+With [app] llm_draft on (Settings > Local LLM > Faster answers), each request names the DFlash2 draft folder, and the
+worker decodes speculatively: the model still samples every token, faster (app/llm_worker.py, Engine.rounds). The draft adds
+DRAFT.peak_gb to the memory the model needs. A request while it is on and its folder is missing fails with
+DRAFT_MISSING.
+
 Before a media job stops the worker, the worker saves its chat's prompt cache to CACHE (at most SAVE_WAIT seconds).
 The next worker restores it: right after the load after jobs (reload_after_jobs), or before the first request of that
 chat. That answer then reads only its new tokens, not the whole chat. CACHE holds one chat at most; it goes when its
@@ -32,6 +37,9 @@ from app import config, llm_worker, models
 from app.config import PATHS, ROOT
 
 MODEL = models.BY_ID["qwen3.8-27b-4bit"]
+DRAFT = models.BY_ID[
+    "qwen3.8-27b-dflash2"
+]  # the optional draft model ([app] llm_draft)
 LOG = ROOT / "outputs" / "llm.log"
 # the saved prompt cache of one chat (llm_worker.Engine.save)
 CACHE = ROOT / "outputs" / "llm-cache.safetensors"
@@ -49,7 +57,22 @@ EFFORTS = ("low", "medium", "xhigh")
 CRASHED = "The model stopped unexpectedly. See outputs/llm.log."
 WAITING = "Waiting for memory: a media job needs it. This continues when the job ends."
 CLOSED = "The app was closed."
+DRAFT_MISSING = (
+    "Faster answers is on, but the DFlash2 draft model is not at {path}. Download it on the Models screen, or turn "
+    "off Settings > Local LLM > Faster answers."
+)
 WORKER = ["-m", "app.llm_worker"]  # run with the LLM environment's python
+
+
+def draft_on() -> bool:
+    """Whether answers use the DFlash2 draft (Settings > Local LLM > Faster answers). Read on each request: the worker
+    loads the draft at the first request with it and drops it at the first one without it."""
+    return config.APP.llm_draft
+
+
+def peak_gb() -> float:
+    """The memory the local LLM needs: the model, plus the draft when it is on."""
+    return MODEL.peak_gb + (DRAFT.peak_gb if draft_on() else 0.0)
 
 
 def idle_stop() -> float | None:
@@ -336,7 +359,7 @@ def installed() -> bool:
 
 
 def fits_with(job_peak: float) -> bool:
-    return models.fits(MODEL.peak_gb + job_peak, models.mem_total_gb())
+    return models.fits(peak_gb() + job_peak, models.mem_total_gb())
 
 
 def status() -> dict[str, Any]:
@@ -356,8 +379,9 @@ def status() -> dict[str, Any]:
         "waiting": n_waiting,  # requests waiting for a media job to finish
         "media_peak_gb": held,
         "model": MODEL.label,
-        "peak_gb": MODEL.peak_gb,
+        "peak_gb": peak_gb(),
         "idle_stop_s": idle_stop(),
+        "draft": {"on": draft_on(), "installed": models.installed(DRAFT)},
     }
 
 
@@ -366,9 +390,11 @@ def check_installed() -> None:
         raise LLMError(
             f"{MODEL.label} is not installed. Install it on the Models screen."
         )
+    if draft_on() and not models.installed(DRAFT):
+        raise LLMError(DRAFT_MISSING.format(path=models.target(DRAFT)))
     if not fits_with(0.0):
         raise LLMError(
-            f"{MODEL.label} needs about {MODEL.peak_gb:.0f} GB of memory plus {models.RESERVE_GB} GB for the "
+            f"{MODEL.label} needs about {peak_gb():.0f} GB of memory plus {models.RESERVE_GB} GB for the "
             "system; this Mac has less."
         )
 
@@ -579,6 +605,8 @@ def generate(
             "reasoning_effort": reasoning_effort,
             "thinking_budget": thinking_budget,
             "allow_emoji": allow_emoji,
+            # the draft folder for speculative decoding; None: plain decoding (the worker drops a loaded draft)
+            "draft": str(PATHS.qwen_draft) if draft_on() else None,
         }
         for ev in run(rid, cancelled, req):
             if tools and ev["event"] == "done":

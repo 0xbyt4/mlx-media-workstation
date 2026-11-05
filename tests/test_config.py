@@ -34,6 +34,7 @@ def defaults(home: Path) -> config.Paths:
         ace_dir=base / "ace-step",
         qwen_python=base / "venv-qwen" / "bin" / "python",
         qwen_model=base / "models" / "qwen3.8-27b-4bit",
+        qwen_draft=base / "models" / "qwen3.8-27b-dflash2",
     )
 
 
@@ -74,7 +75,7 @@ def test_unknown_keys_are_refused(tmp_path: Path, home: Path) -> None:
         config.load(file)
     assert str(exc.value) == (
         "config.toml: unknown key(s) in [paths]: mflux, zeta. Known keys: mflux_bin, "
-        "ltx_bin, ltx_model, drama_python, drama_model, ace_dir, qwen_python, qwen_model."
+        "ltx_bin, ltx_model, drama_python, drama_model, ace_dir, qwen_python, qwen_model, qwen_draft."
     )
 
 

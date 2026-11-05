@@ -8,7 +8,8 @@ looked for; the other tools keep working. The [assist] section picks the prompt 
 The [app] section holds the switches of the Settings screen. Unlike the paths, they apply while the app runs: a change
 through PUT /api/settings replaces APP at once (app/settings_api.py). `profile` picks what the UI shows: "full" (every
 section) or "chat" (Chat, Models and Settings only). `start.py --chat` sets it to "chat" in APP for that run, without
-writing the file. `chat_effort` is the thinking level of a new chat (app/effort.py).
+writing the file. `chat_effort` is the thinking level of a new chat (app/effort.py). `llm_draft` turns on the
+DFlash2 draft model for the local LLM (app/llm.py).
 """
 
 import tomllib
@@ -31,6 +32,7 @@ DEFAULTS = {
     "ace_dir": "~/mlx-media/ace-step",
     "qwen_python": "~/mlx-media/venv-qwen/bin/python",
     "qwen_model": "~/mlx-media/models/qwen3.8-27b-4bit",
+    "qwen_draft": "~/mlx-media/models/qwen3.8-27b-dflash2",
 }
 ASSIST_DEFAULTS = {"provider": "local"}
 APP_DEFAULTS: dict[str, bool | int | str] = {
@@ -39,6 +41,7 @@ APP_DEFAULTS: dict[str, bool | int | str] = {
     "llm_idle_minutes": 10,
     "profile": "full",
     "chat_effort": DEFAULT_EFFORT,
+    "llm_draft": False,
 }
 IDLE_CHOICES = (5, 10, 30, 60, 0)  # the minutes the Settings screen offers; 0 = never
 MAX_IDLE = 24 * 60
@@ -55,6 +58,9 @@ class Paths:
     ace_dir: Path  # the ACE-Step 1.5 checkout (its .venv and checkpoints inside)
     qwen_python: Path  # python of the local LLM environment (prompt help and chat)
     qwen_model: Path  # Qwen3.8 27B 4-bit weights folder
+    qwen_draft: (
+        Path  # the DFlash2 draft model of Qwen3.8 27B (faster answers, [app] llm_draft)
+    )
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,8 @@ class App:
     profile: str = "full"  # what the UI shows: "full" or "chat" (PROFILES)
     # the thinking level of a new chat (app/effort.py LEVELS)
     chat_effort: str = DEFAULT_EFFORT
+    # speculative decoding with the DFlash2 draft (qwen_draft): faster answers from the same model (app/llm.py)
+    llm_draft: bool = False
 
 
 def section(file: Path, name: str, known: Mapping[str, object]) -> dict[str, object]:
