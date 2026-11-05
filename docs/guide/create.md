@@ -78,7 +78,7 @@ The times and peaks below come from an M5 Pro with 48 GB. "Peak" is the number t
 | Image | FLUX.3 Klein | Fast images, good text in images | about 40 s | 14 GB |
 | Image | Klein Edit (references) | A new image from 1-10 reference images | about 1-4 min | 14 GB (not measured with many references) |
 | Voice | Fish Drama 3 | Expressive speech and dialogue | about 2x real time | 39 GB |
-| Voice | Transcribe | Text from speech | 40 s of speech in about 2 s | 3 GB |
+| Voice | Transcribe | Text from speech | 40 s of speech in about 2 s | 3 GB (Nemotron: 29 GB) |
 | Music | ACE-Step 1.5 | Music, instrumental or with lyrics | two 20 s takes in about 30 s | 23 GB |
 | Video | Text to Video | A video with sound from a prompt | 5 s at 704x1280 in about 3 min, at 576x1024 in about 2 min | 35 GB |
 | Video | Image to Video | A video from a start image | 4 s in about 2 min | 35 GB |
@@ -183,13 +183,16 @@ Prompt tips:
 
 ### Transcribe
 
-Speech to text with Qwen3-ASR 0.6B. It writes one line of text for about every 30 s, with its time.
+Speech to text with Qwen3-ASR 0.6B or Nemotron 3.5 Transcribe. It writes one line of text for about every 30 s, with
+its time.
 
 | Field | Default | Notes |
 |---|---|---|
 | Audio or video | | The file's sound track is transcribed. Music under the voice makes the text worse. |
+| Model | Qwen3-ASR 0.6B | Or Nemotron 3.5 Transcribe. Install it first on the Models screen. |
 | Language | Detect (per 30 s part) | Or one of 30 languages. |
 | Subtitles (SRT and VTT) | off | Also writes `transcript.srt` and `transcript.vtt`. |
+| Speakers | off | Nemotron only: each line names its speaker. At most 5 min of audio. |
 
 The output is `transcript.txt`: a `Language:` line, then one line per part with its time, for example
 `[0:00-0:28] ...`. It has no times for single words.
@@ -203,6 +206,21 @@ With Subtitles on, the tool cuts the audio into parts of about 6 s at quiet poin
   by their length. So a subtitle can start or end about 1 s early or late.
 
 Use `transcript.srt` in Add Subtitles, or open it with the video in a player.
+
+Nemotron 3.5 Transcribe made fewer errors than Qwen3-ASR in our tests, mostly in Turkish and with noise under the
+voice. It has these differences:
+
+- It needs about 29 GB of memory, so the Mac needs 48 GB. On a 48 GB Mac, the chat model unloads during the job.
+- It does not name the language. The `Language:` line says `unknown`, unless you set the language. For subtitles in
+  Chinese, Cantonese or Japanese, set the language: then a subtitle line is cut between characters.
+- It ignores the Language field when it transcribes. It keeps the language that it hears.
+- It gives a time for each word. With Subtitles on, it keeps the 30 s parts, and each subtitle starts and ends with
+  its words. Thai gets no word times: then the words of a part share its time.
+
+With Speakers on, Nemotron transcribes the whole file in one pass, so that a speaker keeps the same number. Each line
+of `transcript.txt` is one turn, for example `[0:03-0:07] Speaker 2: ...`. A turn longer than 30 s goes on in a new
+line. The `Speakers:` line under `Language:` gives the number of speakers. With Subtitles on too, the first subtitle
+of each turn starts with its speaker. The speaker numbers only tell the voices apart; they do not identify people.
 
 ### ACE-Step 1.5
 

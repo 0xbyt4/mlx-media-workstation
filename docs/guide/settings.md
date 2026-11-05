@@ -136,8 +136,9 @@ from the app folder.
 | Fish Drama 3 python | `drama_python` | `~/mlx-media/venv-drama/bin/python` | Fish Drama 3, Transcribe |
 | Fish Drama 3 weights | `drama_model` | `~/mlx-media/models/fish-audio-drama-3-4bit` | Fish Drama 3 |
 | ACE-Step 1.5 checkout | `ace_dir` | `~/mlx-media/ace-step` | ACE-Step 1.5 |
-| Local LLM python | `qwen_python` | `~/mlx-media/venv-qwen/bin/python` | Chat, Prompt help |
+| Local LLM python | `qwen_python` | `~/mlx-media/venv-qwen/bin/python` | Chat, Prompt help, Transcribe (Nemotron) |
 | Local LLM weights | `qwen_model` | `~/mlx-media/models/qwen3.8-27b-4bit` | Chat, Prompt help |
+| Nemotron 3.5 Transcribe weights | `nemotron_model` | `~/mlx-media/models/nemotron-3.5-transcribe-nvfp4` | Transcribe |
 
 To change a path:
 

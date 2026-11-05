@@ -15,6 +15,8 @@ ace_dir = "~/mlx-media/ace-step"
 # the local LLM's environment python and its weights (prompt help and chat)
 qwen_python = "~/mlx-media/venv-qwen/bin/python"
 qwen_model = "~/mlx-media/models/qwen3.8-27b-4bit"
+# the Nemotron 3.5 Transcribe weights (a model of the Transcribe tool; it runs in the local LLM's environment)
+nemotron_model = "~/mlx-media/models/nemotron-3.5-transcribe-nvfp4"
 
 [assist]
 # Prompt help ("Improve" under the prompt fields) and chat use the local LLM: provider = "local" (the only one built in)

@@ -476,6 +476,36 @@ def test_a_model_left_running_by_a_failed_write_is_stopped(
     assert not server.group_alive(started[0])  # the model's process group is gone
 
 
+def test_the_worker_claims_the_peak_of_the_picked_model(
+    state: Path, make_job: Job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claims: list[float] = []
+    done = threading.Event()
+
+    def fake_run(job: dict[str, Any]) -> None:
+        job["status"] = "done"
+        if job["id"] == "b":
+            done.set()
+
+    monkeypatch.setattr(
+        llm, "claim", lambda peak, abort=lambda: False: claims.append(peak) or True
+    )
+    monkeypatch.setattr(server, "run_job", fake_run)
+    make_job(
+        "a", "queued", order=1, tool="voice.transcribe", params={"model": "qwen3-asr"}
+    )
+    make_job(
+        "b", "queued", order=2, tool="voice.transcribe", params={"model": "nemotron"}
+    )
+    worker = threading.Thread(target=server.worker, daemon=True)
+    worker.start()
+    server.wake.set()
+    assert done.wait(5)
+    server.shutdown()
+    worker.join(5)
+    assert claims == [3.0, 29.0]
+
+
 def test_worker_takes_the_new_first_job_after_a_move_during_its_claim(
     state: Path, make_job: Job, monkeypatch: pytest.MonkeyPatch
 ) -> None:

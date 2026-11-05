@@ -91,7 +91,12 @@ def test_get_reports_every_path(client: TestClient, cfg: Path, home: Path) -> No
     assert drama["value"] == drama["default"] == config.DEFAULTS["drama_python"]
     assert drama["exists"] is False
     assert row(data, "ace_dir")["path"] == str(config.ROOT / "relative" / "ace")
-    assert row(data, "qwen_python")["used_by"]["features"] == ["Chat", "Prompt help"]
+    assert row(data, "qwen_python")["used_by"]["features"] == [
+        "Chat",
+        "Prompt help",
+        "Transcribe (Nemotron)",
+    ]
+    assert row(data, "nemotron_model")["used_by"]["tools"] == ["Transcribe"]
     assert row(data, "qwen_model")["used_by"]["models"] == ["Qwen3.8 27B (4-bit)"]
     assert data["config"] == {"path": str(cfg), "exists": True, "error": None}
     assert data["assist"]["provider"] == "local"

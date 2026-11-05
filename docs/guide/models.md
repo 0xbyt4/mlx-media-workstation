@@ -18,6 +18,7 @@ Each model has two parts:
 | mflux (image runtime) | FLUX.3 Klein (gated) | FLUX.3 Klein, Klein Edit | about 20.3 GB | 14 GB |
 | Fish Drama 3 environment (mlx-audio) | Fish Audio Drama 3 (4-bit) | Fish Drama 3 | about 23.8 GB | 39 GB |
 | Fish Drama 3 environment (mlx-audio) | Qwen3-ASR 0.6B (speech check) | Fish Drama 3, Transcribe | about 1.0 GB | 3 GB |
+| Local LLM environment (mlx-vlm) | Nemotron 3.5 Transcribe (NVFP4) | Transcribe (Model: Nemotron) | about 21.6 GB | 29 GB |
 | ACE-Step 1.5 checkout | ACE-Step 1.5 turbo | ACE-Step 1.5 | about 10.1 GB | 23 GB |
 | ltx-2-mlx (video runtime) | LTX-2.5 (q8) (gated) | Text to Video, Image to Video, Voice to Video, Extend Video | about 54.1 GB | 35 GB |
 | Local LLM environment (mlx-vlm) | Qwen3.8 27B (4-bit) | Prompt help, Chat | about 16.1 GB | 18 GB |
@@ -28,7 +29,8 @@ The Edit tools (Mix, Join clips and Add Subtitles) need no model. They use `ffmp
 
 When models are missing, a setup card shows at the top of the Models screen. It has three steps: pick the models,
 accept the licences of the gated ones, and download. Install the runtimes first: the card picks for you only
-the models whose runtime is installed and that fit this Mac.
+the models whose runtime is installed and that fit this Mac. It does not pick Nemotron 3.5 Transcribe, the optional
+model of Transcribe; pick it yourself.
 
 1. Open Models (Cmd-5).
 2. Install the runtimes of the tools that you want. See [Install a runtime](#install-a-runtime). The setup card lists

@@ -319,6 +319,54 @@ def test_transcribe_with_a_given_language(
     assert (tmp_path / "transcript.txt").read_text().startswith("Language: German\n")
 
 
+def test_transcribe_loads_the_model_of_the_job(
+    sub_asr: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nemotron: the folder from the job; it names no language, so the note says so."""
+    sub_asr["asr"].language = None
+    run_transcribe(tmp_path, monkeypatch, subtitles=False, model="/models/nemotron")
+    assert sub_asr["loaded"] == ["/models/nemotron"]
+    assert (tmp_path / "transcript.txt").read_text().startswith("Language: unknown\n")
+    assert json.loads((tmp_path / "notes.json").read_text()) == {
+        "transcript.txt": "language not named, 0:07"
+    }
+
+
+def test_transcribe_joins_a_short_last_part_to_the_part_before(
+    asr: FakeAsr, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The splitter pads a last part of 0.5 s to 1 s of silence; it goes with the part before, without the padding."""
+    asr.texts = ["Hello.", "How are you?"]
+    parts = [([1] * 600, 0.0), ([2] * 345, 60.0), ([3] * 5 + [0] * 5, 94.5)]
+    monkeypatch.setattr(
+        sys.modules["mlx_audio.stt.models.qwen3_asr.qwen3_asr"],
+        "split_audio_into_chunks",
+        lambda audio, sr, chunk_duration: parts,
+    )
+    monkeypatch.setattr(
+        sys.modules["numpy"],
+        "concatenate",
+        lambda xs: [x for p in xs for x in p],
+        raising=False,
+    )
+    seen: list[Any] = []
+    generate = asr.generate
+    monkeypatch.setattr(
+        asr, "generate", lambda part, **kw: seen.append(part) or generate(part, **kw)
+    )
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps({"audio": "s.wav", "language": None, "out": str(tmp_path)})
+    )
+    monkeypatch.setattr(sys, "argv", ["transcribe.py", str(job)])
+    load("transcribe").main()
+    assert seen[1] == [2] * 345 + [3] * 5
+    assert (tmp_path / "transcript.txt").read_text().splitlines()[2:] == [
+        "[0:00-1:00] Hello.",
+        "[1:00-1:35] How are you?",
+    ]
+
+
 class FakeAligner:
     """Stands in for Qwen3-ForcedAligner: one item for each word without its punctuation, 0.5 s each."""
 
@@ -483,6 +531,209 @@ def test_transcribe_without_subtitles_writes_no_srt(
     assert sub_asr["loaded"] == ["mlx-community/Qwen3-ASR-0.6B-8bit"]
     assert not (tmp_path / "transcript.srt").exists()
     assert list(json.loads((tmp_path / "notes.json").read_text())) == ["transcript.txt"]
+
+
+class FakeNemotron:
+    """Stands in for Nemotron 3.5 Transcribe: one result per call, as (text, words); the words have times from the
+    start of the part and come only with word_timestamps. An exception in the list is raised."""
+
+    sample_rate = 10
+
+    def __init__(self, results: list[Any]) -> None:
+        self.results = list(results)
+        self.calls: list[dict[str, Any]] = []
+
+    def generate(self, part: Any, **kw: Any) -> Any:
+        self.calls.append(kw)
+        r = self.results.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        text, words = r
+        segments = words if kw.get("word_timestamps") else None
+        return SimpleNamespace(text=text, segments=segments, language=kw["language"])
+
+
+def word(text: str, start: float, end: float, speaker: int = 0) -> dict[str, Any]:
+    return {"text": text, "start": start, "end": end, "speaker": speaker}
+
+
+@pytest.fixture
+def nemo(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Nemotron for a job of 40 s in two 30 s parts (at 0 and 30 s); set seen["model"] before the run."""
+    seen: dict[str, Any] = {"chunks": []}
+
+    def chunks(audio: Any, sr: int, chunk_duration: float, **kw: Any) -> list[Any]:
+        seen["chunks"].append(chunk_duration)
+        return [("a", 0.0), ("b", 30.0)]
+
+    monkeypatch.syspath_prepend(str(RUNNERS))
+    stub(
+        monkeypatch,
+        {
+            "mlx.core": {
+                "set_cache_limit": lambda n: None,
+                "clear_cache": lambda: None,
+            },
+            "numpy": {"array": list},
+            "mlx_audio.stt.utils": {
+                "load_model": lambda name: seen["model"],
+                "load_audio": lambda path, sr: [0.0] * 400,  # 40 s
+            },
+            "mlx_audio.stt.models.qwen3_asr.qwen3_asr": {
+                "split_audio_into_chunks": chunks
+            },
+        },
+    )
+    return seen
+
+
+def test_nemotron_subtitles_from_its_word_times(
+    nemo: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nemo["model"] = model = FakeNemotron(
+        [
+            ("Hello there.", [word("Hello", 1.0, 1.4), word("there.", 1.5, 2.0)]),
+            ("Fine.", [word("Fine.", 2.0, 2.5)]),
+        ]
+    )
+    run_transcribe(tmp_path, monkeypatch, model="/models/nemotron")
+    assert nemo["chunks"] == [30.0]  # 30 s parts: the words have their own times
+    assert {c["task"] for c in model.calls} == {"asr"}
+    assert all(c["word_timestamps"] for c in model.calls)
+    assert (tmp_path / "transcript.srt").read_text() == (
+        "1\n00:00:01,000 --> 00:00:02,000\nHello there.\n\n"
+        "2\n00:00:32,000 --> 00:00:33,000\nFine.\n\n"
+    )
+    notes = json.loads((tmp_path / "notes.json").read_text())
+    assert notes["transcript.srt"] == "2 subtitles, word times from Nemotron"
+    assert (tmp_path / "transcript.txt").read_text().splitlines()[2:] == [
+        "[0:00-0:30] Hello there.",
+        "[0:30-0:40] Fine.",
+    ]
+
+
+def test_nemotron_without_word_times_spreads_the_words(
+    nemo: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """A part whose words get no time (Thai, say) is transcribed again without them; its words share its time."""
+    nemo["model"] = model = FakeNemotron(
+        [
+            ValueError("Thai word timestamps are not supported"),
+            ("Hello there.", []),
+            ("Fine.", [word("Fine.", 2, 3)]),
+        ]
+    )
+    run_transcribe(tmp_path, monkeypatch, model="/models/nemotron")
+    assert (
+        "word times: Thai word timestamps are not supported" in capsys.readouterr().out
+    )
+    assert "word_timestamps" not in model.calls[1]
+    assert (
+        (tmp_path / "transcript.srt")
+        .read_text()
+        .startswith("1\n00:00:01,000 --> 00:00:03,000\nHello there.\n\n")
+    )  # 1-3 s after the part's start (speech_span), by length
+
+
+def test_nemotron_speakers_name_each_turn(
+    nemo: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    words = [
+        word("Did", 0.5, 0.8, 0),
+        word("you?", 0.9, 1.4, 0),
+        word("Yes.", 2.0, 2.5, 1),
+        word("Good.", 40.0, 40.0, 0),
+    ]
+    nemo["model"] = model = FakeNemotron(
+        [("<spk:0> Did you? <spk:1> Yes. <spk:0> Good.", words)]
+    )
+    run_transcribe(tmp_path, monkeypatch, model="/models/nemotron", speakers=True)
+    assert nemo["chunks"] == []  # one pass over the whole audio
+    assert model.calls == [
+        {"language": None, "max_tokens": 544, "task": "saa", "word_timestamps": True}
+    ]
+    assert (tmp_path / "transcript.txt").read_text() == (
+        "Language: unknown\nSpeakers: 2\n\n"
+        "[0:00-0:01] Speaker 1: Did you?\n"
+        "[0:02-0:02] Speaker 2: Yes.\n"
+        "[0:40-0:40] Speaker 1: Good.\n"
+    )
+    srt = (tmp_path / "transcript.srt").read_text()
+    # a turn's first subtitle names its speaker; it ends where the next turn starts
+    assert srt.startswith(
+        "1\n00:00:00,500 --> 00:00:01,500\nSpeaker 1: Did you?\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nSpeaker 2: Yes.\n\n"
+    )
+    notes = json.loads((tmp_path / "notes.json").read_text())
+    assert notes["transcript.txt"] == "language not named, 0:40, 2 speakers"
+
+
+def test_nemotron_speakers_follow_the_order_of_the_text(
+    nemo: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mlx-audio sorts the words by time, and the first word of a later turn can get a time in an earlier turn (the
+    times come from the NVFP4 smoke run of a 2-speaker clip). The turns follow the text, and no turn starts before
+    the turn before it ends."""
+    words = [  # as mlx-audio gives them: sorted by start
+        word("tomorrow?", 1.8, 2.35, 0),
+        word("I", 2.395, 2.954, 0),
+        word("Almost.", 2.954, 2.99, 1),
+        word("month.", 6.2, 6.627, 1),
+        word("Great,", 6.627, 7.28, 1),
+        word("can", 7.28, 7.6, 0),
+        word("afternoon.", 8.8, 9.26, 0),
+        word("then", 9.92, 10.3, 1),
+        word("lunch.", 12.5, 12.99, 1),
+    ]
+    text = "<spk:0> tomorrow? <spk:1> Almost. month. <spk:0> I can afternoon. <spk:1> Great, then lunch."
+    nemo["model"] = FakeNemotron([(text, words)])
+    run_transcribe(tmp_path, monkeypatch, model="/models/nemotron", speakers=True)
+    assert (tmp_path / "transcript.txt").read_text().splitlines()[3:] == [
+        "[0:01-0:02] Speaker 1: tomorrow?",
+        "[0:02-0:06] Speaker 2: Almost. month.",
+        "[0:06-0:09] Speaker 1: I can afternoon.",
+        "[0:09-0:12] Speaker 2: Great, then lunch.",
+    ]
+    srt = (tmp_path / "transcript.srt").read_text()
+    assert "00:00:06,627 --> 00:00:07,627\nSpeaker 1: I can\n" in srt
+    assert "00:00:09,260 --> 00:00:10,300\nSpeaker 2: Great, then\n" in srt
+
+
+def test_nemotron_speakers_keep_the_time_order_when_the_words_do_not_match_the_text(
+    nemo: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Chinese and Japanese words are characters: their count is not that of the text."""
+    words = [word("你", 0.5, 0.6, 0), word("好", 0.6, 0.7, 0), word("是", 2.0, 2.1, 1)]
+    nemo["model"] = FakeNemotron([("<spk:0> 你好 <spk:1> 是", words)])
+    run_transcribe(
+        tmp_path,
+        monkeypatch,
+        model="/models/nemotron",
+        speakers=True,
+        language="Chinese",
+    )
+    assert (tmp_path / "transcript.txt").read_text().splitlines()[3:] == [
+        "[0:00-0:00] Speaker 1: 你好",
+        "[0:02-0:02] Speaker 2: 是",
+    ]
+
+
+def test_nemotron_speakers_without_word_times_come_from_the_tags(
+    nemo: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nemo["model"] = FakeNemotron(
+        [
+            ValueError("No diarization speaker matched"),
+            ("<spk:0> Hi. <spk:1> Hello.", []),
+        ]
+    )
+    run_transcribe(
+        tmp_path, monkeypatch, model="/models/nemotron", speakers=True, subtitles=False
+    )
+    assert (tmp_path / "transcript.txt").read_text().splitlines()[3:] == [
+        "[0:00-0:40] Speaker 1: Hi.",
+        "[0:00-0:40] Speaker 2: Hello.",
+    ]
 
 
 # Mix level

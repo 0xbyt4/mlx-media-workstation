@@ -1,5 +1,8 @@
 """Speech to text runner (runs in the Drama 3 environment, mlx-audio 0.6.1): Qwen3-ASR 0.6B, the speech recogniser
-that also checks the Drama 3 takes.
+that also checks the Drama 3 takes. With a "model" in the job (the Nemotron 3.5 Transcribe folder), the same steps run
+that model instead; it needs mlx-audio 0.6.4 (the local LLM environment) and does not name the language. Nemotron's
+CTC head times each word, so its subtitles come from 30 s parts with word times. With "speakers" in the job, Nemotron
+transcribes the whole audio in one pass (its speaker numbers hold for one pass only) and each line names its speaker.
 
 The audio (16 kHz mono, made by the job's plan) is cut into parts of at most PART seconds at quiet points, and each
 part is transcribed on its own, so each line of transcript.txt has the time of its part and the log shows "part i/n"
@@ -13,7 +16,9 @@ share the time from its first to its last loud sound by their length.
   python transcribe.py job.json
 """
 
+import itertools
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -34,6 +39,12 @@ TOKENS_PER_SECOND = (
 NO_SPACES = ("Chinese", "Cantonese", "Japanese")
 FRAME = 0.05  # seconds of one loudness window when the speech in a part is found
 QUIET_DB = 35.0  # a window this much under the part's loudest one is not speech
+# a last part shorter than this goes with the part before: the splitter pads it to 1 s of silence, and Nemotron writes
+# a word ("The.") for that
+MIN_TAIL = 1.0
+SPEAKER_TAG = re.compile(
+    r"<spk:(\d+)>"
+)  # Nemotron's speaker tags in the text of a "saa" pass
 
 
 def clock(seconds: float) -> str:
@@ -56,6 +67,95 @@ def speech_span(part, sr: int) -> tuple[float, float]:
     if len(loud) == 0:
         return 0.0, len(part) / sr
     return float(loud[0] * FRAME), float((loud[-1] + 1) * FRAME)
+
+
+def join_tail(parts: list, total: float, sr: int) -> list:
+    """The parts, with a last part of under MIN_TAIL seconds joined to the part before (its padding left out)."""
+    if len(parts) < 2 or total - parts[-1][1] >= MIN_TAIL:
+        return parts
+    (before, start), (tail, offset) = parts[-2], parts[-1]
+    n = round((total - offset) * sr)
+    return parts[:-2] + [(np.concatenate([before, tail[:n]]), start)]
+
+
+def nemotron_words(
+    model, part, job: dict, start: float, max_tokens: int, stamps: bool
+) -> tuple[str, list]:
+    """Nemotron's text of a part, and its words as (text, start, end, speaker) from the start of the audio. No words
+    when the part gets no word times."""
+    kw = {
+        "language": job["language"],
+        "max_tokens": max_tokens,
+        "task": "saa" if job.get("speakers") else "asr",
+    }
+    if stamps:
+        try:
+            r = model.generate(part, word_timestamps=True, **kw)
+            words = [
+                (w["text"], start + w["start"], start + w["end"], w.get("speaker", 0))
+                for w in r.segments or []
+            ]
+            return r.text, in_order(r.text, words) if job.get("speakers") else words
+        except (
+            ValueError
+        ) as e:  # Thai, or a speaker tag that the diarization did not find
+            print(f"word times: {e}", flush=True)
+    return model.generate(part, **kw).text, []
+
+
+def in_order(text: str, words: list) -> list:
+    """The words of a "saa" pass in the order of its text, with start times that do not go back. mlx-audio aligns the
+    words of each speaker apart and sorts all of them by time, so the first word of a turn can get a time in an
+    earlier turn of another speaker. The words stay in time order when their count is not that of the text (Chinese and
+    Japanese words are characters)."""
+    bits = SPEAKER_TAG.split(text.replace("—", " "))
+    tagged = [
+        (0 if len(bits) == 1 else None, bits[0])
+    ]  # mlx-audio's tag for the text before the first tag
+    tagged += [(int(k), t) for k, t in zip(bits[1::2], bits[2::2], strict=True)]
+    queues: dict = {}
+    for w in words:
+        queues.setdefault(w[3], []).append(w)
+    counts: dict = {}
+    for k, t in tagged:
+        if t.split():
+            counts[k] = counts.get(k, 0) + len(t.split())
+    if counts != {k: len(q) for k, q in queues.items()}:
+        return words
+    out, floor = [], 0.0
+    for k, t in tagged:
+        said = t.split()
+        for n in range(len(said)):
+            w = queues[k].pop(0)
+            a = max(w[1], floor)
+            out.append((w[0], a, max(w[2], a), 0 if k is None else k))
+            floor = (
+                a if n < len(said) - 1 else max(w[2], a)
+            )  # a turn starts after the turn before it
+    return out
+
+
+def turns(text: str, words: list, start: float, end: float, sep: str) -> list:
+    """The speaker turns of a pass as (speaker, start, end, text, words). A turn longer than PART seconds goes on in a
+    new one. Without word times, the turns come from the text's speaker tags and share the time of the part."""
+    if not words:
+        bits = SPEAKER_TAG.split(text)
+        tagged = list(zip(bits[1::2], bits[2::2], strict=True))
+        if bits[0].strip():
+            tagged.insert(0, ("0", bits[0]))
+        return [
+            (int(k), start, end, " ".join(t.split()), [])
+            for k, t in tagged
+            if t.strip()
+        ]
+    out: list = []
+    for w in words:
+        last = out[-1] if out else None
+        if last and last[0] == w[3] and w[1] - last[1] <= PART:
+            last[2], last[4] = w[2], [*last[4], w]
+        else:
+            out.append([w[3], w[1], w[2], "", [w]])
+    return [(k, a, b, sep.join(x[0] for x in ws), ws) for k, a, b, _, ws in out]
 
 
 def timed_words(text, language, part, sr, start, aligner) -> tuple[list, str]:
@@ -104,49 +204,84 @@ def main() -> None:
     out = Path(job["out"])
     subs = bool(job.get("subtitles"))
     mx.set_cache_limit(1 << 30)
-    model = load_model(ASR)
-    aligner = load_model(job["aligner"]) if subs and job.get("aligner") else None
+    nemotron = bool(job.get("model"))
+    speakers = nemotron and bool(job.get("speakers"))
+    stamps = nemotron and (subs or speakers)  # Nemotron's word times
+    model = load_model(job.get("model") or ASR)
+    aligner = (
+        load_model(job["aligner"])
+        if subs and job.get("aligner") and not nemotron
+        else None
+    )
     sr = model.sample_rate
     audio = np.array(load_audio(job["audio"], sr=sr))
     total = len(audio) / sr
-    if subs and aligner is None:
+    if speakers:
+        parts = [(audio, 0.0)]
+    elif subs and aligner is None and not nemotron:
         parts = split_audio_into_chunks(
             audio, sr=sr, chunk_duration=SUB_PART, search_expand_sec=SUB_SEARCH
         )
     else:
         parts = split_audio_into_chunks(audio, sr=sr, chunk_duration=PART)
+    parts = join_tail(parts, total, sr)
     ends = [offset for _, offset in parts[1:]] + [total]
-    lines, languages, cues = [], [], []
+    lines, languages, cues, voices = [], [], [], set()
     for i, ((part, start), end) in enumerate(zip(parts, ends, strict=True), 1):
-        result = model.generate(
-            part,
-            language=job["language"],
-            max_tokens=int((end - start) * TOKENS_PER_SECOND) + 64,
-        )
+        tokens = int((end - start) * TOKENS_PER_SECOND) + 64
+        if nemotron:
+            text, words = nemotron_words(model, part, job, start, tokens, stamps)
+            found = None
+        else:
+            result = model.generate(part, language=job["language"], max_tokens=tokens)
+            text, words = result.text, []
+            found = result.language[0] if isinstance(result.language, list) else None
         mx.clear_cache()
-        text = " ".join(result.text.split())
-        found = result.language[0] if isinstance(result.language, list) else None
         language = job["language"] or found
+        sep = "" if language in NO_SPACES else " "
+        if speakers:
+            for k, a, b, said, ws in turns(text, words, start, end, sep):
+                voices.add(k)
+                lines.append(f"[{clock(a)}-{clock(b)}] Speaker {k + 1}: {said}")
+                if subs and ws:  # a turn's first subtitle names its speaker
+                    first = (f"Speaker {k + 1}: {ws[0][0]}", ws[0][1], ws[0][2])
+                    cues += subtitles.build([first] + [w[:3] for w in ws[1:]], sep)
+            if lines and language and language not in languages:
+                languages.append(language)
+            text = ""  # the turns are the lines
+        text = " ".join(SPEAKER_TAG.sub(" ", text).split())
         if text:
             lines.append(f"[{clock(start)}-{clock(end)}] {text}")
             if language and language not in languages:
                 languages.append(language)
-            if subs:
-                words, sep = timed_words(text, language, part, sr, start, aligner)
-                cues += subtitles.build(words, sep)
+            if subs and words:
+                cues += subtitles.build([w[:3] for w in words], sep)
+            elif subs:
+                spread, sep = timed_words(text, language, part, sr, start, aligner)
+                cues += subtitles.build(spread, sep)
         print(f"part {i}/{len(parts)}: {clock(start)}-{clock(end)}", flush=True)
+    if speakers:  # the cues of each turn are built apart: none may run into the next
+        for a, b in itertools.pairwise(cues):
+            if b.start > a.start:
+                a.end = min(a.end, b.start)
     head = f"Language: {', '.join(languages) or 'unknown'}"
+    if speakers:
+        head += f"\nSpeakers: {len(voices)}"
     body = "\n".join(lines) or "(No speech was heard.)"
     (out / "transcript.txt").write_text(f"{head}\n\n{body}\n")
-    notes = {"transcript.txt": f"{', '.join(languages) or 'no speech'}, {clock(total)}"}
+    heard = ", ".join(languages) or ("language not named" if lines else "no speech")
+    notes = {"transcript.txt": f"{heard}, {clock(total)}"}
+    if speakers:
+        notes["transcript.txt"] += f", {len(voices)} speakers"
     if subs and cues:
         (out / "transcript.srt").write_text(subtitles.srt(cues))
         (out / "transcript.vtt").write_text(subtitles.vtt(cues))
-        how = (
-            "word times from the aligner"
-            if aligner is not None
-            else "times from short parts, about +-1 s"
-        )
+        if aligner is not None:
+            how = "word times from the aligner"
+        elif stamps:
+            how = "word times from Nemotron"
+        else:
+            how = "times from short parts, about +-1 s"
         notes["transcript.srt"] = notes["transcript.vtt"] = (
             f"{len(cues)} subtitles, {how}"
         )

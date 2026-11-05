@@ -221,6 +221,17 @@ def test_claim_unloads_only_for_a_job_that_does_not_fit():
 def test_tool_peak():
     assert models.tool_peak("video.t2v") == 35.0
     assert models.tool_peak("video.mix") == 0.0
+    # Transcribe: Qwen3-ASR by default, Nemotron only when the form picks it
+    assert models.tool_peak("voice.transcribe") == 3.0
+    assert models.tool_peak("voice.transcribe", {"model": "qwen3-asr"}) == 3.0
+    assert models.tool_peak("voice.transcribe", {"model": "nemotron"}) == 29.0
+    assert [
+        m.id for m in models.job_models("voice.transcribe", {"model": "nemotron"})
+    ] == ["nemotron-3.5-transcribe-nvfp4"]
+    assert [m.id for m in models.job_models("voice.transcribe")] == [
+        "drama-venv",
+        "qwen3-asr-0.6b-8bit",
+    ]
 
 
 def test_a_request_waits_while_a_big_job_runs():

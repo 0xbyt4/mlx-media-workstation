@@ -33,6 +33,9 @@ HF_HUB = Path(
     or Path(os.environ.get("HF_HOME", "~/.cache/huggingface")) / "hub"
 ).expanduser()
 DRAMA_ASR = HF_HUB / "models--mlx-community--Qwen3-ASR-0.6B-8bit"
+# Transcribe's other model: Nemotron 3.5 Transcribe from its folder, in the local LLM environment (mlx-audio 0.6.4)
+LLM_PY = PATHS.qwen_python
+NEMOTRON_MODEL = PATHS.nemotron_model
 # what each tool needs on disk; a missing one refuses the job with the path it looked for
 REQUIRES: dict[str, list[Path]] = {
     "image.moss": [MFLUX / "mflux-generate-moss-image"],
@@ -45,6 +48,13 @@ REQUIRES: dict[str, list[Path]] = {
     "video.i2v": [LTX, LTX_MODEL],
     "video.a2v": [LTX, LTX_MODEL],
     "video.extend": [LTX_PY, LTX_MODEL],
+}
+# Transcribe's Speakers (Nemotron only) runs the whole audio in one pass, whose memory grows with its length: at most
+# this many seconds, the length the measured peak covers
+SPEAKERS_MAX = 300.0
+# what a choice in a tool's form needs instead of the tool's own paths: (tool, field, value) -> paths
+CHOICE_REQUIRES: dict[tuple[str, str, str], list[Path]] = {
+    ("voice.transcribe", "model", "nemotron"): [LLM_PY, NEMOTRON_MODEL],
 }
 
 # the languages Qwen3-ASR names in its config.json (support_languages)
@@ -407,6 +417,19 @@ TOOLS: list[dict[str, Any]] = [
                 help="Its sound track is transcribed. Music under the voice makes the text worse.",
             ),
             field(
+                "model",
+                "Model",
+                "select",
+                default="qwen3-asr",
+                options=opts(
+                    [
+                        ("qwen3-asr", "Qwen3-ASR 0.6B (3 GB)"),
+                        ("nemotron", "Nemotron 3.5 Transcribe (29 GB)"),
+                    ]
+                ),
+                help="Nemotron: fewer errors, needs a 48 GB Mac.",
+            ),
+            field(
                 "language",
                 "Language",
                 "select",
@@ -422,6 +445,13 @@ TOOLS: list[dict[str, Any]] = [
                 "checkbox",
                 default=False,
                 help="Also writes transcript.srt and transcript.vtt; a line can be about 1 s early or late.",
+            ),
+            field(
+                "speakers",
+                "Speakers",
+                "checkbox",
+                default=False,
+                help="Nemotron only, up to 5 min.",
             ),
         ],
     },
@@ -1318,7 +1348,14 @@ def subtitle_cues(path: Path) -> list[subtitles.Cue]:
 
 def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) -> None:
     """Checks that need more than the field rules, run when a job is submitted. Raises ValueError (shown to the user)."""
-    missing = [p for p in REQUIRES.get(tool, []) if not p.exists()]
+    picked = [
+        p
+        for (t, name, value), paths in CHOICE_REQUIRES.items()
+        if t == tool and str(params.get(name)) == value
+        for p in paths
+    ]
+    needs = picked or REQUIRES.get(tool, [])
+    missing = [p for p in needs if not p.exists()]
     if missing:
         raise ValueError(
             f"Not installed: {', '.join(map(str, missing))}. Open Models to install it, "
@@ -1348,6 +1385,21 @@ def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) ->
         and not has_audio(files["audio"][0])
     ):
         raise ValueError("The file has no sound track.")
+    if (
+        tool == "voice.transcribe"
+        and str(params.get("speakers", "false")).lower() == "true"
+    ):
+        if str(params.get("model")) != "nemotron":
+            raise ValueError("Speakers: only with the model Nemotron 3.5 Transcribe.")
+        if files.get("audio"):
+            try:
+                length = media_seconds(files["audio"][0])
+            except (subprocess.CalledProcessError, ValueError, OSError):
+                raise ValueError("The file could not be read as audio.") from None
+            if length > SPEAKERS_MAX:
+                raise ValueError(
+                    f"Speakers: at most {SPEAKERS_MAX / 60:g} min of audio (it is {length / 60:.1f} min)."
+                )
     if tool == "video.a2v" and files.get("audio"):
         try:
             speech = media_seconds(files["audio"][0])
@@ -1535,19 +1587,20 @@ def plan(
             and (HF_HUB / f"models--{SUB_ALIGNER.replace('/', '--')}").is_dir()
             else None
         )
-        spec.write_text(
-            json.dumps(
-                {
-                    "audio": str(speech),
-                    "language": None if language == "auto" else language,
-                    "subtitles": subs,
-                    "aligner": aligner,
-                    "out": str(out),
-                }
-            )
-        )
+        job = {
+            "audio": str(speech),
+            "language": None if language == "auto" else language,
+            "subtitles": subs,
+            "aligner": aligner,
+            "out": str(out),
+        }
+        python = DRAMA_PY
+        if str(params.get("model")) == "nemotron":
+            job["model"], python = str(NEMOTRON_MODEL), LLM_PY
+            job["speakers"] = str(params.get("speakers", "false")).lower() == "true"
+        spec.write_text(json.dumps(job))
         return Plan(
-            [[str(DRAMA_PY), str(APP / "runners" / "transcribe.py"), str(spec)]],
+            [[str(python), str(APP / "runners" / "transcribe.py"), str(spec)]],
             offline,
         )
     if tool == "music.ace":

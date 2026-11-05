@@ -168,6 +168,28 @@ def test_every_required_path_of_every_tool_is_in_the_catalog():
         assert any(not m.manual for m in entries), tool
 
 
+def test_every_path_of_a_form_choice_is_in_the_catalog():
+    for (tool, name, value), required in tools.CHOICE_REQUIRES.items():
+        values = [
+            o["value"]
+            for f in tools.BY_ID[tool]["fields"]
+            if f["name"] == name
+            for o in f["options"]
+        ]
+        assert value in values, (tool, name, value)
+        entries = [
+            m for m in models.MODELS if tool in m.tools and m.choice == (name, value)
+        ]
+        entries += [models.BY_ID[m.needs] for m in entries if m.needs]
+        checked = [
+            q
+            for m in entries
+            for q in [models.target(m), *(models.target(m) / f for f in m.files)]
+        ]
+        for p in required:
+            assert any(q == p or p in q.parents for q in checked), (tool, value, p)
+
+
 def test_catalog_names_only_known_tools():
     for m in models.MODELS:
         assert set(m.tools) <= set(tools.BY_ID), m.id
