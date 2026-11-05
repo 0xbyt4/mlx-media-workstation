@@ -138,6 +138,45 @@ def test_write_file_can_be_allowed_for_the_chat(client, folder):
     assert saved(client, cid)["agent"]["grants"] == ["write_file"]
 
 
+def test_a_library_output_is_saved_in_the_folder_after_approval(
+    client, folder, ws, tmp_path
+):
+    job = "20261103-110000-beef"  # the fake Workstation's done job
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "image.png").write_bytes(PNG)
+    ws.outputs[(job, "image.png")] = tmp_path / "out" / "image.png"
+    cid = agent_chat(client)
+    grant(cid, folder)
+    ref = f"library:{job}/image.png"
+    steps = script(
+        [call("export_from_workspace", path=ref, to="fox.png")],
+        [
+            call("search_library", query="fox")
+        ],  # its result is untrusted: the chat is tainted
+        [call("export_from_workspace", path=ref, to="fox-2.png")],
+        "RESULT",
+    )
+    t, resp = start(client, cid, steps)
+    ask = pending(cid)
+    assert ask["name"] == "export_from_workspace" and ask["risk"] == 2
+    assert ask["chat_scope"] is True and ask["label"] == "Save to your folder"
+    assert ask["describe"] == (
+        f"Copies '{ref}' from the Library into the granted folder as 'fox.png'."
+    )
+    assert not (folder / "fox.png").exists()  # not before the approval
+    approve(client, cid, ask["id"], "chat")
+    # allowed in this chat, but a tainted chat asks again before a write
+    again = pending(cid, 2)
+    assert again["name"] == "export_from_workspace" and "Untrusted" in again["reason"]
+    approve(client, cid, again["id"], "deny")
+    t.join(5)
+    assert (folder / "fox.png").read_bytes() == PNG
+    assert not (folder / "fox-2.png").exists()
+    res = next(e for e in events(resp["r"]) if e["event"] == "tool_result")
+    assert res["status"] == "ok" and "from the Library to fox.png" in res["content"]
+    assert res["files"] == [{"path": "fox.png", "url": "", "kind": "saved"}]
+
+
 def test_the_tools_menu_names_what_the_file_tools_do(client, reg):
     cid = agent_chat(client)
     view = client.get(f"/api/chats/{cid}/agent").json()

@@ -38,7 +38,7 @@ the tools in the chat's tools array.
 | `write_file` | R2 | Creates a new text file in the granted folder. Never overwrites. |
 | `edit_file` | R3 | Changes an existing text file in the granted folder: an exact replacement or the whole text. The approval card shows the diff. A copy of the old file goes to the work folder first. |
 | `copy_to_workspace` | R1 | Copies a file of any type (at most 500 MB) from the granted folder into the chat's work folder, for `run_python`. |
-| `export_from_workspace` | R2 | Copies a file from the work folder into the granted folder, under a new name. |
+| `export_from_workspace` | R2 | Copies a file from the work folder, or a media job's output (`library:<job id>/<file name>`), into the granted folder, under a new name. |
 | `media_info` | R1 | Duration, size, resolution, frame rate, codecs, channels and sample rate of an image, audio or video file (ffprobe). |
 | `view_image` | R1 | Lets the model see an image: a copy of at most 1280 pixels on its long side goes into the next model request. |
 | `web_search` | R2 | Searches the web. Sends the query off this Mac. |
@@ -236,7 +236,11 @@ of `edit_file` write in the chat's work folder (`outputs/chats/<id>/ws`). The ru
 5. It writes the new text atomically.
 
 `export_from_workspace` copies images, audio, video, PDF, CSV, TSV, XLSX, DOCX, PPTX and Parquet files up to 500 MB.
-Every other file must be UTF-8 text up to 1 MB. `copy_to_workspace` copies any type up to 500 MB. Both check that
+Every other file must be UTF-8 text up to 1 MB. Its `path` is a file in the work folder (also as `work:<path>`) or a
+Library reference, `library:<job id>/<file name>`. A Library reference must name a listed output of a finished job,
+as `job_status` and `search_library` show it. The tool opens that file with `O_NOFOLLOW`, so a link is never copied.
+The approval card says where the file comes from: the work folder or the Library. So "make an image and save it in my
+folder" takes three calls: `create_job`, `wait_for_job`, then `export_from_workspace`. `copy_to_workspace` copies any type up to 500 MB. Both check that
 1 GB of disk stays free. `copy_to_workspace` also checks that the work folder stays under the sandbox's limit
 (500 MB), so `run_python` still runs.
 
@@ -975,9 +979,11 @@ The loop and the worker catch the mistakes that a 27B model makes most:
 |---|---|
 | An unknown tool name | The tool message names the nearest names and the tools in the array. |
 | Invalid arguments | The tool message gives the error and the tool's parameters as compact JSON (at most 1,500 characters). |
-| A malformed call | The tool message gives the error and the tool's parameters. The first malformed call of an answer gets one extra step: that step does not count against the step limit (one automatic retry). |
+| A malformed call | The tool message gives the error and the tool's parameters. When one parameter is to blame, the error names it and the place in it (for example JSON that is not valid). The next request shows the model the call as it wrote it, not an empty call. The first malformed call of an answer gets one extra step: that step does not count against the step limit (one automatic retry). |
+| A bare size in JSON | Qwen often writes `"size": 1344x768` without quotes in `create_job`'s `fields`. That is never valid JSON. When a call does not parse, the worker puts such a size in quotes in each object or array parameter, outside JSON strings, and parses the call again. Text parameters stay as written. |
 | A call in the reasoning | When the answer has no call, the worker takes the complete call blocks at the end of the reasoning. When the answer has no text either, it takes every complete call block in the reasoning, each one once. When the reasoning ends inside a call (the thinking budget cut it), that call comes back as a malformed call. A call in the reasoning of an answer with text is a draft: it does not run. |
 | The same call again | The repeat rule (step 4 above): the second identical call does not run, the third one ends the answer. |
+| The same failing call again | A call that failed (an error or a refusal) runs again once, and its result adds that it failed the same way before. The third identical failure does not run and ends the answer (`finish` `repeat`, a note). For a malformed call, "identical" means the same text. An `ok` result of any call starts the count again. |
 | The same text again and again | When a step's reasoning or content ends with one block repeated 4 times or more, 400 characters or more in all, the loop cancels the step and ends the answer (`finish` `repeat`, a note). The saved message keeps the first block and a marker instead of the repeats, so the model never reads the loop again. |
 
 The repeat rule works on calls; the text guard works on the text of one step. Neither one needs the other. A retry

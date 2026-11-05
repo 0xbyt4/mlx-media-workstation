@@ -240,6 +240,20 @@ def _copier(fd: int, size: int):
     return write
 
 
+def open_output(port: WorkstationPort, ref: str) -> tuple[int, os.stat_result, str]:
+    """An open descriptor of the output that a "library:<job id>/<file name>" reference names, its stat and its file
+    name, with the file tools' checks (a regular file, O_NOFOLLOW). The caller closes the descriptor."""
+    job_id, _, name = ref.partition(":")[2].strip().partition("/")
+    path = port.output_file(job_id, name) if name else None
+    if path is None:
+        raise ToolError(
+            f"{ref}: not an output of a finished job. Find outputs with search_library or job_status."
+        )
+    root = os.path.realpath(path.parent)
+    fd, st = file_tools.open_file(os.path.join(root, path.name), root)
+    return fd, st, path.name
+
+
 def _refs(name: str, value: Any, ref_help: str = REF_HELP) -> list[str]:
     refs = [value] if isinstance(value, str) else value
     if not isinstance(refs, list) or not all(isinstance(r, str) for r in refs):
@@ -324,16 +338,8 @@ def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
         if not sep or source not in SOURCES or not rest:
             raise ToolError(f"{ref!r}: not a file reference. Give {REF_HELP}.")
         if source == "library":
-            job_id, _, name = rest.partition("/")
-            path = port.output_file(job_id, name) if name else None
-            if path is None:
-                raise ToolError(
-                    f"{ref}: not an output of a finished job. Find outputs with search_library or job_status."
-                )
-            root = os.path.realpath(path.parent)
-            real = os.path.join(root, path.name)
-            fd, st = file_tools.open_file(real, root)
-            return fd, InputFile(path.name, st.st_size, _copier(fd, st.st_size))
+            fd, st, name = open_output(port, ref)
+            return fd, InputFile(name, st.st_size, _copier(fd, st.st_size))
         try:
             root = _work_root(ctx) if source == "work" else file_tools._root(ctx)
             real = file_tools.resolve(root, rest)

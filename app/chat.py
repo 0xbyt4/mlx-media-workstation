@@ -181,6 +181,12 @@ NOTE_REPEAT = (
     "Rephrase the request or change the tools."
 )
 NOTE_LOOP = "The agent stopped: it wrote the same text again and again. Send the message again, or rephrase it."
+NOTE_FAILED = "The agent stopped: the same tool call failed three times. Rephrase the request or change the tools."
+# added to the result of a call that failed the same way a second time in an answer (Turn.failure)
+FAILED_AGAIN = (
+    " This call failed the same way before in this answer. Change its arguments, or tell the user what went wrong: "
+    "a third identical call ends the answer."
+)
 # what replaces the repeats of a looped text in the saved answer (the first block stays)
 LOOP_MARK = "[The app removed {times} more copies of the text above: the model repeated itself.]"
 # the result of a call made a second time with the same arguments: it does not run again (Turn.call)
@@ -421,9 +427,12 @@ def agent_prompt(lay: "Layout") -> str:
         else "No folder is granted to this chat. To read files, the user must grant one in this chat's Tools menu."
     )
     if "create_job" in names:
+        files += " Save a text result, such as a transcript, with write_file."
         files += (
-            " Save a text result, such as a transcript, with write_file. A file that a media job made stays in the "
-            "Library: give the user its Library reference."
+            " To put a file that a media job made into the user's folder, call export_from_workspace with its "
+            "Library reference as path."
+            if "export_from_workspace" in lay.state["tools"]
+            else " A file that a media job made stays in the Library: give the user its Library reference."
         )
     off_line = (
         f"\n- These tools are off in this chat: {', '.join(lay.off)}. Never call them. When the task needs one, tell "
@@ -1208,7 +1217,11 @@ def model_input(
                     {
                         "id": c.get("id", ""),
                         "name": c.get("name") or "invalid",
-                        "arguments": c.get("arguments") or {},
+                        # a call that did not parse shows the text the model wrote, so it can see what to fix
+                        "arguments": c.get("arguments")
+                        or (
+                            llm.llm_worker.raw_params(c["raw"]) if c.get("raw") else {}
+                        ),
                     }
                     for c in msg["tool_calls"]
                 ]
@@ -1532,6 +1545,8 @@ class Turn:
         # the calls that returned ok -> 1, or 2 after a repeat of it, for the repeat check (call); cleared after a
         # call that changes state ran
         self.seen: dict[str, int] = {}
+        # the calls that failed (error or refused) -> how often, since the last ok result: a third one ends the answer
+        self.failed: dict[str, int] = {}
         self.steps = 0
         self.calls = 0  # tool calls over all steps
         self.generated = 0  # tokens over all steps
@@ -1779,6 +1794,20 @@ class Turn:
                 call, "skipped", "Not run: the answer reached its time limit.", describe
             )
             return ("timeout", self.note_timeout())
+        key = json.dumps([name, args], sort_keys=True, ensure_ascii=False)
+        # a call that did not parse is the same call when its text is the same
+        if call.get("error"):
+            key = json.dumps(
+                [name, call.get("raw") or call["error"]], ensure_ascii=False
+            )
+        if self.failed.get(key, 0) >= 2:
+            self.result(
+                call,
+                "skipped",
+                "Not run: this call failed twice in this answer with the same arguments.",
+                describe,
+            )
+            return ("repeat", NOTE_FAILED)
         if call.get("error"):
             expected = ""
             if tool is not None:
@@ -1788,11 +1817,10 @@ class Turn:
                 call,
                 "error",
                 f"{call['error']}. Write the call again: the function name, then every required parameter in its own "
-                f"parameter block.{expected}",
+                f"parameter block.{self.failure(key)}{expected}",
                 describe,
             )
             return None
-        key = json.dumps([name, args], sort_keys=True, ensure_ascii=False)
         made = self.seen.get(key, 0)
         # the second time: point to the first result instead of running it again
         if made == 1:
@@ -1817,7 +1845,7 @@ class Turn:
                 reason = f"Call {name} directly, not through tool_call."
             elif tool is None:
                 reason = self.catalog.unknown(name)
-            self.result(call, "refused", reason, describe)
+            self.result(call, "refused", reason + self.failure(key), describe)
             return None
         ctx = Context(
             self.chat_id,
@@ -1898,6 +1926,10 @@ class Turn:
             plan = plan_tool.items(res.args)
             self.emit({"event": "plan", "id": call["id"], "items": plan})
         text, made = res.full, list(res.files)
+        if res.status == "error":
+            text += self.failure(key)
+        elif res.status == "ok":
+            self.failed.clear()  # the answer made progress: an older failure may not repeat
         if res.truncated and spill.NAME in self.reg.tools:
             # the whole result goes to the work folder; the model gets its start and the file's name
             path = spill.save(work_dir(CHATS, self.chat_id), str(call["id"]), res.full)
@@ -1917,6 +1949,11 @@ class Turn:
             job=res.job,
         )
         return ("cancelled", "") if res.status == "cancelled" else None
+
+    def failure(self, key: str) -> str:
+        """Count a failed call; the note for its result the second time it failed (FAILED_AGAIN), else ""."""
+        self.failed[key] = self.failed.get(key, 0) + 1
+        return FAILED_AGAIN if self.failed[key] == 2 else ""
 
     def ask(
         self,

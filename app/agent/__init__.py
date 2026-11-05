@@ -100,7 +100,7 @@ def build_registry(
     if port is not None:
         tools += ws_tools.build(port)
     tools += file_tools.build()
-    tools += write_tools.build((limits or Limits()).disk_mb)
+    tools += write_tools.build((limits or Limits()).disk_mb, port)
     tools += media_tools.build(port)
     tools += web_tools.build(settings, net or Net())
     box = sandbox if sandbox is not None else SeatbeltSandbox(settings.python)

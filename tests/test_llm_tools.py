@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import config, llm, llm_worker, models
+from tests.fake_llm_worker import parse as fake_parse
 
 FAKE = Path(__file__).with_name("fake_llm_worker.py")
 WEATHER = {
@@ -134,6 +135,85 @@ def test_a_malformed_call_gets_an_error_and_the_worker_goes_on():
     assert "error" not in good and good["arguments"]["city"] == "Izmir"
     assert done["finish"] == "tool_calls"
     assert llm.complete(user("hi"))["content"] == "Hello world"
+
+
+JOB_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "create_job",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string"},
+                "fields": {"type": "object"},
+                "note": {"type": "string"},
+                "seconds": {"type": "integer"},
+            },
+        },
+    },
+}
+
+
+def job_call(*params: tuple[str, str]) -> str:
+    body = "".join(f"<parameter={k}>\n{v}\n</parameter>\n" for k, v in params)
+    return f"\n<function=create_job>\n{body}</function>\n"
+
+
+def test_a_bare_size_in_an_object_parameter_is_quoted():
+    """Qwen writes "size": 1344x768 inside create_job's fields: never valid JSON, so the worker quotes it and parses
+    again. A text parameter, and a size inside a JSON string, stay as written."""
+    raw = job_call(
+        ("tool", "image.klein"),
+        ("fields", '{"prompt": "a 640x480 poster, size: 1344x768", "size": 1344x768}'),
+        ("note", "size: 1344x768, as asked"),
+    )
+    [c] = llm_worker.parse_calls([(raw, True)], fake_parse, [JOB_TOOL])
+    assert "error" not in c, c
+    assert c["arguments"] == {
+        "tool": "image.klein",
+        "fields": {"prompt": "a 640x480 poster, size: 1344x768", "size": "1344x768"},
+        "note": "size: 1344x768, as asked",
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "fixed"),
+    [
+        ('{"size": 1344x768}', '{"size": "1344x768"}'),
+        ('{"sizes": [640x480, 1024X1024]}', '{"sizes": ["640x480", "1024X1024"]}'),
+        (
+            '{"a": "x 12x34 \\" 5x6"}',
+            '{"a": "x 12x34 \\" 5x6"}',
+        ),  # inside a string, with an escaped quote
+        ('{"n": 0x1A}', '{"n": 0x1A}'),  # a hex number is not a size
+        ('{"v": 1.5x2}', '{"v": 1.5x2}'),  # nor a decimal
+        ('{"size": 1344}', '{"size": 1344}'),
+    ],
+)
+def test_quote_sizes_changes_only_bare_sizes(text, fixed):
+    assert llm_worker.quote_sizes(text) == fixed
+
+
+def test_a_call_that_does_not_parse_names_the_parameter():
+    broken = job_call(("tool", "image.klein"), ("fields", '{"prompt": "a boat"'))
+    [c] = llm_worker.parse_calls([(broken, True)], fake_parse, [JOB_TOOL])
+    assert c["arguments"] == {} and c["raw"] == broken
+    assert c["error"].startswith(
+        "Invalid tool call: the parameter fields is not valid JSON ("
+    )
+    assert 'text value in double quotes, for example "size": "1344x768"' in c["error"]
+    [c] = llm_worker.parse_calls(
+        [(job_call(("tool", "x"), ("seconds", "two")), True)], fake_parse, [JOB_TOOL]
+    )
+    assert (
+        c["error"]
+        == "Invalid tool call: the parameter seconds must be a number, not 'two'"
+    )
+    # the text the model wrote, for the next request
+    assert llm_worker.raw_params(broken) == {
+        "tool": "image.klein",
+        "fields": '{"prompt": "a boat"',
+    }
 
 
 def test_a_call_cut_off_by_max_tokens_is_an_error():

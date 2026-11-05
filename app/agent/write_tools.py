@@ -6,7 +6,8 @@
   copied to the chat's work folder (backups/).
 - copy_to_workspace (R1): a copy of a file of any type from the granted folder into the chat's work folder, so
   run_python can process it.
-- export_from_workspace (R2): a copy of a file from the work folder into the granted folder, under a new name.
+- export_from_workspace (R2): a copy of a file from the work folder, or of a media job's output in the Library, into
+  the granted folder, under a new name.
 
 Every path rule is in app/agent/safe_fs.py: no links, no hidden or secret names, no executable types, atomic writes.
 """
@@ -19,9 +20,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.agent import safe_fs
+from app.agent import safe_fs, ws_tools
 from app.agent.file_tools import _rel, _root, human, open_file, resolve
 from app.agent.policy import Risk
+from app.agent.ports import WorkstationPort
 from app.agent.registry import Context, Output, Tool, ToolError, digest, visible_lines
 from app.agent.sandbox import dir_size
 
@@ -200,7 +202,32 @@ def plan_edit(args: dict[str, Any], ctx: Context) -> Edit:
     return Edit(rel, parent, name, old, new, data, st, count)
 
 
-def build(limits_disk_mb: int) -> list[Tool]:
+LIBRARY = "library:"  # export_from_workspace's path for a media job's output (ws_tools.REF_HELP)
+WORK = "work:"
+
+
+def export_source(path: str) -> str:
+    """export_from_workspace's path, without the "work:" prefix of a file reference to the work folder."""
+    path = path.strip()
+    return path[len(WORK) :].strip() if path.startswith(WORK) else path
+
+
+def export_target(args: dict[str, Any]) -> str:
+    """The path in the granted folder: `to`, or the source's file name."""
+    return (
+        args.get("to")
+        or export_source(str(args.get("path", ""))).strip("/").split("/")[-1]
+    )
+
+
+def export_origin(path: str) -> str:
+    """Where export_from_workspace copies from, for the approval card and the result."""
+    return (
+        "the Library" if export_source(path).startswith(LIBRARY) else "the work folder"
+    )
+
+
+def build(limits_disk_mb: int, port: WorkstationPort | None = None) -> list[Tool]:
     work_budget = (
         limits_disk_mb * 1024 * 1024
     )  # run_python stops when the work folder grows past this
@@ -314,12 +341,19 @@ def build(limits_disk_mb: int) -> list[Tool]:
 
     def export_from_workspace(args: dict[str, Any], ctx: Context) -> Output:
         root = _root(ctx)
-        src = args["path"]
-        target = args.get("to") or src.strip().strip("/").split("/")[-1]
-        parent, name = safe_fs.new_target(root, target)
+        src = export_source(args["path"])
+        parent, name = safe_fs.new_target(root, export_target(args))
         rel = _rel(os.path.join(parent, name), root)
         binary = Path(name).suffix.lower() in safe_fs.BINARY_TYPES
-        fd, st = safe_fs.open_work_file(ctx.work_dir, src)
+        library = src.startswith(LIBRARY)
+        if library and port is None:
+            raise ToolError(
+                f"{src}: this app has no Library, so it has no job outputs."
+            )
+        if library:
+            fd, st, _ = ws_tools.open_output(port, src)
+        else:
+            fd, st = safe_fs.open_work_file(ctx.work_dir, src)
         try:
             if st.st_mode & safe_fs.EXEC_BITS:
                 raise ToolError(
@@ -352,7 +386,7 @@ def build(limits_disk_mb: int) -> list[Tool]:
         finally:
             os.close(fd)
         return Output(
-            f"Copied {src} from the work folder to {rel} ({human(st.st_size)}).",
+            f"Copied {src} from {export_origin(src)} to {rel} ({human(st.st_size)}).",
             saved=[rel],
         )
 
@@ -461,8 +495,10 @@ def build(limits_disk_mb: int) -> list[Tool]:
         Tool(
             name="export_from_workspace",
             description=(
-                "Copy a file from this chat's work folder (what run_python wrote) into the granted folder, under a "
-                "new name: it never overwrites. to: its path in the granted folder (default: the same name). "
+                "Copy a file from this chat's work folder (what run_python wrote), or a media job's output (path = "
+                '"library:<job id>/<file name>", as job_status and search_library show it), into the granted '
+                "folder, under a new name: it never overwrites. to: its path in the granted folder (default: the "
+                "same name). "
                 "Images, audio, video, PDF, CSV and office files up to 500 MB; other files must be UTF-8 text up "
                 "to 1 MB. No hidden names, no executable or script types." + folder_note
             ),
@@ -480,11 +516,12 @@ def build(limits_disk_mb: int) -> list[Tool]:
             writes=True,
             needs_folder=True,
             explain=lambda a: (
-                f"Copies {a.get('path', '')!r} from the chat's work folder into the granted folder as "
-                f"{a.get('to') or str(a.get('path', '')).strip('/').split('/')[-1]!r}."
+                f"Copies {export_source(str(a.get('path', '')))!r} from "
+                f"{export_origin(str(a.get('path', '')))} into the granted folder as {export_target(a)!r}."
             ),
             effect=(
-                "Saves a file from the chat's work folder into the folder you grant, under a new name. Asks first; "
+                "Saves a file from the chat's work folder or a media job's output into the folder you grant, under a "
+                "new name. Asks first; "
                 "you can allow it for the whole chat. Once web pages or files are in the chat, it asks before every "
                 "call."
             ),

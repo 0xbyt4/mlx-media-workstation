@@ -1,5 +1,5 @@
 """The tools that write files: write_file, edit_file, copy_to_workspace and export_from_workspace (app/agent/write_tools.py,
-app/agent/safe_fs.py). Only inside the granted folder and the chat's work folder, never through a link, never a hidden,
+app/agent/safe_fs.py), also of a media job's output in the Library. Only inside the granted folder and the chat's work folder, never through a link, never a hidden,
 secret or executable file, atomic, with a backup before a change; and read_file's line ranges.
 
 Every file here is a temp file; the "secrets" are dummy text."""
@@ -23,6 +23,7 @@ from app.agent import (
     write_tools,
 )
 from app.agent.registry import visible_lines
+from tests.fake_workstation import FakeWorkstation
 
 
 @pytest.fixture
@@ -650,6 +651,137 @@ def test_export_does_not_follow_a_link_in_the_work_folder(
         r = reg.call("export_from_workspace", args, ctx)
         assert r.status == "error", args
     assert not (folder / "leak.txt").exists() and not (folder / "p.txt").exists()
+
+
+# ---------- export_from_workspace: a media job's output ----------
+
+JOB = "20261103-110000-beef"  # the done job of the fake Workstation, with image.png
+PICTURE = b"\x89PNG\r\n\x1a\n" + b"made by a job" * 10
+
+
+@pytest.fixture
+def lib(tmp_path: Path) -> tuple[Registry, FakeWorkstation]:
+    """The tools with a fake Workstation whose done job has image.png on disk."""
+    port = FakeWorkstation(tmp_path / "out")
+    (tmp_path / "out" / JOB).mkdir(parents=True)
+    (tmp_path / "out" / JOB / "image.png").write_bytes(PICTURE)
+    return build_registry(port, Settings()), port
+
+
+def test_export_saves_a_library_output_in_the_folder(
+    lib: tuple[Registry, FakeWorkstation], ctx: Context, folder: Path
+) -> None:
+    reg, _ = lib
+    r = call(reg, ctx, "export_from_workspace", path=f"library:{JOB}/image.png")
+    assert r.status == "ok", r.content
+    assert r.content == (
+        f"Copied library:{JOB}/image.png from the Library to image.png (138 B)."
+    )
+    assert r.saved == ["image.png"] and (folder / "image.png").read_bytes() == PICTURE
+    r = call(
+        reg,
+        ctx,
+        "export_from_workspace",
+        path=f" library:{JOB}/image.png ",
+        to="notes/fox.png",
+    )
+    assert r.status == "ok" and (folder / "notes" / "fox.png").read_bytes() == PICTURE
+    assert not leftovers(folder)
+    # the approval card says where the file comes from and its name in the folder
+    tool = reg.get("export_from_workspace")
+    assert tool.describe({"path": f"library:{JOB}/image.png", "to": "a.png"}) == (
+        f"Copies 'library:{JOB}/image.png' from the Library into the granted folder as 'a.png'."
+    )
+    assert tool.describe({"path": "work:out/plot.png"}) == (
+        "Copies 'out/plot.png' from the work folder into the granted folder as 'plot.png'."
+    )
+
+
+def test_export_takes_a_work_reference(
+    reg: Registry, ctx: Context, folder: Path
+) -> None:
+    ctx.work_dir.mkdir()
+    (ctx.work_dir / "plot.png").write_bytes(PICTURE)
+    r = call(reg, ctx, "export_from_workspace", path="work:plot.png")
+    assert r.status == "ok", r.content
+    assert r.content.startswith("Copied plot.png from the work folder to plot.png")
+    assert (folder / "plot.png").read_bytes() == PICTURE
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        # no overwrite: the same rule as write_file
+        ({"path": f"library:{JOB}/image.png", "to": "photo.png"}, "the file exists"),
+        # no path out of the folder, no hidden or executable name
+        ({"path": f"library:{JOB}/image.png", "to": "../x.png"}, "outside"),
+        ({"path": f"library:{JOB}/image.png", "to": "/tmp/x.png"}, "outside"),
+        ({"path": f"library:{JOB}/image.png", "to": ".x.png"}, "hidden or secret"),
+        ({"path": f"library:{JOB}/image.png", "to": "x.command"}, "can run code"),
+        ({"path": f"library:{JOB}/image.png", "to": "nowhere/x.png"}, "no such file"),
+        # an image saved under a text name must be UTF-8 text
+        ({"path": f"library:{JOB}/image.png", "to": "x.txt"}, "not UTF-8 text"),
+        # a reference that names no output of a done job
+        ({"path": f"library:{JOB}/nope.png"}, "not an output of a finished job"),
+        (
+            {"path": "library:20261103-120000-abcd/image.png"},
+            "not an output of a finished job",
+        ),  # still running
+        ({"path": f"library:{JOB}", "to": "x.png"}, "not an output of a finished job"),
+        ({"path": "library:", "to": "x.png"}, "not an output of a finished job"),
+    ],
+)
+def test_export_refuses_a_bad_library_save(
+    lib: tuple[Registry, FakeWorkstation],
+    ctx: Context,
+    folder: Path,
+    args: dict,
+    message: str,
+) -> None:
+    reg, _ = lib
+    before = sorted(p.name for p in folder.rglob("*"))
+    r = reg.call("export_from_workspace", args, ctx)
+    assert r.status == "error" and message in r.content, r.content
+    assert sorted(p.name for p in folder.rglob("*")) == before
+
+
+def test_export_of_a_library_output_does_not_write_through_a_link(
+    lib: tuple[Registry, FakeWorkstation], ctx: Context, folder: Path, tmp_path: Path
+) -> None:
+    reg, _ = lib
+    (tmp_path / "elsewhere").mkdir()
+    (folder / "out").symlink_to(tmp_path / "elsewhere")
+    (folder / "inner").symlink_to(folder / "notes")
+    for to, message in (
+        ("out/fox.png", "outside"),
+        ("inner/fox.png", "through a link"),
+    ):
+        r = call(
+            reg, ctx, "export_from_workspace", path=f"library:{JOB}/image.png", to=to
+        )
+        assert r.status == "error" and message in r.content, r.content
+    assert not list((tmp_path / "elsewhere").iterdir())
+    assert not (folder / "notes" / "fox.png").exists()
+
+
+def test_export_does_not_copy_a_library_output_that_is_a_link(
+    lib: tuple[Registry, FakeWorkstation], ctx: Context, folder: Path, tmp_path: Path
+) -> None:
+    """A link in place of an output (the server refuses it too, library.output_path) is never followed."""
+    reg, port = lib
+    (tmp_path / "out" / JOB / "link.png").symlink_to(tmp_path / "private.txt")
+    port.outputs[(JOB, "image.png")] = tmp_path / "out" / JOB / "link.png"
+    r = call(reg, ctx, "export_from_workspace", path=f"library:{JOB}/image.png")
+    assert r.status == "error" and "cannot open" in r.content, r.content
+    assert not (folder / "image.png").exists()
+
+
+def test_export_without_a_workstation_has_no_library(
+    reg: Registry, ctx: Context, folder: Path
+) -> None:
+    r = call(reg, ctx, "export_from_workspace", path=f"library:{JOB}/image.png")
+    assert r.status == "error" and "has no Library" in r.content
+    assert not (folder / "image.png").exists()
 
 
 # ---------- read_file ranges ----------
