@@ -874,6 +874,12 @@ U+1F000 to U+1FFFF. Arrows, box drawing, math signs and (c) stay allowed. Inside
 marker token to the end marker token) nothing is banned: the arguments are data, such as the text of a file that
 `write_file` writes. A request with `"allow_emoji": true` (`llm.generate(allow_emoji=True)`) has no ban.
 
+With thinking off, the worker applies the model card's presence penalty itself (`Presence` in `app/llm_worker.py`,
+`PRESENCE`: 1.5 over the last 20 tokens). It counts only the text that the answer writes outside the tool-call
+blocks. It does not penalize a token inside a call block or the token right after a call's end marker. mlx-vlm's
+own penalty also counted the prompt and the calls. Then the "\n" that starts the next call always had the penalty,
+but the end of the turn never had it, so the model often stopped after one call.
+
 ### The prompt and the prompt cache
 
 The worker keeps a chat's prompt cache only while each new prompt extends the one before: Qwen3.8's linear-attention

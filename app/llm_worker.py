@@ -50,15 +50,10 @@ THINK_END = 248069  # the '</think>' token of Qwen3.5-3.8
 MAX_PIXELS = (
     1024 * 1024
 )  # a 4K frame costs 8,160 prompt tokens unscaled, about 1,000 at this size
-# sampling settings from the Qwen3.8 model card, per mode; mlx-vlm applies the presence penalty to the last 20 tokens
+# sampling settings from the Qwen3.8 model card, per mode; the card's presence penalty (thinking off) is Presence
 THINKING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0}
-NO_THINKING = {
-    "temperature": 0.7,
-    "top_p": 0.8,
-    "top_k": 20,
-    "min_p": 0.0,
-    "presence_penalty": 1.5,
-}
+NO_THINKING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0}
+PRESENCE = (1.5, 20)  # the penalty and the count of written tokens it looks back at
 
 # Qwen3.8's tool-call markers (mlx-vlm's qwen3_coder parser); the worker takes them from the parser module
 TOOL_START, TOOL_END = "<tool_call>", "</tool_call>"
@@ -584,6 +579,72 @@ class BanIds:
         return self.xp.where(self.mask, -float("inf"), logits)
 
 
+class Presence:
+    """The presence penalty (one per request): subtract `penalty` from the logit of each token that is in the last
+    `size` text tokens of the answer. Like NoEmoji it keeps its state in arrays of xp, and it sees each new token once,
+    in order, so it also works in a speculative loop that calls the processors once for each token it keeps.
+
+    mlx-vlm's own penalty looks at the prompt and the call blocks too. Its window then always holds the "\\n" after a
+    call's end marker (the token that starts the next call) but never the end of the turn, so the model often stopped
+    after one call. Here only the text that this request writes outside the call blocks (calls: the ids of the start
+    and end markers) goes into the window. Nothing is penalized inside a call block or right after its end marker."""
+
+    def __init__(
+        self, xp: Any, penalty: float, size: int, calls: tuple[int, int] | None = None
+    ) -> None:
+        self.xp, self.penalty, self.size, self.calls = xp, penalty, size, calls
+        # the last text tokens, oldest first; an empty place holds the vocabulary width (a spare column)
+        self.window: Any = None
+        self.inside: Any = None  # whether the text is inside a call block
+        self.closed: Any = None  # whether the last token was an end marker
+
+    def __call__(self, tokens: Any, logits: Any) -> Any:
+        xp = self.xp
+        width = logits.shape[-1]
+        # the first call sees the prompt, which the answer did not write
+        if self.window is None:
+            self.window = xp.array([width] * self.size)
+            self.inside = self.closed = xp.array(False)
+        else:
+            shifted = xp.concatenate([self.window[1:], tokens[-1:]])
+            if self.calls is None:
+                self.window = shifted
+            else:
+                start, end = self.calls
+                marker = (tokens[-1] == start) | (tokens[-1] == end)
+                self.window = xp.where(self.inside | marker, self.window, shifted)
+                self.closed = tokens[-1] == end
+                self.inside = xp.where(
+                    tokens[-1] == start,
+                    True,
+                    xp.where(tokens[-1] == end, False, self.inside),
+                )
+        seen = xp.put_along_axis(
+            xp.zeros((width + 1,), dtype=logits.dtype),
+            self.window,
+            xp.array(self.penalty, dtype=logits.dtype),
+            axis=0,
+        )
+        return xp.where(self.inside | self.closed, logits, logits - seen[:width])
+
+
+def penalties(
+    xp: Any,
+    req: dict[str, Any],
+    vocab: dict[str, int],
+    marker: str,
+    end: str = TOOL_END,
+) -> list[Any]:
+    """The presence penalty of a request (Presence, PRESENCE): with thinking off only, as the model card sets it.
+    With tools, the call blocks go from `marker` to `end`."""
+    if req.get("thinking"):
+        return []
+    calls = None
+    if req.get("tools") and marker in vocab and end in vocab:
+        calls = (vocab[marker], vocab[end])
+    return [Presence(xp, *PRESENCE, calls)]
+
+
 def bans(
     xp: Any,
     req: dict[str, Any],
@@ -888,6 +949,7 @@ class Engine:
         kwargs["logits_processors"] = kwargs.get("logits_processors", []) + bans(
             self.mx, req, self.no_emoji, self.vocab, marker, end
         )
+        kwargs["logits_processors"] += penalties(self.mx, req, self.vocab, marker, end)
         state = None
         if req.get(
             "chat"
