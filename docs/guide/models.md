@@ -22,6 +22,7 @@ Each model has two parts:
 | ACE-Step 1.5 checkout | ACE-Step 1.5 turbo | ACE-Step 1.5 | about 10.1 GB | 23 GB |
 | ltx-2-mlx (video runtime) | LTX-2.5 (q8) (gated) | Text to Video, Image to Video, Voice to Video, Extend Video | about 54.1 GB | 35 GB |
 | Local LLM environment (mlx-vlm) | Qwen3.8 27B (4-bit) | Prompt help, Chat | about 16.1 GB | 18 GB |
+| Local LLM environment (mlx-vlm) | OvisOCR3 (0.8B, OCR) | Read Text (OCR) | about 1.7 GB | 6 GB |
 
 The Edit tools (Mix, Join clips and Add Subtitles) need no model. They use `ffmpeg` from Homebrew.
 

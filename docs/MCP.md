@@ -85,6 +85,7 @@ app's port (7870 by default). The app always uses 7870, so you need it only for 
 | `cancel_job` | `job_id` | not read-only, destructive, idempotent | Cancels a queued or running job that an MCP client queued. |
 | `search_library` | `query`, `limit` (1 to 30, default 10) | read-only | Finished outputs by prompt text, tool, file name or job id: the ones with the most query words first, then the newest. |
 | `transcribe_audio` | `audio` or `job_id`, `language` (default `auto`), `seconds` | not read-only, not destructive | Speech to text with Qwen3-ASR: queues a `voice.transcribe` job and waits for its text. |
+| `ocr_document` | `file` or `job_id`, `pages` (PDF only, empty = all), `output` (`markdown` or `text`), `seconds` | not read-only, not destructive | The text of an image or PDF pages with OvisOCR3: queues a `doc.ocr` job and waits for its text. |
 
 Every tool has `openWorldHint: false`: no tool reaches past this Mac. The hints come from the tool's risk level in
 `app/agent/policy.py` (`app/mcp_server.py`, `annotations`).
@@ -147,7 +148,7 @@ The app keeps all its rules for a job from MCP. The MCP server only sends the re
 | | Agent chat | MCP |
 |---|---|---|
 | Input files | `library:`, `work:` and `folder:` references | Absolute paths and `library:` references |
-| Approval | The app asks you before `create_job`, `cancel_job` and `transcribe_audio` | Your client decides. Claude Code asks before a tool that is not allowed. |
+| Approval | The app asks you before `create_job`, `cancel_job`, `transcribe_audio` and `ocr_document` | Your client decides. Claude Code asks before a tool that is not allowed. |
 | A wait | At most 300 s (120 s by default), inside the answer's 10 minutes | At most 600 s (50 s by default) |
 | A job that needs the chat model's memory | Starts after the answer; the wait returns at once | The app unloads the chat model, then the job runs; the wait waits for it |
 | `cancel_job` | Jobs that this chat queued | Jobs that an MCP client queued |
@@ -155,8 +156,8 @@ The app keeps all its rules for a job from MCP. The MCP server only sends the re
 Some clients end a tool call after about 60 s. For this reason a wait takes 50 s when you give no `seconds`. A job
 that runs longer goes on in the app: call `wait_for_job` again, or `job_status` later.
 
-Text in the results of `search_library` and `transcribe_audio` comes from outside the app (prompts, speech). Your
-agent must treat it as data, not as instructions.
+Text in the results of `search_library`, `transcribe_audio` and `ocr_document` comes from outside the app (prompts,
+speech, pages). Your agent must treat it as data, not as instructions.
 
 ## Troubleshooting
 

@@ -14,7 +14,8 @@ import {toast} from './ui.js';
 
 // "Send to" targets per output kind, in menu order: [tool id, file field]. Missing tools or fields are skipped.
 export const SEND_TARGETS = {
-  image: [['video.i2v', 'image'], ['video.a2v', 'image'], ['image.klein_edit', 'references'], ['edit.concat', 'clips']],
+  image: [['video.i2v', 'image'], ['video.a2v', 'image'], ['image.klein_edit', 'references'], ['edit.concat', 'clips'],
+    ['doc.ocr', 'file']],
   audio: [['video.a2v', 'audio'], ['edit.mix', 'music'], ['voice.drama3', 'ref0'], ['voice.drama3', 'ref1']],
   video: [['video.extend', 'video'], ['edit.mix', 'video'], ['edit.concat', 'clips'], ['edit.subtitle', 'video']],
   text: [['edit.subtitle', 'subtitles']],

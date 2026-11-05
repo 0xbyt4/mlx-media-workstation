@@ -28,6 +28,8 @@ TAKE = re.compile(r"take (\d+) seed \d+: [\d.]+ s, (.*?) \|")
 PART = re.compile(
     r"part (\d+)/(\d+):"
 )  # printed by the Transcribe runner after each part
+# printed by the Read Text runners after each page: "render i/n:" (pages.py), then "page i/n:" (ocr.py)
+OCR_PAGE = re.compile(r"(render|page) (\d+)/(\d+):")
 # speaker tags and cues in a Drama 3 script
 SPOKEN = re.compile(r"<\|[^|]*\|>|\[[^\]]*\]")
 
@@ -222,6 +224,14 @@ def parse(
             return None, None
         done, total = parts[-1]
         return "Transcribing", int(done) / int(total)
+    if tool == "doc.ocr":
+        steps = OCR_PAGE.findall(text)
+        if not steps:
+            return None, None
+        step, done, total = steps[-1]
+        if step == "render":  # seconds a page; the reading is most of the job
+            return "Preparing the pages", None
+        return "Reading", int(done) / int(total)
     return None, None
 
 
@@ -245,6 +255,11 @@ def cost(job: dict[str, Any], text: str) -> tuple[tuple[Any, ...], float] | None
         if m is None:
             return None
         return (str(p.get("hq_decoder", "false")).lower() == "true",), float(m[2])
+    if tool == "doc.ocr":  # the time grows with the pages, which the log names first
+        steps = OCR_PAGE.findall(text)
+        if not steps:
+            return None
+        return (p.get("output"),), float(steps[-1][2])
     return (), 1.0
 
 

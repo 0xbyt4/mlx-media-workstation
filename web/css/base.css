@@ -12,7 +12,7 @@
    Surfaces    .card, .banner + .banner-info | .banner-warn | .banner-err (.banner-body, .banner-actions),
                .empty (empty state), .err-box (title, cause, fixes, actions, details.tech), .log (pre),
                .confirm (inline confirm row), .menu-pop (popup menu from ui.menu())
-   Tool icon   .tool-ico + .t-image | .t-voice | .t-music | .t-video | .t-edit
+   Tool icon   .tool-ico + .t-image | .t-voice | .t-music | .t-video | .t-edit | .t-document
    Progress    .progress > .progress-fill (+ .progress.sm), .meter > span segments, .fitbar (> span, .limit)
    Files       .drop (drop zone, .drop.over while dragging), .files > .file-chip (.file-thumb, .file-info,
                .file-name, .file-meta, .ref-tag), .file-chip.bad
@@ -556,6 +556,10 @@ code,
 .t-edit {
   background: var(--c-edit-soft);
   color: var(--c-edit);
+}
+.t-document {
+  background: var(--c-doc-soft);
+  color: var(--c-doc);
 }
 .banner {
   display: flex;

@@ -22,7 +22,7 @@ const LICENCE_NOTES = {
   'OpenMDW-1.1': 'Commercial use allowed; keep the licence and its notices.',
 };
 const CHAT_GROUP = 'Chat';
-const GROUP_TITLE = {Image: 'Image', Voice: 'Voice', Music: 'Music', Video: 'Video', Edit: 'Edit', [CHAT_GROUP]: 'Chat and prompt help'};
+const GROUP_TITLE = {Image: 'Image', Voice: 'Voice', Music: 'Music', Video: 'Video', Edit: 'Edit', Document: 'Document', [CHAT_GROUP]: 'Chat and prompt help'};
 const CHAT_TITLE = 'Chat'; // the chat group in the chat profile, which has no prompt help
 const OFFLINE_TEXT = 'The Workstation server does not answer. Try again when it is back.';
 
@@ -142,7 +142,8 @@ function groupTitle(g) {
 }
 
 function groupOf(m) {
-  if (!m.tools || !m.tools.length) return CHAT_GROUP;
+  // the local LLM environment also runs Read Text, but it belongs with Chat
+  if (!m.tools || !m.tools.length || (m.features || []).includes('Chat')) return CHAT_GROUP;
   const t = s.ctx.store.get('toolsById').get(m.tools[0]);
   if (t && t.group) return t.group;
   const prefix = m.tools[0].split('.')[0];

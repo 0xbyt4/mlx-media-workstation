@@ -28,14 +28,15 @@ DRAMA_PY = PATHS.drama_python
 DRAMA_MODEL = PATHS.drama_model
 ACE_DIR = PATHS.ace_dir
 ACE_PY = ACE_DIR / ".venv" / "bin" / "python"
+QWEN_PY = PATHS.qwen_python
+OCR_MODEL = PATHS.ocr_model
 # Drama 3 checks each take with this speech recogniser, read from the Hugging Face cache
 HF_HUB = Path(
     os.environ.get("HF_HUB_CACHE")
     or Path(os.environ.get("HF_HOME", "~/.cache/huggingface")) / "hub"
 ).expanduser()
 DRAMA_ASR = HF_HUB / "models--mlx-community--Qwen3-ASR-0.6B-8bit"
-# Transcribe's other model: Nemotron 3.5 Transcribe from its folder, in the local LLM environment (mlx-audio 0.6.4)
-LLM_PY = PATHS.qwen_python
+# Transcribe's other model: Nemotron 3.5 Transcribe from its folder, in the local LLM environment (QWEN_PY, mlx-audio 0.6.4)
 NEMOTRON_MODEL = PATHS.nemotron_model
 # what each tool needs on disk; a missing one refuses the job with the path it looked for
 REQUIRES: dict[str, list[Path]] = {
@@ -49,13 +50,14 @@ REQUIRES: dict[str, list[Path]] = {
     "video.i2v": [LTX, LTX_MODEL],
     "video.a2v": [LTX, LTX_MODEL],
     "video.extend": [LTX_PY, LTX_MODEL],
+    "doc.ocr": [QWEN_PY, OCR_MODEL],
 }
 # Transcribe's Speakers (Nemotron only) runs the whole audio in one pass, whose memory grows with its length: at most
 # this many seconds, the length the measured peak covers
 SPEAKERS_MAX = 300.0
 # what a choice in a tool's form needs instead of the tool's own paths: (tool, field, value) -> paths
 CHOICE_REQUIRES: dict[tuple[str, str, str], list[Path]] = {
-    ("voice.transcribe", "model", "nemotron"): [LLM_PY, NEMOTRON_MODEL],
+    ("voice.transcribe", "model", "nemotron"): [QWEN_PY, NEMOTRON_MODEL],
 }
 
 # the languages Qwen3-ASR names in its config.json (support_languages)
@@ -213,6 +215,10 @@ BURN_FORMATS = "concat,image2,png_pipe"
 # subtitles from Transcribe with word times: Qwen3-ForcedAligner by its Hugging Face name. None (the default) until
 # the owner adds the model to the model list: the runner then times the words from short parts of the audio
 SUB_ALIGNER: str | None = None
+# Read Text (OCR): the pages of one job, the PDF render resolution, and the outputs ("output" field -> file)
+OCR_MAX_PAGES = 50
+OCR_DPI = 200
+OCR_OUTPUTS = {"markdown": "document.md", "text": "document.txt"}
 
 
 def opts(pairs: list[tuple[str, str]]) -> list[dict[str, str]]:
@@ -896,6 +902,63 @@ TOOLS: list[dict[str, Any]] = [
             ),
         ],
     },
+    {
+        "id": "doc.ocr",
+        "group": "Document",
+        "label": "Read Text (OCR)",
+        "description": "Text from a photo, a scan or PDF pages with OvisOCR3 (0.8B), as Markdown (tables, "
+        "formulas) or plain text. About 2-10 s a page.",
+        "fields": [
+            field(
+                "file",
+                "Image or PDF",
+                "file",
+                accept="image/*,.pdf",
+                required=True,
+            ),
+            field(
+                "pages",
+                "Pages",
+                "text",
+                default="",
+                help=f"PDF only. Empty = all, or e.g. 1-3, 7. At most {OCR_MAX_PAGES} a job.",
+            ),
+            field(
+                "output",
+                "Output",
+                "select",
+                default="markdown",
+                options=opts(
+                    [
+                        ("markdown", "Markdown"),
+                        ("text", "Plain text"),
+                    ]
+                ),
+            ),
+            field(
+                "dpi",
+                "PDF resolution (DPI)",
+                "number",
+                default=OCR_DPI,
+                min=100,
+                max=300,
+                step=10,
+                advanced=True,
+                help="Higher reads small print better, slower.",
+            ),
+            field(
+                "max_tokens",
+                "Max tokens a page",
+                "number",
+                default=8192,
+                min=1024,
+                max=16384,
+                step=1024,
+                advanced=True,
+                help="A page that reaches it is cut; the note says so.",
+            ),
+        ],
+    },
 ]
 BY_ID = {t["id"]: t for t in TOOLS}
 
@@ -1458,6 +1521,8 @@ def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) ->
             raise ValueError("The video file has no picture, or it could not be read.")
         if files.get("subtitles"):
             subtitle_cues(files["subtitles"][0])
+    if tool == "doc.ocr" and files.get("file"):
+        ocr_pages(params, files["file"][0])
 
 
 def plan(
@@ -1631,7 +1696,7 @@ def plan(
         }
         python = DRAMA_PY
         if str(params.get("model")) == "nemotron":
-            job["model"], python = str(NEMOTRON_MODEL), LLM_PY
+            job["model"], python = str(NEMOTRON_MODEL), QWEN_PY
             job["speakers"] = str(params.get("speakers", "false")).lower() == "true"
         spec.write_text(json.dumps(job))
         return Plan(
@@ -2037,6 +2102,8 @@ def plan(
         return plan_concat(params, files, out)
     if tool == "edit.subtitle":
         return plan_subtitle(params, files, out)
+    if tool == "doc.ocr":
+        return plan_ocr(params, files, out)
     raise ValueError(f"Unknown tool {tool!r}")
 
 
@@ -2282,6 +2349,104 @@ def plan_burn(
         note += f"; cut to {w}x{h} (H.264 needs even sides)"
     (out / "notes.json").write_text(json.dumps({"subtitled.mp4": note}))
     return Plan([draw, cmd], {})
+
+
+def is_pdf(path: Path) -> bool:
+    """A PDF by its first bytes (an upload's name is not trusted, app/server.py prepare_job)."""
+    try:
+        with path.open("rb") as f:
+            return f.read(1024).lstrip()[:5] == b"%PDF-"
+    except OSError:
+        return False
+
+
+def page_count(path: Path) -> int:
+    """The pages of a PDF (1 for an image), read by app/runners/pages.py in a child process with a time limit: a file
+    that crashes or hangs macOS's reader cannot take the app with it. Raises ValueError (shown to the user)."""
+    r = run_media(
+        [sys.executable, str(APP / "runners" / "pages.py"), "--count", str(path)],
+        READ_SECONDS,
+    )
+    if r.returncode != 0 or not r.stdout.strip().isdigit():
+        why = (r.stderr.strip().splitlines() or ["the file could not be read"])[-1]
+        raise ValueError(why if why.endswith(".") else why + ".")
+    return int(r.stdout.strip())
+
+
+def parse_pages(text: str, count: int) -> list[int]:
+    """The page numbers of "1-3, 7" (empty or "all" = every page), in order, each once. Raises ValueError (shown to
+    the user)."""
+    text = text.strip().lower()
+    if text in ("", "all"):
+        chosen = set(range(1, count + 1))
+    else:
+        chosen = set()
+        # "1 - 3" is one range; commas, semicolons and spaces part the others
+        for part in re.split(r"[,;\s]+", re.sub(r"\s*-\s*", "-", text)):
+            if not part:
+                continue
+            m = re.fullmatch(r"(\d+)(?:-(\d+))?", part)
+            if m is None:
+                raise ValueError(
+                    f"Pages: {part!r} is not a page number or a range such as 2-5."
+                )
+            first, last = int(m[1]), int(m[2] or m[1])
+            if first < 1 or last < first:
+                raise ValueError(f"Pages: {part!r} is not a range of pages from 1 up.")
+            if last > count:
+                raise ValueError(
+                    f"Pages: the file has {count} page{'s' if count != 1 else ''}, so page {last} does not exist."
+                )
+            chosen.update(range(first, last + 1))
+    if len(chosen) > OCR_MAX_PAGES:
+        raise ValueError(
+            f"Read Text takes at most {OCR_MAX_PAGES} pages a job; this is {len(chosen)}. Choose fewer pages, for "
+            "example 1-50, and the rest in a second job."
+        )
+    return sorted(chosen)
+
+
+def ocr_pages(params: dict[str, Any], path: Path) -> list[int]:
+    """The pages of the file to read. Raises ValueError (shown to the user)."""
+    return parse_pages(str(params.get("pages") or ""), page_count(path))
+
+
+def plan_ocr(params: dict[str, Any], files: dict[str, list[Path]], out: Path) -> Plan:
+    """doc.ocr: the chosen pages as PNG images (pages.py, the app's Python with Quartz), then OvisOCR3 reads each one
+    (ocr.py, the local LLM environment)."""
+    src = files.get("file", [None])[0]
+    if src is None:
+        raise ValueError("Add an image or a PDF file.")
+    mode = str(params.get("output") or "markdown")
+    if mode not in OCR_OUTPUTS:
+        raise ValueError(f"Unknown output {mode!r}.")
+    spec = out / "ocr_job.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "source": str(src),
+                # in_* names: the page images are inputs, never outputs
+                "pages": [
+                    {"page": n, "image": str(out / f"in_page_{n:04d}.png")}
+                    for n in ocr_pages(params, src)
+                ],
+                "dpi": num(params, "dpi", OCR_DPI),
+                "model": str(OCR_MODEL),
+                "mode": mode,
+                "max_tokens": int(num(params, "max_tokens", 8192)),
+                # a page marker before each page of a PDF, so the text says where it was
+                "numbered": is_pdf(src),
+                "out": str(out),
+            }
+        )
+    )
+    return Plan(
+        [
+            [sys.executable, str(APP / "runners" / "pages.py"), str(spec)],
+            [str(QWEN_PY), str(APP / "runners" / "ocr.py"), str(spec)],
+        ],
+        {"HF_HUB_OFFLINE": "1"},
+    )
 
 
 if __name__ == "__main__":

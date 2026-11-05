@@ -80,8 +80,8 @@ You can also turn on "Temporary chat" on an empty chat, under the presets.
 ## Let the chat make it
 
 In a Workstation chat, the model can run the media tools itself. It has only the Workstation tools: it lists the
-tools, queues and cancels jobs, reads their status, waits for a job, searches the Library and transcribes speech. It
-has no web, file, Python or shell tools.
+tools, queues and cancels jobs, reads their status, waits for a job, searches the Library, transcribes speech and
+reads the text in a Library image (OCR). It has no web, file, Python or shell tools.
 
 1. Ask for a result, for example: `Make a 30 second calm synth-pop song about rain, with lyrics.`
 2. The model fills the tool's fields and calls "Queue a media job". An approval card shows the tool and its fields.
@@ -129,7 +129,8 @@ The model reads images itself. Of a document it reads the text, and of an audio 
 - The model sees a part of a long file only. The chip then says what the model got, for example "the first 29,850 of
   95,123 characters (pages 1 to 12 of 40)". To send another part, copy it into the message.
 - Under a sent file, the file button downloads the text that the model read. The download button downloads the file.
-- A scanned PDF has no text, and the app does not read text in pictures. Attach the pages as images instead.
+- A scanned PDF has no text layer, so the chat cannot read it as a document. Read it with Read Text (OCR) on the
+  Create screen (see [Create](create.md#read-text-ocr)), or attach the pages as images.
 - Pages, Numbers and Keynote files cannot be read. Export them as PDF, Word or Excel first.
 
 An audio file is transcribed before the answer starts. The Transcribe tool (Qwen3-ASR) does this as a media job, so

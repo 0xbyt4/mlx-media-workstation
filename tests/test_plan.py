@@ -1164,7 +1164,7 @@ def test_transcribe_with_nemotron_runs_in_the_llm_environment(
     )
     assert plan.commands == [
         [
-            str(MODELS / "llm/bin/python"),
+            str(MODELS / "qwen/bin/python"),
             str(tools.APP / "runners/transcribe.py"),
             str(spec),
         ]

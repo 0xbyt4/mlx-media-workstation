@@ -47,8 +47,8 @@ export function icon(name, cls) {
   return svg;
 }
 
-export const GROUP_ORDER = ['Image', 'Voice', 'Music', 'Video', 'Edit'];
-const GROUP_ICON = {Image: 'image', Voice: 'voice', Music: 'music', Video: 'video', Edit: 'edit'};
+export const GROUP_ORDER = ['Image', 'Voice', 'Music', 'Video', 'Edit', 'Document'];
+const GROUP_ICON = {Image: 'image', Voice: 'voice', Music: 'music', Video: 'video', Edit: 'edit', Document: 'file'};
 
 export function toolIcon(group, small) {
   const g = GROUP_ICON[group] ? group : 'Edit';

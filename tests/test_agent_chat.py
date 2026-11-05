@@ -400,7 +400,7 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
     # the listing of the deferred tools, one line per group
     assert "More tools are not loaded" in prompt
     assert (
-        "- Media jobs: list_jobs, cancel_job, transcribe_audio, system_status\n"
+        "- Media jobs: list_jobs, cancel_job, transcribe_audio, ocr_document, system_status\n"
         in prompt
     )
     assert (
@@ -442,7 +442,8 @@ def test_the_agent_prompt_names_the_offered_and_the_off_tools(client, reg):
     assert "More tools are not loaded" not in prompt  # nothing deferred is on
     assert (
         "These tools are off in this chat: update_plan, list_workstation_tools, search_library, create_job, "
-        "list_jobs, wait_for_job, cancel_job, transcribe_audio, system_status, list_files, read_file, search_files, "
+        "list_jobs, wait_for_job, cancel_job, transcribe_audio, ocr_document, system_status, list_files, read_file, "
+        "search_files, "
         "write_file, edit_file, copy_to_workspace, export_from_workspace, media_info, view_image, web_search, "
         "fetch_url, run_python, run_shell." in prompt
     )

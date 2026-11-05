@@ -87,6 +87,7 @@ The times and peaks below come from an M5 Pro with 48 GB. "Peak" is the number t
 | Edit | Mix (video + music) | Music under a video's own sound | a few seconds | under 1 GB (ffmpeg only) |
 | Edit | Join clips | One video from 2-10 videos and still images | 10 s at 704x1280 in under 1 s | about 1 GB at 704x1280 (ffmpeg only) |
 | Edit | Add Subtitles | A video with a subtitle track | a few seconds | under 1 GB (ffmpeg only) |
+| Document | Read Text (OCR) | Text from a photo, a scan or PDF pages | about 2-10 s a page | 6 GB |
 
 ### MOSS-Image
 
@@ -469,13 +470,44 @@ To subtitle a video:
 4. On `transcript.srt`, press "Send to" and pick Add Subtitles. Set the language, or choose Burn into picture.
 5. Press Generate.
 
+### Read Text (OCR)
+
+Reads the text of a photo, a scan, a screenshot or the pages of a PDF with OvisOCR3 (0.8B). The model reads one page
+at a time.
+
+| Field | Default | Notes |
+|---|---|---|
+| Image or PDF | | A PNG, JPEG, HEIC, WebP or GIF image, or a PDF file. |
+| Pages | all | PDF only. A list such as `1-3, 7`. A job reads at most 50 pages. |
+| Output | Markdown | Markdown keeps headings and lists, writes tables as HTML and formulas as LaTeX. Plain text has no markup. |
+| PDF resolution (DPI) | 200 | Advanced. The size at which the PDF pages are drawn, 100-300. Use a higher value for small print. |
+| Max tokens a page | 8192 | Advanced. A page that reaches this limit is cut, and the job note names it. |
+
+How the tool prepares the pages:
+
+- It draws each PDF page at the resolution you set, on white. The long side is at most 2,880 pixels.
+- It turns a photo upright by its EXIF orientation and lays it on white. The long side is at most 2,880 pixels.
+- It does not use the text layer of a PDF. To read a PDF that has a text layer, attach it in Chat instead.
+
+The output is `document.md` (Markdown) or `document.txt` (plain text). In the text of a PDF, each page starts with a
+line `<!-- page N -->`. The tool leaves out the pictures of the page. The job note gives the number of pages.
+
+What we measured on an M5 Pro (13 pages of 250-900 characters, made with known text):
+
+- English (5 pages, one of them a PDF page): no character errors in Markdown.
+- Turkish (8 pages, one of them a rotated photo with low contrast): about 2 % character errors. Most errors are a
+  dotless ı read as i (`fırıncı` as `firinci`) and a capital I read as İ. Check Turkish text before you use it.
+- A short page takes about 1.5-2 s; at 300 DPI it takes about 4 s and was only a little more correct. A page full of small print
+  takes longer, because the model writes more tokens.
+- In Plain text, the model can still write a table with `|` marks.
+
 ## Use outputs in other tools
 
 "Send to" on a job card or in the Library puts an output into a file field of another tool:
 
 | Output | Send to |
 |---|---|
-| Image | Image to Video, Voice to Video (talking), Klein Edit (references), Join clips |
+| Image | Image to Video, Voice to Video (talking), Klein Edit (references), Join clips, Read Text (OCR) |
 | Audio | Voice to Video (talking), Mix (video + music), Fish Drama 3 (voice reference of speaker 0 or 1) |
 | Video | Extend Video, Mix (video + music), Join clips, Add Subtitles (video) |
 | Subtitle file (`.srt`, `.vtt`) | Add Subtitles (subtitle file) |

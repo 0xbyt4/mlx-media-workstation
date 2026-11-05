@@ -222,6 +222,7 @@ def test_risk_levels_of_the_tools() -> None:
     assert untrusted == {
         "search_library",
         "transcribe_audio",
+        "ocr_document",
         "list_files",
         "read_file",
         "search_files",
@@ -246,6 +247,7 @@ def test_tools_outside_the_repeat_rule_and_tools_that_clear_it() -> None:
             "list_jobs",
             "wait_for_job",
             "transcribe_audio",
+            "ocr_document",
             "system_status",
             "search_library",
             "list_files",
@@ -262,6 +264,7 @@ def test_tools_outside_the_repeat_rule_and_tools_that_clear_it() -> None:
         "create_job",
         "cancel_job",
         "transcribe_audio",
+        "ocr_document",
         "write_file",
         "edit_file",
         "copy_to_workspace",
