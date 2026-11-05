@@ -209,7 +209,8 @@ With Subtitles on, the tool cuts the audio into parts of about 6 s at quiet poin
 Use `transcript.srt` in Add Subtitles ("Send to" on the file), or open it with the video in a player.
 
 Nemotron 3.5 Transcribe made fewer errors than Qwen3-ASR in our tests, mostly in Turkish and with noise under the
-voice. It has these differences:
+voice. We ran these tests with a community 4-bit build of the same model, not with the NVFP4 build that the app
+uses. It has these differences:
 
 - It needs about 29 GB of memory, so the Mac needs 48 GB. On a 48 GB Mac, the chat model unloads during the job.
 - It does not name the language. The `Language:` line says `unknown`, unless you set the language. For subtitles in
