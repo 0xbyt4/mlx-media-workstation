@@ -88,6 +88,7 @@ Find what Chat or the Create form shows:
 | What you see | What to do |
 |---|---|
 | "Qwen3.8 27B (4-bit) is not installed." | Install the "Local LLM environment (mlx-vlm)" and the "Qwen3.8 27B (4-bit)" weights in Models. |
+| "Faster answers is on, but the DFlash2 draft model is not at ..." | Download "Qwen3.8 27B DFlash2 draft" in Models, or turn off Settings > Local LLM > Faster answers. |
 | "... needs about 18 GB of memory plus 8 GB for the system." | This Mac has too little memory for the LLM. Chat and Improve cannot run here. |
 | No Improve button under the prompt fields | The LLM is not installed, or this Mac has less than about 26 GB of memory. |
 | "Waiting for memory" | A media job uses the memory. The answer starts when that job ends. Cancel the job, or wait. |

@@ -93,6 +93,8 @@ class Model:
     # the form choice (field, value) that makes a job load it instead of its tools' other models; None = the default
     choice: tuple[str, str] | None = None
     install: str | None = None  # the README commands of a manual entry
+    # not needed by any tool or feature: the setup card does not pick it or count it as missing
+    optional: bool = False
 
     @property
     def manual(self) -> bool:
@@ -366,6 +368,23 @@ uv pip install --python ~/mlx-media/venv-qwen/bin/python "mlx-vlm==0.7.11" "mlx=
         peak_gb=6.0,  # measured 5.7 GB on a 2481x3508 page, 5.0 GB at 1240x1753
         allow=("*.safetensors", "*.json", "merges.txt", "chat_template.jinja"),
         needs="qwen-venv",
+    ),
+    # optional: speculative decoding for the local LLM ([app] llm_draft); peak_gb is the memory it adds to the LLM's
+    Model(
+        id="qwen3.8-27b-dflash2",
+        label="Qwen3.8 27B DFlash2 draft",
+        tools=(),
+        path_key="qwen_draft",
+        files=("config.json", "model.safetensors"),
+        repo="z-lab/Qwen3.8-27B-DFlash2",
+        revision="50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+        size_gb=3.85,
+        licence="Apache-2.0",
+        licence_url="https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2",
+        peak_gb=3.0,
+        allow=("config.json", "model.safetensors"),
+        features=("Chat",),
+        optional=True,
     ),
 ]
 BY_ID = {m.id: m for m in MODELS}
@@ -904,6 +923,7 @@ def view(m: Model, mem_gb: float) -> dict[str, Any]:
         "disk_free_gb": None if m.manual else round(disk_free(m) / 1e9, 1),
         "needs": m.needs,
         "choice": list(m.choice) if m.choice else None,
+        "optional": m.optional,
         "install": m.install,
         "install_path": str(p) if (p := install_target(m)) else None,
         "download": progress(m),

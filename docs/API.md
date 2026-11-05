@@ -334,6 +334,7 @@ sent. Without the session cookie the answer has only `proof` and `profile`. A ba
       "disk_free_gb": 412.3,
       "needs": null,
       "choice": null,
+      "optional": false,
       "install": null,
       "install_path": null,
       "download": {"status": "queued | running | done | failed | cancelled", "position": null, "error": null,
@@ -365,6 +366,8 @@ sent. Without the session cookie the answer has only `proof` and `profile`. A ba
 - `install_path` is where the `install` commands put a manual entry: the default path of `path_key`. When it differs
   from `path`, the user sets `path_key` to it after the install. It is `null` for downloads.
 - `fits` is true when `peak_gb` plus `mem_reserve_gb` is at most `mem_total_gb`.
+- `optional` is true for an entry that no tool or feature needs: the DFlash2 draft model for faster answers. Its
+  `peak_gb` is the memory it adds to the local LLM. The setup card does not pick it and does not count it as missing.
 - `needs` names an entry to install first. `download` is `null` unless this model is queued, downloading, or was
   downloaded since the app started. A queued entry has `status: "queued"` and `position` (1 = it starts next); its
   other numbers are 0 or `null`. `position` is `null` in every other status. A failed or cancelled download keeps its
@@ -459,7 +462,8 @@ running requests cannot use the same `request_id` (HTTP 400).
 
 ```json
 {"installed": true, "state": "ready", "busy": false, "waiting": 0, "media_peak_gb": 0.0,
- "model": "Qwen3.8 27B (4-bit)", "peak_gb": 18.0, "idle_stop_s": 600.0, "default_effort": "off"}
+ "model": "Qwen3.8 27B (4-bit)", "peak_gb": 18.0, "idle_stop_s": 600.0,
+ "draft": {"on": false, "installed": false}, "default_effort": "off"}
 ```
 
 - `state` is `off`, `loading` or `ready`. The model loads on the first request and unloads after `idle_stop_s`
@@ -469,6 +473,9 @@ running requests cannot use the same `request_id` (HTTP 400).
 - `media_peak_gb` is the peak memory of the job that holds the memory now (0 when none).
 - `default_effort` is the thinking level of a new chat (`[app] chat_effort`, Settings > Local LLM). See
   [Thinking levels](#thinking-levels).
+- `draft` tells whether faster answers are on (`[app] llm_draft`, Settings > Local LLM) and whether the DFlash2 draft
+  model is in its folder (`[paths] qwen_draft`). With the draft on, `peak_gb` includes the memory of the draft. See
+  [Faster answers](#faster-answers).
 
 `POST /api/llm/unload` stops the model and returns `{"status": "off"}`.
 
@@ -512,6 +519,33 @@ with llm.session(abort=lambda: False, limit=600.0) as s: ...
   `ValueError`.
 - `allow_emoji=False` (the default) makes the worker ban emoji tokens. It never bans them inside a tool call's
   arguments (from the call marker to its end), where an emoji can be data.
+
+### Faster answers
+
+With `[app] llm_draft = true`, each request gives the worker the folder of the DFlash2 draft model
+(`z-lab/Qwen3.8-27B-DFlash2`, `[paths] qwen_draft`). The worker then uses speculative decoding:
+
+1. The draft proposes a block of up to 8 tokens.
+2. The model reads the block in one pass.
+3. The worker samples the model's token at each position, with the same bans, presence penalty, JSON schema,
+   thinking budget and sampler as without the draft. It keeps the tokens up to the first one that differs from the
+   draft.
+
+So each token comes from the same distribution as without the draft. The bans, the thinking budget and the prompt
+cache work as before. The text can differ from a run without the draft, as it can between two sampled runs: the block
+pass gives slightly different numbers. A request with images decodes without the draft.
+
+- The worker loads the draft at the first request with it and drops it at the first request without it. A change of
+  the setting applies from the next request.
+- The worker quantizes the draft's own layers to 4 bits in memory (`DRAFT_BITS`): about 1.3 GB instead of 3.85 GB.
+  The draft only proposes tokens, so its precision changes the speed and not the answer.
+- Measured on an M5 Pro with the 4-bit draft: plain text about 1.5 times faster (17.6 to 26.6 tokens a second), code
+  and tool calls about 2 times faster, Turkish text (with the bf16 draft) about the same speed.
+- With the setting on and no draft in its folder, a request fails with an error that names the folder.
+- The `done` stats then have `draft`: `{"rounds": n, "drafted": n, "accepted": n}` (the draft tokens proposed and
+  kept), or `{"skipped": "images"}`.
+- The worker needs mlx-vlm 0.7.11: it runs the speculative rounds itself with mlx-vlm's internals
+  (`llm_worker.Engine.rounds`). With another version, a request fails with an error that says so.
 
 **Tools.** `tools` is a list of OpenAI-style function schemas:
 
@@ -619,7 +653,8 @@ Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images and files 
   - A chat with tools (an agent chat, or a workstation chat in the full profile) has more events: see
     [Agent mode](#agent-mode).
   - `stats` has `seconds`, and when the model ran, `prompt_tokens`, `generation_tokens`, `cached_tokens`,
-    `prompt_tps`, `generation_tps` and `peak_gb`.
+    `prompt_tps`, `generation_tps` and `peak_gb`, plus `draft` with faster answers (see
+    [Faster answers](#faster-answers)).
   - `text` is at most 20,000 characters. An answer is at most 4,096 tokens after its thinking (see
     [Thinking levels](#thinking-levels)).
   - Errors before the stream starts: HTTP 400 with `{"detail": "message"}` (an empty message, a text that is too
@@ -1030,11 +1065,13 @@ budget grows (a lower thinking level, fewer tools): turns that would fit again s
                    "model": "Qwen3.8 27B (4-bit)", "llm": {}}]
   },
   "app": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full", "chat_effort": "off",
+          "llm_draft": false,
           "defaults": {"keep_awake": true, "notify": true, "llm_idle_minutes": 10, "profile": "full",
-                       "chat_effort": "off"},
+                       "chat_effort": "off", "llm_draft": false},
           "idle_choices": [5, 10, 30, 60, 0], "profiles": ["full", "chat"],
           "efforts": ["off", "low", "medium", "high", "xhigh", "max"], "saved_profile": "full"},
   "llm": {"idle_stop_s": 600.0},
+  "draft": {"installed": false, "gb": 3.0},
   "agent": {"python": "", "searxng_url": "", "wikipedia_language": "en", "marginalia": true,
             "defaults": {"python": "", "searxng_url": "", "wikipedia_language": "en", "marginalia": true},
             "python_path": null, "python_found": false, "python_problem": null,
@@ -1060,11 +1097,14 @@ budget grows (a lower thinking level, fewer tools): turns that would fit again s
 - `app` holds the `[app]` values the app uses now (Settings > Profile, Settings > Jobs and Settings > Local LLM):
   `keep_awake` (no system sleep while a job is queued or running), `notify` (a macOS notification when a job is done
   or failed; none for a cancelled job), `llm_idle_minutes` (minutes without use before the local LLM unloads; 0 =
-  never), `profile` (one of `profiles`; see [System](#system)) and `chat_effort` (the thinking level of a new chat,
-  one of `efforts`; see [Thinking levels](#thinking-levels)). `idle_choices` are the minutes the screen offers. After
+  never), `profile` (one of `profiles`; see [System](#system)), `chat_effort` (the thinking level of a new chat,
+  one of `efforts`; see [Thinking levels](#thinking-levels)) and `llm_draft` (faster answers with the DFlash2 draft
+  model; see [Faster answers](#faster-answers)). `idle_choices` are the minutes the screen offers. After
   `start.py --chat`, `profile` is `"chat"` although `config.toml` may say `"full"`. `saved_profile` is the profile
   in `config.toml` (the default when the file does not set a valid one): the profile of the next start without
   `--chat`.
+- `draft` tells whether the DFlash2 draft model is in its folder (`[paths] qwen_draft`), and `gb` is the memory it
+  adds to the local LLM.
 - `agent` holds the `[agent]` values in `config.toml` (Settings > Agent; [AGENT.md](AGENT.md#settings)): `python` (the
   sandbox interpreter of `run_python`; `""` = the app's own Python with the standard library only), `searxng_url`,
   `wikipedia_language` and `marginalia`. A key the file does not set, or sets to a bad value, shows its default.
@@ -1091,7 +1131,8 @@ name programs that the app runs.
 - Errors: HTTP 400 with `{"detail": {"message": "...", "fields": {"paths.ltx_model": "message"}}}` for an unknown
   key, an unknown provider, an empty path, a path with a double quote, a backslash or a line break, an `[app]` switch
   that is not `true` or `false`, `llm_idle_minutes` that is not a whole number from 0 to 1440, a `profile` that
-  is not `"full"` or `"chat"`, a `chat_effort` that is not a thinking level, or a bad `[agent]` value (the rules are in
+  is not `"full"` or `"chat"`, a `chat_effort` that is not a thinking level, `llm_draft: true` while the draft model is
+  not in its folder, or a bad `[agent]` value (the rules are in
   [AGENT.md](AGENT.md#settings)). HTTP 409
   when `config.toml` is not valid TOML or sets the key in a form this endpoint cannot edit (for example an inline
   table); the file is then not changed.

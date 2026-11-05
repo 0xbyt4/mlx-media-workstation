@@ -370,6 +370,7 @@ Read each model's licence before you download it (see [Model licences](#model-li
 | LTX-2.5 q8 (gated) | 54.1 GB | Text to Video, Image to Video, Voice to Video, Extend Video |
 | Qwen3.8 27B, 4-bit | 16.1 GB | Chat, prompt help |
 | OvisOCR3 0.8B | 1.7 GB | Read Text (OCR) |
+| Qwen3.8 27B DFlash2 draft (optional) | 3.85 GB | Faster chat answers |
 
 ### Gated models
 
@@ -531,6 +532,16 @@ the weights from `qwen_model`.
      --local-dir ~/mlx-media/models/qwen3.8-27b-4bit
    ```
 
+3. Optional, for faster answers: download the DFlash2 draft model, then turn on Settings > Local LLM > Faster
+   answers (`[app] llm_draft`). The chat model still picks every token, with the same rules. On an M5 Pro, answers
+   came about 1.5 times faster, and about 2 times faster for code and tool calls. The draft adds about 3 GB of
+   memory.
+
+   ```sh
+   hf download z-lab/Qwen3.8-27B-DFlash2 --revision 50307d4c4cde6860d4eee73e2547cd786fe8e8a4 \
+     config.json model.safetensors --local-dir ~/mlx-media/models/qwen3.8-27b-dflash2
+   ```
+
 ### Documents: OvisOCR3 (mlx-vlm)
 
 Read Text (OCR) runs OvisOCR3 with the Python of the local LLM environment (`qwen_python`). It does not need the
@@ -564,6 +575,7 @@ keys; a change takes effect after a restart.
 | `qwen_model` | `~/mlx-media/models/qwen3.8-27b-4bit` | The Qwen3.8 27B weights |
 | `nemotron_model` | `~/mlx-media/models/nemotron-3.5-transcribe-nvfp4` | The Nemotron 3.5 Transcribe weights (a Transcribe model) |
 | `ocr_model` | `~/mlx-media/models/ovisocr3` | The OvisOCR3 weights (Read Text) |
+| `qwen_draft` | `~/mlx-media/models/qwen3.8-27b-dflash2` | The DFlash2 draft model (optional, for faster answers) |
 
 ## Model licences
 
@@ -585,6 +597,7 @@ model or its output.
 | LTX-2.5 | LTX-2.x Community License Agreement | Free for entities with less than US$10M annual revenue. At or above that, commercial use needs a paid licence from Lightricks. Keep the watermarks and AI disclosures, and follow the AI laws that apply to you. | [LICENSE-2_x](https://github.com/Lightricks/LTX-2/blob/main/LICENSE-2_x) |
 | Qwen3.8 27B | Apache-2.0 | Allowed. | [LICENSE of the base model](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/LICENSE) |
 | OvisOCR3 | Apache-2.0 | Allowed. | [LICENSE](https://huggingface.co/ATH-MaaS/OvisOCR3/blob/17f255e2c8ae6d18d5d5edb0a474bd4ed39aef90/LICENSE) |
+| Qwen3.8 27B DFlash2 draft | Apache-2.0 | Allowed. | [Model card](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) |
 
 The Fish Drama 3 tool is Built with Fish Audio.
 

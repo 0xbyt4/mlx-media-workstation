@@ -321,6 +321,7 @@ def fake_engine(tokens: list[int], record: dict[str, Any]) -> llm_worker.Engine:
     eng.mx, eng.template, eng.stream = FakeMx(), template, stream
     eng.model, eng.processor, eng.specials = SimpleNamespace(config=None), None, []
     eng.vocab, eng.no_emoji = {}, None  # no token bans: the requests set allow_emoji
+    eng.draft, eng.spec = None, None  # no DFlash2 draft
     return eng
 
 

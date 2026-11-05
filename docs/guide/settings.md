@@ -53,6 +53,17 @@ The chat profile does not show this section.
   again with the next request.
 - **Thinking in a new chat**: the thinking level of a new chat. The choices are Off, Low, Medium, High, XHigh and Max.
   Each chat keeps its last level. See [Chat](chat.md#pick-a-thinking-level).
+- **Faster answers**: off by default. A small draft model (Qwen3.8 27B DFlash2) guesses the next tokens, and the chat
+  model checks them in one pass. The chat model still picks every token. The bans, the thinking limit and the prompt
+  cache work as before. On an M5 Pro, answers came about 1.5 times faster, and about 2 times faster for code and
+  tool calls. Turkish answers gained little. The draft adds about 3 GB of memory. A change applies from the next answer.
+
+  To turn it on:
+
+  1. On the Models screen, download "Qwen3.8 27B DFlash2 draft" (about 3.85 GB).
+  2. In Settings > Local LLM, turn on Faster answers.
+
+  The switch stays off until the draft is downloaded. A message with images is answered without the draft.
 
 ## Jobs
 
@@ -140,6 +151,7 @@ from the app folder.
 | Local LLM weights | `qwen_model` | `~/mlx-media/models/qwen3.8-27b-4bit` | Chat, Prompt help |
 | Nemotron 3.5 Transcribe weights | `nemotron_model` | `~/mlx-media/models/nemotron-3.5-transcribe-nvfp4` | Transcribe |
 | OvisOCR3 weights | `ocr_model` | `~/mlx-media/models/ovisocr3` | Read Text (OCR) |
+| Local LLM draft (DFlash2) | `qwen_draft` | `~/mlx-media/models/qwen3.8-27b-dflash2` | Faster chat answers |
 
 To change a path:
 

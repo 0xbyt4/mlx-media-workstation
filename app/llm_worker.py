@@ -6,7 +6,7 @@ free the memory, which only a process exit releases in full. Everything mlx-vlm 
 carries only the protocol.
 
 Requests: {"op": "generate", "id", "messages", "images", "thinking", "schema", "max_tokens", "chat", "tools",
-"tool_choice", "reasoning_effort", "thinking_budget", "allow_emoji"}, {"op": "cancel", "id"}, {"op": "save", "id",
+"tool_choice", "reasoning_effort", "thinking_budget", "allow_emoji", "draft"}, {"op": "cancel", "id"}, {"op": "save", "id",
 "path"}, {"op": "restore", "id", "path", "chat"}, {"op": "forget", "chat"} and {"op": "shutdown"}.
 Events: {"event": "ready"}, then per request "reasoning" and "content" deltas, and one "done" (with the full answer
 and its stats) or "error". A save ends with {"event": "saved", "chat", ...} or "error", a restore with
@@ -30,6 +30,12 @@ top level and has no side effects on import).
 Every request bans emoji with a logits processor (ByteBan, NoEmoji), unless it has "allow_emoji": true: the prompt
 rule alone did not stop them. Inside a tool-call block (the arguments) nothing is banned. "tool_choice": "none" also
 bans the call marker, so the model answers with text while the tools stay in the prompt.
+
+A request with "draft" (the folder of a DFlash2 draft model) uses speculative decoding: the draft proposes a block of
+tokens, the model checks the block in one pass, and every token the model would also have picked is kept (see
+Engine.rounds). The draft loads at the first such request and goes at the first request without it. mlx-vlm's own
+speculative loop applies no logits processors and no thinking budget, so this worker runs the rounds itself, with the
+same processors, sampler and token history as plain decoding. A request with images decodes plainly.
 """
 
 import ast
@@ -673,6 +679,88 @@ def bans(
     return out
 
 
+# ---------- speculative decoding with a draft model (Engine.rounds) ----------
+
+# the mlx-vlm version whose speculative internals Engine.rounds uses; with another version the draft is refused
+DRAFT_RUNTIME = "0.7.11"
+# the draft's own layers are quantized to this many bits when it loads (in memory; the files stay bf16). Measured on
+# an M5 Pro: the same acceptance as bf16 (0.57 English, 0.87 code), 1.27 GB instead of 3.85 GB, 25.5 against 23.1
+# tokens a second in English and 35.7 against 32.7 in code. The draft decides only how many tokens a pass checks,
+# never which token is kept, so its precision changes the speed and not the answer.
+DRAFT_BITS = 4
+
+
+def as_int(value: Any) -> int:
+    return int(value.item()) if hasattr(value, "item") else int(value)
+
+
+class Tokens:
+    """A logits processor that changes nothing: it keeps the token history that plain decoding gives the processors
+    (the prompt part that the model reads now, then each new token). Engine.rounds goes on from it."""
+
+    def __init__(self) -> None:
+        self.tokens: Any = None
+
+    def __call__(self, tokens: Any, logits: Any) -> Any:
+        self.tokens = tokens
+        return logits
+
+
+class ThinkingBudget:
+    """mlx-vlm's thinking budget as a logits processor, for speculative decoding.
+
+    Plain decoding gives each new token to a ThinkingBudgetCriteria, and a token that it forces takes the place of the
+    next one. This processor gives the criteria the last token of each step instead, and when the criteria forces a
+    token, it bans every other one. The model then writes the same tokens, but the force is in the logits, where
+    Engine.rounds checks the draft. make(preopens) makes the criteria; preopens tells whether the prompt part that the
+    model reads holds the thinking start token, as stream_generate checks it."""
+
+    def __init__(self, xp: Any, make: Callable[[bool], Any], start: int) -> None:
+        self.xp, self.make, self.start = xp, make, start
+        self.criteria: Any = None
+        self.masks: dict[int, Any] = {}
+
+    def __call__(self, tokens: Any, logits: Any) -> Any:
+        if self.criteria is None:  # the first step sees the prompt part
+            seen = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
+            self.criteria = self.make(self.start in seen)
+            return logits
+        forced = self.criteria(as_int(tokens[-1]))
+        if forced is None:
+            return logits
+        if forced not in self.masks:
+            row = [True] * logits.shape[-1]
+            row[forced] = False
+            self.masks[forced] = self.xp.array(row)
+        return self.xp.where(self.masks[forced], -float("inf"), logits)
+
+
+def verify_walk(
+    drafts: list[int], sample: Callable[[int], int], final: Callable[[int, int], bool]
+) -> tuple[list[int], int, bool]:
+    """One speculative round, after the model read the block [last token, *drafts].
+
+    sample(i) is the model's token after block position i: our processors and the sampler applied to the logits there,
+    with the history up to that position (the caller calls it in order and adds each token to the history). The
+    walk keeps the tokens up to the first one that differs from the draft, as plain decoding would write them, so
+    every kept token follows the model's own distribution. final(token, n) tells whether the n-th new token ends the
+    answer (a stop token or max_tokens); the walk then stops there.
+
+    Returns (the new tokens, how many draft tokens the cache keeps, whether the last new token is in the cache). The
+    cache holds the block; it keeps the last token and that many drafts. A new token that is not in it is the first
+    token of the next block."""
+    new: list[int] = []
+    for i in range(len(drafts) + 1):
+        token = sample(i)
+        new.append(token)
+        same = i < len(drafts) and token == drafts[i]
+        if final(token, len(new)):
+            return new, i + 1 if same else i, same
+        if not same:
+            return new, i, False
+    raise AssertionError("unreachable: the position after the drafts never matches")
+
+
 # ---------- the saved prompt cache (the parent and tests/fake_llm_worker.py use these too) ----------
 
 CACHE_FORMAT = "1"
@@ -752,6 +840,210 @@ class Engine:
         # the token bans of every request (bans(): emoji, and the call marker for tool_choice "none")
         self.vocab = self.processor.tokenizer.get_vocab()
         self.no_emoji = ByteBan(token_pieces(self.vocab))
+        self.vlm_version = vlm_version
+        self.draft: tuple[str, Any] | None = None  # (folder, the loaded draft model)
+        # the request that runs speculative rounds now: its processors, token history and draft counts
+        self.spec: dict[str, Any] | None = None
+
+    def use_draft(self, folder: str | None) -> Any:
+        """The draft model of a request: loaded at the first request that names its folder, dropped at the first
+        request without one, so its memory goes when the setting is off."""
+        if not folder:
+            if self.draft is not None:
+                self.draft = None
+                self.mx.clear_cache()
+                print("draft: unloaded", file=sys.stderr)
+            return None
+        if self.draft is None or self.draft[0] != folder:
+            self.draft = None
+            self.draft = (folder, self.load_draft(folder))
+        return self.draft[1]
+
+    def load_draft(self, folder: str) -> Any:
+        """Load a DFlash2 draft for this model, with its layers quantized to DRAFT_BITS, or raise a ValueError that
+        says why it cannot be used. Only the mlx-vlm version that Engine.rounds was written for is accepted: the
+        rounds use its speculative internals."""
+        if self.vlm_version != DRAFT_RUNTIME:
+            raise ValueError(
+                f"The DFlash2 draft needs mlx-vlm {DRAFT_RUNTIME}; the LLM environment has {self.vlm_version}."
+            )
+        from mlx import nn
+        from mlx_vlm.generate import ar
+        from mlx_vlm.speculative.drafters import (
+            DFlash2DraftModel,
+            load_drafter,
+            validate_drafter_compatibility,
+        )
+
+        t0 = time.time()
+        model, kind = load_drafter(folder, kind="dflash")
+        if kind != "dflash" or not isinstance(model, DFlash2DraftModel):
+            raise ValueError(f"{folder} is not a DFlash2 draft model.")
+        validate_drafter_compatibility(self.model, model, kind)
+        # before the first round binds the model's embedding and head to it: only the draft's own layers change
+        nn.quantize(
+            model,
+            group_size=64,
+            bits=DRAFT_BITS,
+            class_predicate=lambda _, m: (
+                isinstance(m, nn.Linear) and m.weight.shape[-1] % 64 == 0
+            ),
+        )
+        self.mx.eval(model.parameters())
+        # generate_step calls this name for its speculative loop: Engine.rounds takes over the requests it runs
+        if not getattr(ar.run_speculative_rounds, "ours", False):
+            original = ar.run_speculative_rounds
+
+            def rounds(*args: Any, **kw: Any) -> Any:
+                if self.spec is None:
+                    return original(*args, **kw)
+                return self.rounds(*args, **kw)
+
+            rounds.ours = True  # type: ignore[attr-defined]
+            ar.run_speculative_rounds = rounds
+        print(
+            f"draft: loaded {folder} in {time.time() - t0:.1f} s, "
+            f"{self.mx.get_active_memory() / 1e9:.1f} GB active",
+            file=sys.stderr,
+        )
+        return model
+
+    def rounds(
+        self,
+        model: Any,
+        draft_model: Any,
+        prompt_cache: list[Any],
+        input_ids: Any,
+        first_token: Any,
+        logprobs: Any,
+        last_outputs: Any,
+        *,
+        draft_kind: str,
+        max_tokens: int,
+        sampler: Callable[[Any], Any],
+        draft_block_size: int | None = None,
+        sampler_is_greedy: bool = False,
+    ) -> Any:
+        """The speculative loop of one request, in place of mlx-vlm's run_speculative_rounds (same arguments and
+        yields: (token, logprobs)). generate_step has read the prompt, with the draft's hidden-state layers, and
+        sampled the first token with the processors.
+
+        Each round: the draft proposes a block from the last token (its greedy guess, so it uses no random numbers);
+        the model reads the last token and the block in one pass (one cache transaction); verify_walk then samples
+        the model's token at each position with the request's processors and the token history up to there, and
+        stops at the first token that differs from the draft. So every token is sampled from the same distribution as
+        in plain decoding, and the random numbers are drawn in the same order. The cache keeps the tokens that were
+        kept; the rest of the block is rolled back.
+
+        Plain decoding feeds each token to the cache before it yields it, and stream_generate then records the cache
+        with every token up to the last one. So the last token of the answer (a stop token, or the max_tokens-th one)
+        goes into the cache before it is yielded here too, and the cache always holds exactly the recorded tokens."""
+        from mlx_vlm.speculative.cache_state import (
+            abort_speculative_round,
+            commit_speculative_round,
+        )
+        from mlx_vlm.speculative.common import (
+            _dflash_block_total,
+            _record_speculative_round,
+            generation_stream,
+        )
+        from mlx_vlm.speculative.dflash import (
+            _dflash_next_block_size,
+            _dflash_verify,
+            _reserve_dflash_target_cache,
+        )
+
+        mx, spec = self.mx, self.spec
+        assert spec is not None and draft_kind == "dflash"
+        lm = model.language_model
+        stop = self.processor.tokenizer.stopping_criteria
+        processors = spec["processors"]
+        dtype = input_ids.dtype
+
+        def feed(token: int) -> None:
+            with mx.stream(generation_stream):
+                lm(mx.array([[token]], dtype=dtype), cache=prompt_cache)
+            mx.eval([c.state for c in prompt_cache])
+
+        def greedy(logits: Any) -> Any:  # the draft's proposal
+            return mx.argmax(logits, axis=-1)
+
+        hidden = mx.concatenate(last_outputs.hidden_states, axis=-1)
+        mx.eval(first_token)
+        last = first_token.item()
+        tokens = mx.concatenate([spec["history"].tokens, first_token.flatten()])
+        emitted = 1
+        if stop(last) or emitted >= max_tokens:
+            feed(last)
+            yield last, logprobs
+            return
+        yield last, logprobs
+
+        target_layers = list(draft_model.config.target_layer_ids)
+        block_total = _dflash_block_total(draft_model, draft_block_size)
+        first_size = getattr(draft_model, "dflash_initial_block_size", None)
+        draft_cache = draft_model.reset(model)
+        with mx.stream(generation_stream):
+            _reserve_dflash_target_cache(prompt_cache, block_total)
+        while True:
+            size = _dflash_next_block_size(
+                draft_model, block_total, max_tokens - emitted + 1, first_size
+            )
+            drafts = draft_model.draft_block(
+                last, hidden, draft_cache, size, greedy, dtype
+            )
+            transaction = None
+            try:
+                with mx.stream(generation_stream):
+                    block = mx.concatenate(
+                        [mx.array([[last]], dtype=dtype), drafts], axis=1
+                    )
+                    out, transaction = _dflash_verify(
+                        lm, block, prompt_cache, target_layers
+                    )
+                    hidden = mx.concatenate(out.hidden_states, axis=-1)
+                mx.async_eval(hidden)
+                draft_ids = drafts.reshape(-1).tolist()
+
+                def sample(i: int, block_logits: Any = out.logits) -> int:
+                    nonlocal tokens
+                    with mx.stream(generation_stream):
+                        logits = block_logits[:, i, :]
+                        for p in processors:
+                            logits = p(tokens, logits)
+                        logp = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+                        token = sampler(logp)
+                        tokens = mx.concatenate([tokens, token.flatten()])
+                    return as_int(token.reshape(-1)[0])
+
+                new, kept, cached = verify_walk(
+                    draft_ids,
+                    sample,
+                    lambda token, n, before=emitted: (
+                        stop(token) or before + n >= max_tokens
+                    ),
+                )
+                with mx.stream(generation_stream):
+                    commit_speculative_round(lm, prompt_cache, transaction, kept, size)
+            except BaseException:
+                abort_speculative_round(transaction)
+                raise
+            same = sum(a == b for a, b in zip(new, draft_ids, strict=False))
+            _record_speculative_round(draft_model, same, size - 1)
+            spec["rounds"] += 1
+            spec["drafted"] += size - 1
+            spec["accepted"] += same
+            if kept < size - 1:
+                hidden = hidden[:, : kept + 1, :]
+            last = new[-1]
+            ends = stop(last) or emitted + len(new) >= max_tokens
+            if ends and not cached:
+                feed(last)
+            for token in new:
+                yield token, None
+                emitted += 1
+            if ends:
+                return
 
     def tool_parser(self) -> Any:
         if self.parser is None:
@@ -912,6 +1204,49 @@ class Engine:
             raise ValueError("the file has arrays that the model has no place for")
         return ids, caches
 
+    def speculative(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """The stream_generate arguments of a request with the draft, and its round state in self.spec.
+
+        generate_step runs the thinking budget outside the processors, so it would not reach Engine.rounds: the
+        budget becomes the last processor here (ThinkingBudget). The presence penalty is one of the request's own
+        processors (Presence), so it reaches the rounds as it is. A Tokens processor in front keeps the token history
+        for the rounds."""
+        from mlx_vlm.generate.dispatch import (
+            DEFAULT_THINKING_END_TOKEN,
+            DEFAULT_THINKING_START_TOKEN,
+        )
+        from mlx_vlm.utils import ThinkingBudgetCriteria
+
+        kwargs = dict(kwargs)
+        history = Tokens()
+        processors = [history, *kwargs.pop("logits_processors")]
+        budget = kwargs.pop("thinking_budget", None)
+        if budget is not None:
+            kwargs.pop("enable_thinking", None)
+            tok = self.processor.tokenizer
+
+            def make(preopens: bool) -> Any:
+                return ThinkingBudgetCriteria(
+                    tokenizer=tok,
+                    thinking_budget=budget,
+                    thinking_end_token=DEFAULT_THINKING_END_TOKEN,
+                    thinking_start_token=DEFAULT_THINKING_START_TOKEN,
+                    enable_thinking=True,
+                    prompt_preopens_thinking=preopens,
+                )
+
+            start = tok.encode(DEFAULT_THINKING_START_TOKEN, add_special_tokens=False)
+            processors.append(ThinkingBudget(self.mx, make, start[-1]))
+        kwargs["logits_processors"] = processors
+        self.spec = {
+            "processors": processors,
+            "history": history,
+            "rounds": 0,
+            "drafted": 0,
+            "accepted": 0,
+        }
+        return kwargs
+
     def generate(self, req: dict[str, Any], cancel: threading.Event) -> None:
         rid, thinking = req["id"], bool(req.get("thinking"))
         images = req.get("images") or []
@@ -950,6 +1285,12 @@ class Engine:
             self.mx, req, self.no_emoji, self.vocab, marker, end
         )
         kwargs["logits_processors"] += penalties(self.mx, req, self.vocab, marker, end)
+        draft, skipped = self.use_draft(req.get("draft")), None
+        if draft is not None and images:  # the rounds read text only
+            draft, skipped = None, "images"
+        if draft is not None:
+            kwargs = self.speculative(kwargs)
+            kwargs.update(draft_model=draft, draft_kind="dflash")
         state = None
         if req.get(
             "chat"
@@ -983,6 +1324,7 @@ class Engine:
         )
         in_think, reasoning, answer, last, cancelled = thinking, [], [], None, False
         thought = 0  # tokens inside the thinking block
+        ended = False  # the answer ran to its end (or to a cancel), not into an error
         try:
             for r in gen:
                 if cancel.is_set():
@@ -1000,13 +1342,15 @@ class Engine:
                 text = r.text if in_think or not tools else calls.feed(r.text)
                 if text:
                     emit({"id": rid, "event": part, "text": text})
+            ended = True
         finally:
             gen.close()
-            if cancelled:
+            spec, self.spec = self.spec, None
+            if cancelled or not ended:
                 if state is not None:  # the cache was extended in place: drop it
                     self.chat, self.state = None, self.cache_state()
                 self.mx.clear_cache()
-        stats = {"seconds": round(time.time() - t0, 1)}
+        stats: dict[str, Any] = {"seconds": round(time.time() - t0, 1)}
         if last is not None:
             stats.update(
                 prompt_tokens=last.prompt_tokens,
@@ -1018,6 +1362,10 @@ class Engine:
             )
         if thinking:
             stats["thinking_tokens"] = thought
+        if spec is not None:
+            stats["draft"] = {k: spec[k] for k in ("rounds", "drafted", "accepted")}
+        elif skipped:
+            stats["draft"] = {"skipped": skipped}
         done = {
             "id": rid,
             "event": "done",
