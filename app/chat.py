@@ -299,11 +299,7 @@ TOOL_FIELDS = tool_fields()  # the tool list is fixed while the app runs
 
 def not_installed() -> list[str]:
     """The media tools whose model files are missing on this Mac (as the Workstation port reports them)."""
-    return [
-        t["id"]
-        for t in tools.TOOLS
-        if not all(p.exists() for p in tools.REQUIRES.get(t["id"], []))
-    ]
+    return [t["id"] for t in tools.TOOLS if not tools.installed(t["id"])]
 
 
 def workstation_prompt(

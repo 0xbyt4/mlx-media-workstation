@@ -1444,6 +1444,17 @@ def subtitle_cues(path: Path) -> list[subtitles.Cue]:
     return subtitles.parse(subtitles.decode(data))
 
 
+def installed(tool: str) -> bool:
+    """True when the tool's own paths exist, or the paths of one of its choices (Transcribe with Nemotron only)."""
+    if all(p.exists() for p in REQUIRES.get(tool, [])):
+        return True
+    return any(
+        all(p.exists() for p in paths)
+        for (t, _, _), paths in CHOICE_REQUIRES.items()
+        if t == tool
+    )
+
+
 def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) -> None:
     """Checks that need more than the field rules, run when a job is submitted. Raises ValueError (shown to the user)."""
     picked = [

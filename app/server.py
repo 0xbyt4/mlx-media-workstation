@@ -854,10 +854,7 @@ class Workstation:
     waits for the agent turn's memory lease. wait_job does not wait for a job that needs that memory (needs_memory)."""
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return [
-            {**t, "installed": all(p.exists() for p in tools.REQUIRES.get(t["id"], []))}
-            for t in tools.TOOLS
-        ]
+        return [{**t, "installed": tools.installed(t["id"])} for t in tools.TOOLS]
 
     def job_status(self, job_id: str) -> dict[str, Any] | None:
         with lock:

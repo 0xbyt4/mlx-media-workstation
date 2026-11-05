@@ -475,6 +475,24 @@ def test_validate_names_the_missing_installs_of_a_choice(
         tools.validate("voice.transcribe", {"model": "qwen3-asr"}, {})
 
 
+def test_a_tool_is_installed_when_its_paths_or_a_choice_s_paths_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    drama, qwen, weights = tmp_path / "drama", tmp_path / "qwen", tmp_path / "nemotron"
+    monkeypatch.setattr(tools, "REQUIRES", {"voice.transcribe": [drama]})
+    monkeypatch.setattr(
+        tools,
+        "CHOICE_REQUIRES",
+        {("voice.transcribe", "model", "nemotron"): [qwen, weights]},
+    )
+    assert not tools.installed("voice.transcribe")
+    qwen.touch()
+    assert not tools.installed("voice.transcribe")
+    weights.mkdir()  # only Nemotron: the job runs with "model": "nemotron"
+    assert tools.installed("voice.transcribe")
+    assert tools.installed("edit.mix")  # needs nothing
+
+
 def test_speakers_need_nemotron_and_at_most_5_min(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
