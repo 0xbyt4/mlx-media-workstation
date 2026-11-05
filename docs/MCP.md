@@ -38,7 +38,7 @@ In these steps, `/Users/you/mlx-media-workstation` is the app's folder. Use the 
      /Users/you/mlx-media-workstation/.venv/bin/python /Users/you/mlx-media-workstation/start.py --mcp
    ```
 
-3. Start Claude Code and run `/mcp`. The `workstation` server shows its 9 tools.
+3. Start Claude Code and run `/mcp`. The `workstation` server shows its 10 tools.
 
 To add the server for one project only, use `--scope local` (the default) or `--scope project`. To remove it, run
 `claude mcp remove workstation`.
