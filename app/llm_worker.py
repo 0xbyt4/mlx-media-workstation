@@ -1333,7 +1333,15 @@ class Engine:
                 last = r
                 if r.finish_reason is not None:
                     continue
-                if in_think and r.token == THINK_END:
+                if r.token == THINK_END:
+                    if not in_think and not thinking:
+                        # a stray end of a thought (the template closed the thinking block already): the model wrote
+                        # a draft, and the answer follows. The draft becomes reasoning, so the saved answer has no
+                        # draft and no marker (which neutralize() would change, so the cache could not be reused).
+                        reasoning.extend(answer)
+                        answer.clear()
+                        if tools:
+                            calls = ToolText(calls.start, calls.end)
                     in_think = False
                     continue
                 thought += in_think

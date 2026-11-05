@@ -373,3 +373,15 @@ def test_the_worker_without_a_budget(monkeypatch):
     assert "thinking_budget" not in record["stream"]
     assert record["template"]["enable_thinking"] is False
     assert "thinking_tokens" not in done["stats"] and done["content"] == "<7>"
+
+
+def test_a_stray_think_end_with_thinking_off_moves_the_draft_to_the_reasoning(
+    monkeypatch,
+):
+    end = llm_worker.THINK_END
+    _, done = run_engine(monkeypatch, {"thinking": False}, [1, 2, end, 7, 8])
+    assert done["reasoning"] == "<1><2>" and done["content"] == "<7><8>"
+    assert "thinking_tokens" not in done["stats"]
+    # with thinking on, the end marker ends the thinking as before
+    _, done = run_engine(monkeypatch, {"thinking": True}, [1, end, 7, end, 8])
+    assert done["reasoning"] == "<1>" and done["content"] == "<7><8>"

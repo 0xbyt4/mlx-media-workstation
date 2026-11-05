@@ -522,6 +522,8 @@ with llm.session(abort=lambda: False, limit=600.0) as s: ...
 
 ### Faster answers
 
+- With `thinking=False` the template closes the thinking block itself. When the model still writes a `</think>`, the
+  text before it was a draft: the worker moves it to `reasoning`, and `content` is the text after the marker.
 With `[app] llm_draft = true`, each request gives the worker the folder of the DFlash2 draft model
 (`z-lab/Qwen3.8-27B-DFlash2`, `[paths] qwen_draft`). The worker then uses speculative decoding:
 
