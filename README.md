@@ -9,7 +9,7 @@ service.
 
 - **13 tools in 5 groups**: images (MOSS-Image, FLUX.3 Klein, Klein Edit), voice (Fish Drama 3, Transcribe), music
   (ACE-Step 1.5), video with sound (LTX-2.5: text, image, voice and extend) and edits (video + music mix, join
-  clips, add subtitles).
+  clips, add subtitles as a track or burned into the picture).
 - **Prompt help**: "Improve" under a prompt field asks the local LLM to rewrite your draft for that tool.
 - **Chat**: talk with a local Qwen3.8 27B. Attach images, documents (PDF, Word, Excel, text and code) or audio,
   pick a thinking level, and let it write prompts for the tools or queue the jobs itself.
@@ -305,7 +305,7 @@ Secrets go to the macOS Keychain. [docs/guide/mcp-servers.md](docs/guide/mcp-ser
 | Video | Extend Video | LTX-2.5 extend: continues a clip from its last second | 5 s more in about 2.5 min | 35 GB |
 | Edit | Mix (video + music) | ffmpeg only: music under a video's own sound, ducked under speech, about -14 LUFS | a few seconds | none |
 | Edit | Join clips | ffmpeg only: 2-10 videos and still images in one video, cuts or crossfades, one size and frame rate, about -14 LUFS | under 1 s for 10 s at 704x1280 | none |
-| Edit | Add Subtitles | ffmpeg only: an SRT or WebVTT file as a subtitle track (mov_text) with a language tag | a few seconds | none |
+| Edit | Add Subtitles | ffmpeg (and macOS's text system for a burn): an SRT or WebVTT file as a subtitle track (mov_text) with a language tag, or burned into the picture | a few seconds; a burn about 4x real time at 1080p | none |
 
 The peak memory is the value that the app plans with: the highest peak of the tools that use the same model. Most
 jobs use less. We measured these ranges: MOSS-Image 20-22 GB, FLUX.3 Klein 11-14 GB, Fish Drama 3 26-39 GB (short

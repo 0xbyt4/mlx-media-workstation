@@ -127,6 +127,43 @@ def test_a_library_output_reaches_a_job_through_the_agent_tool(
     assert port.output_file("nope", "image.png") is None
 
 
+def test_a_transcript_from_the_library_is_burned_into_a_library_video(
+    port: server.Workstation, state: Path, make_job, media: FakeMedia, tmp_path: Path
+) -> None:
+    """Transcribe's transcript.srt and a finished video reach Add Subtitles by their Library references."""
+    srt = "1\n00:00:00,500 --> 00:00:02,000\nMerhaba dünya\n".encode()
+    make_job(
+        "20261105-100000-aaaa",
+        "done",
+        outputs=[{"name": "transcript.srt", "kind": "text", "url": ""}],
+    )
+    (state / "20261105-100000-aaaa" / "transcript.srt").write_bytes(srt)
+    make_job(
+        "20261105-100000-bbbb",
+        "done",
+        outputs=[{"name": "video.mp4", "kind": "video", "url": ""}],
+    )
+    (state / "20261105-100000-bbbb" / "video.mp4").write_bytes(b"video")
+    reg = build_registry(port, Settings())
+    ctx = Context("c1", None, threading.Event(), tmp_path / "ws")
+    fields = {
+        "video": "library:20261105-100000-bbbb/video.mp4",
+        "subtitles": "library:20261105-100000-aaaa/transcript.srt",
+        "burn": "box",
+        "burn_place": "top",
+    }
+    r = reg.call("create_job", {"tool": "edit.subtitle", "fields": fields}, ctx)
+    assert r.status == "ok", r.content
+    job = server.jobs[r.job]
+    assert job["files"] == {
+        "video": ["in_video_0.mp4"],
+        "subtitles": ["in_subtitles_0.srt"],
+    }
+    assert (state / r.job / "in_subtitles_0.srt").read_bytes() == srt
+    assert (job["params"]["burn"], job["params"]["burn_place"]) == ("box", "top")
+    assert server.lane_of(job) == "light"
+
+
 def test_list_jobs_shows_the_active_ones_and_the_newest_finished(
     port: server.Workstation, make_job
 ) -> None:

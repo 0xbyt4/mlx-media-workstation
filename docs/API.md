@@ -89,9 +89,20 @@ Input files:
 - `edit.subtitle` (Add Subtitles) takes a video and a `.srt` or `.vtt` file (UTF-8, or UTF-16 with a byte order
   mark, at most 5 MB). The server reads the subtitle file at submit (`app/runners/subtitles.py`) and refuses a cue it
   cannot read with its block number. The plan writes a clean SRT (`in_subtitles_clean.srt`): only `<i>`, `<b>` and
-  `<u>` tags, no cue that starts after the video's end. ffmpeg reads it with the `srt` demuxer only. The output
+  `<u>` tags, no cue that starts after the video's end. For a WebVTT file, it decodes the character references
+  (`&amp;`, `&lt;`, `&nbsp;`, `&lrm;` and the others), and it puts a word joiner (U+2060) after a `<` or a backslash
+  that ffmpeg's SRT reader would take for a tag or an ASS code. ffmpeg reads it with the `srt` demuxer only. The output
   `subtitled.mp4` has the video's picture and sound (copied when an MP4 can hold them, else H.264 or AAC) and a
   `mov_text` track with the `language` tag (an ISO 639-2 code; `und` = not set).
+  With `burn` set to `outline` or `box` (default `off`), the job burns the text into the picture and writes no
+  track. `burn_size` (`small`, `medium`, `large`: 4.5%, 5.5% or 7% of the picture's short side) and `burn_place`
+  (`bottom`, `top`) set the text's size and place. The job has two steps. First,
+  `app/runners/burn_subtitles.py` (the app's own Python, AppKit through pyobjc) draws each subtitle as a PNG of a
+  band across the picture into `in_burn/`, and writes `in_burn/cues.ffconcat`. A subtitle longer than two lines is
+  shown in parts of at most two lines. Then ffmpeg reads that list with the `concat` demuxer (only `concat`,
+  `image2` and `png_pipe`) and lays it over the picture with `overlay`. The output is H.264 (CRF 16) with the
+  video's colour tags; the sound is copied as above. A picture with an odd side loses one row or column. A WebVTT
+  file's `&amp;`, `&lt;` and `&gt;` show as `&`, `<` and `>`; the `<i>`, `<b>` and `<u>` tags are removed.
 
 An optional `client` part with the value `mcp` marks a job from the MCP server ([MCP.md](MCP.md)). The job gets the
 checks of an agent's job (see docs/AGENT.md, "Input files": a file must have a media type that its field accepts) and
@@ -172,7 +183,8 @@ The queue has two lanes. Each lane has its own worker and runs its jobs one at a
 - The model lane runs every tool that loads a model. Before each job, the worker claims the memory (`llm.claim`):
   the chat model unloads when the job does not fit next to it. After the job, the worker releases the memory.
 - The light lane runs the tools that load no model: the tools whose peak (`models.tool_peak`) is 0. Today this is
-  `edit.mix`, `edit.concat` and `edit.subtitle` (ffmpeg; a mix about 0.1 GB, a join of 704x1280 clips about 1 GB).
+  `edit.mix`, `edit.concat` and `edit.subtitle` (ffmpeg; a mix about 0.1 GB, a join of 704x1280 clips about 1 GB,
+  a subtitle burn at 1080p about 1.2 GB).
   `voice.transcribe` loads Qwen3-ASR (about 3 GB), so it is in the model lane.
 - A light job does not claim memory. It does not change the chat model's state or the held peak of the running model
   job. So a mix starts at once, also while a video job of several minutes runs.

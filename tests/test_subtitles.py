@@ -57,6 +57,19 @@ def test_decode_takes_utf8_and_utf16_and_refuses_other_encodings() -> None:
         subtitles.decode(b"x" * (subtitles.MAX_BYTES + 1))
 
 
+def test_vtt_to_srt_decodes_characters_and_keeps_the_tags() -> None:
+    j = subtitles.JOINER
+    assert subtitles.vtt_to_srt("Tom &amp; Jerry &lt;3 &gt; a&nbsp;b x&lrm;y&rlm;") == (
+        f"Tom & Jerry <{j}3 > a\xa0b x\u200ey\u200f"
+    )
+    # <i>, <b> and <u> stay tags; an escaped tag and ASS codes stay text; "1 < 2" needs no joiner
+    assert (
+        subtitles.vtt_to_srt("<i>it</i> &lt;b&gt; 1 &lt; 2")
+        == f"<i>it</i> <{j}b> 1 < 2"
+    )
+    assert subtitles.vtt_to_srt("{\\an8} a\\Nb \\x") == f"{{{j}\\an8}} a\\{j}Nb \\x"
+
+
 def test_srt_and_vtt_writers() -> None:
     cues = [Cue(0.0, 1.5, "a --> b"), Cue(3661.25, 3662.0, "Tom & <Jerry>")]
     assert subtitles.srt(cues) == (

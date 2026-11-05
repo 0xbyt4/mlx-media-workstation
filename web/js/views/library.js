@@ -494,7 +494,7 @@ function openDrawer(item) {
   const tk = textKey(params);
 
   const preview = media(item, {onOpen: () => openImages(item)});
-  const targets = s.ctx.handoff.targets(item.kind);
+  const targets = s.ctx.handoff.targets(item.kind, item.name);
   const sendRow = targets.length ? h('div', {class: 'lib-row'}, targets.map((tg) => h('button', {type: 'button', class: 'btn btn-sm',
     onclick: () => s.ctx.handoff.send({tool: tg.tool, field: tg.field, file: {url: item.url, name: item.name, kind: item.kind}})},
   icon('arrow', 'ic-sm'), sendLabel(tg, targets)))) : null;
