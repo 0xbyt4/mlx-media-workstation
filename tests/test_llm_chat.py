@@ -711,9 +711,37 @@ def test_model_input_keeps_the_newest_turns_that_fit(monkeypatch):
     msgs.append({"role": "assistant", "content": "", "finish": "cancelled"})
     messages, images = chat.model_input({"id": "c", "messages": msgs}, 256)
     assert messages[0]["role"] == "system" and messages[1]["role"] == "user"
-    assert messages[-1]["content"][-1]["text"] == "last"
+    assert messages[-1]["content"][-1]["text"] == "[Image 1: chat:img_0.png]\nlast"
     assert len(messages) < len(msgs)
     assert images == [str(chat.CHATS / "c" / "img_0.png")]
+
+
+@pytest.mark.parametrize(
+    ("mode", "labels"), [("workstation", True), ("agent", True), ("general", False)]
+)
+def test_model_input_names_each_sent_image(mode: str, labels: bool) -> None:
+    """A job can take an image the user sent: the model reads its file reference before the message's text. A general
+    chat has no jobs, so its images get no label."""
+    msgs = [
+        {
+            "role": "user",
+            "content": "make two like this",
+            "images": ["img_0.png", "img_1.jpg"],
+        }
+    ]
+    messages, images = chat.model_input(
+        {"id": "c", "mode": mode, "messages": msgs}, 256
+    )
+    text = messages[-1]["content"][-1]["text"]
+    if labels:
+        assert (
+            text
+            == "[Image 1: chat:img_0.png]\n[Image 2: chat:img_1.jpg]\nmake two like this"
+        )
+    else:
+        assert text == "make two like this"
+    assert [p["type"] for p in messages[-1]["content"]] == ["image", "image", "text"]
+    assert images == [str(chat.CHATS / "c" / n) for n in ("img_0.png", "img_1.jpg")]
 
 
 def test_system_prompt_names_every_field_of_every_tool():

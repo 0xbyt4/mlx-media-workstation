@@ -122,6 +122,9 @@ The model reads images itself. Of a document it reads the text, and of an audio 
 | Audio | WAV, MP3, M4A, AAC, FLAC, OGG, AIFF | 200 MB |
 
 - A message takes up to 6 files. Up to 4 of them can be images.
+- In a workstation or agent chat, a job can use an image you sent. For example, send a drawing and write "make two
+  anime versions of this". The model gives the image to the job as `chat:img_0.png`. When you send more than one
+  image, say which one to use, for example "the second image".
 - The app converts a HEIC or HEIF photo (an iPhone photo) to JPEG with the macOS tool `sips`. The model and the chat
   get the JPEG.
 - Each file shows as a chip with its state: "Reading...", "Transcribing...", "Read in full", "Transcribed", "Cut to

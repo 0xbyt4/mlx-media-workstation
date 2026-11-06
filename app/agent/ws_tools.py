@@ -6,8 +6,8 @@ wait_for_job, transcribe_audio and ocr_document wait for a job that can run next
 job ends, or at Stop, and leaves the answer time for its next steps. A job that needs the chat model's memory starts
 only after the answer (it waits for the turn's memory lease), so the port does not wait for it.
 
-A file field of a job takes file references (REF_HELP): a Library output, a file in the chat's work folder, or a file
-in the granted folder. The rules of the file tools apply (no hidden or secret files, real-path checks, O_NOFOLLOW).
+A file field of a job takes file references (REF_HELP): a Library output, an image the user sent in this chat, a file in
+the chat's work folder, or a file in the granted folder. The rules of the file tools apply (no hidden or secret files, real-path checks, O_NOFOLLOW).
 The file is opened here and the port copies it into the job folder as an upload is copied, with the upload's checks.
 
 system_status (R0) shows the Mac's memory, the running jobs, the queue, the chat model and which media tools fit now.
@@ -15,6 +15,7 @@ The MCP server (app/mcp_server.py) offers the same tools with its own Host: loca
 """
 
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -38,9 +39,12 @@ TRANSCRIBE = "voice.transcribe"  # the media tool behind transcribe_audio
 OCR = "doc.ocr"  # the media tool behind ocr_document
 OCR_FILES = ("document.md", "document.txt")  # its text output, by the "output" field
 ENDED = ("done", "failed", "cancelled")
-SOURCES = ("library", "work", "folder")
+SOURCES = ("library", "chat", "work", "folder")
+# an image the user sent in the chat (app/chat.py stores it as outputs/chats/<id>/img_<n><suffix>)
+CHAT_IMAGE = re.compile(r"img_\d{1,6}\.(png|jpg|jpeg|webp)")
 REF_HELP = (
     '"library:<job id>/<file name>" (an output of a finished job, as search_library and job_status show it), '
+    '"chat:img_<n>.<suffix>" (an image the user sent in this chat, as the label before the message names it), '
     '"work:<path>" (a file in this chat\'s work folder, where run_python writes) or "folder:<path>" (a file in the '
     "folder the user granted)"
 )
@@ -256,6 +260,22 @@ def open_output(port: WorkstationPort, ref: str) -> tuple[int, os.stat_result, s
     return fd, st, path.name
 
 
+def open_chat_image(ctx: Context, name: str) -> tuple[int, os.stat_result]:
+    """An open descriptor of an image the user sent in this chat ("chat:img_<n>.<suffix>") and its stat, with the file
+    tools' checks (a regular file, O_NOFOLLOW). Only those names in the chat's own folder, the parent of its work folder
+    (outputs/chats/<id>/ws). The caller closes the descriptor."""
+    folder = ctx.work_dir.parent
+    if not CHAT_IMAGE.fullmatch(name) or folder.name != ctx.chat_id:
+        raise ToolError(
+            f"chat:{name}: not an image sent in this chat. Give the name from the label before the message, such as "
+            "chat:img_0.png."
+        )
+    root = os.path.realpath(folder)
+    if not os.path.isfile(os.path.join(root, name)):
+        raise ToolError(f"chat:{name}: no such image in this chat.")
+    return file_tools.open_file(os.path.join(root, name), root)
+
+
 def _refs(name: str, value: Any, ref_help: str = REF_HELP) -> list[str]:
     refs = [value] if isinstance(value, str) else value
     if not isinstance(refs, list) or not all(isinstance(r, str) for r in refs):
@@ -342,6 +362,9 @@ def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
         if source == "library":
             fd, st, name = open_output(port, ref)
             return fd, InputFile(name, st.st_size, _copier(fd, st.st_size))
+        if source == "chat":
+            fd, st = open_chat_image(ctx, rest)
+            return fd, InputFile(rest, st.st_size, _copier(fd, st.st_size))
         try:
             root = _work_root(ctx) if source == "work" else file_tools._root(ctx)
             real = file_tools.resolve(root, rest)

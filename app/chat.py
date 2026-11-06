@@ -355,7 +355,8 @@ before you queue the job.
 - When the request names a value that has its own field (a tempo, a key, a size, a length), set that field. A \
 value only in a prompt text has no effect.
 - A file field takes "library:<job id>/<file name>": an output of a finished job, as search_library and job_status \
-show it.
+show it. It also takes "chat:img_<n>.<suffix>": an image the user sent in this chat, as the label before the message \
+names it. Use that image when the user asks for a job based on an image they sent.
 - Speech in the user's own voice (the user asks for their own voice, for example "my voice") needs a recording of \
 the user. A take that a voice tool made is not their voice. When the user has not given or named such a recording, \
 ask for one (10 to 20 s of clean speech) and do not queue the job.
@@ -1067,6 +1068,12 @@ def tokens(msg: dict[str, Any]) -> int:
     return len(text) // 3 + 8 + IMAGE_TOKENS * len(msg.get("images", [])) + extra
 
 
+def image_labels(names: list[str]) -> str:
+    """The lines before a user message's text that name its images as file references, in the order the model sees
+    them: "[Image 1: chat:img_0.png]"."""
+    return "".join(f"[Image {i}: chat:{name}]\n" for i, name in enumerate(names, 1))
+
+
 def model_input(
     chat: dict[str, Any],
     max_tokens: int,
@@ -1185,6 +1192,9 @@ def model_input(
         if msg["role"] == "user":
             parts: list[dict[str, Any]] = [{"type": "image"} for _ in msg["images"]]
             text = skills.user_text(msg)
+            # each image's file reference, so a job can take the image the user sent (a general chat has no jobs)
+            if msg["images"] and mode_of(chat) != "general":
+                text = image_labels(msg["images"]) + text
             # each attached file's stored text in its block, before the user's text
             if msg.get("files"):
                 text = attachments.prompt(CHATS / chat["id"], msg["files"], text)

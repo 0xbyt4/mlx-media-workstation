@@ -216,6 +216,61 @@ def test_work_inputs_need_a_work_folder(files: FakeWorkstation, tmp_path: Path) 
     assert r.status == "error" and "work folder is empty" in r.content
 
 
+@pytest.fixture
+def sent(tmp_path: Path) -> Context:
+    """A chat folder (outputs/chats/c1) with the images the user sent and no work folder yet, and another chat's image."""
+    chats = tmp_path / "chats"
+    (chats / "c1").mkdir(parents=True)
+    (chats / "c1" / "img_0.png").write_bytes(PNG + b"sent")
+    (chats / "c1" / "chat.json").write_text("{}")
+    (tmp_path / "outside.png").write_bytes(PNG)
+    (chats / "c1" / "img_1.png").symlink_to(tmp_path / "outside.png")
+    (chats / "c2").mkdir()
+    (chats / "c2" / "img_0.png").write_bytes(PNG + b"other chat")
+    return Context("c1", None, threading.Event(), chats / "c1" / "ws")
+
+
+def test_create_job_takes_an_image_sent_in_the_chat(
+    files: FakeWorkstation, sent: Context
+) -> None:
+    reg = build_registry(files, Settings())
+    r = queue(reg, sent, prompt="it moves", image="chat:img_0.png")
+    assert r.status == "ok", r.content
+    assert "with the input files image = chat:img_0.png" in r.content
+    assert files.inputs == [{"image": [("img_0.png", PNG + b"sent")]}]
+
+
+@pytest.mark.parametrize(
+    ("ref", "message"),
+    [
+        ("chat:chat.json", "not an image sent in this chat"),
+        ("chat:../c2/img_0.png", "not an image sent in this chat"),
+        ("chat:/etc/hosts", "not an image sent in this chat"),
+        ("chat:ws/img_0.png", "not an image sent in this chat"),
+        ("chat:img_9.png", "no such image in this chat"),
+        ("chat:img_1.png", "cannot open"),  # a link, refused with O_NOFOLLOW
+    ],
+)
+def test_create_job_refuses_bad_chat_images(
+    files: FakeWorkstation, sent: Context, ref: str, message: str
+) -> None:
+    reg = build_registry(files, Settings())
+    r = queue(reg, sent, prompt="x", image=ref)
+    assert r.status == "error" and message in r.content, r.content
+    assert files.created == []
+
+
+def test_chat_images_need_the_chats_own_folder(
+    files: FakeWorkstation, tmp_path: Path
+) -> None:
+    """A work folder that is not outputs/chats/<id>/ws (the folder's name is not the chat id) reaches no chat image."""
+    (tmp_path / "img_0.png").write_bytes(PNG)
+    reg = build_registry(files, Settings())
+    ctx = Context("c1", None, threading.Event(), tmp_path / "ws")
+    r = queue(reg, ctx, prompt="x", image="chat:img_0.png")
+    assert r.status == "error" and "not an image sent in this chat" in r.content
+
+
 def test_a_file_field_value_must_be_references(
     files: FakeWorkstation, fctx: Context
 ) -> None:

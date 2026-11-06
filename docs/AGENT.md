@@ -101,9 +101,16 @@ most 10). `transcribe_audio` takes one in `audio`, `ocr_document` one in `file`.
 | Reference | The file |
 |---|---|
 | `library:<job id>/<file name>` | An output of a finished job, as `search_library` and `job_status` show it. Inputs (`in_*`) are not outputs. |
+| `chat:img_<n>.<suffix>` | An image that the user sent in this chat (`outputs/chats/<id>/img_<n>`). |
 | `work:<path>` | A file in the chat's work folder (`outputs/chats/<id>/ws`), where `run_python` writes. |
 | `folder:<path>` | A file in the granted folder. Refused when no folder is granted. |
 
+- In a workstation or agent chat, the model gets one line before the text of each user message with images, for
+  example `[Image 1: chat:img_0.png]`. The line names each image's reference in the order of the images. A general
+  chat has no jobs and gets no line.
+- A `chat:` reference takes only an `img_<n>` name with the suffix `.png`, `.jpg`, `.jpeg` or `.webp`. It reaches
+  the images of this chat only: the folder must be the parent of the work folder and have the chat id as its name.
+  The file follows the rules of the file tools below. The work folder does not have to exist.
 - The `work:` and `folder:` files follow the rules of the file tools: no hidden or secret names, the real path must
   stay inside the folder, a link at the last part is refused (`O_NOFOLLOW`), and the open file's real path is checked
   again (`F_GETPATH`). A work folder that is a link is refused.
