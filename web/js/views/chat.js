@@ -1292,14 +1292,14 @@ function onAgentEvent(live, ev) {
   const textSeg = () => {
     const last = live.segs[live.segs.length - 1];
     if (last && last.kind === 'text') return last;
-    return addSeg(live, newTextSeg());
+    return addSeg(live, newTextSeg(live.quick));
   };
   const toolSeg = (id) => live.segs.find((x) => x.kind === 'tool' && x.call.id === id);
   if (ev.event === 'step') {
     live.waiting = null;
-    Object.assign(live, {step: ev.n, maxSteps: ev.max, last: !!ev.last});
+    Object.assign(live, {step: ev.n, maxSteps: ev.max, last: !!ev.last, quick: !!ev.quick});
     live.segs.filter((x) => x.kind === 'text').forEach((x) => (x.dirty = true)); // drop the caret of the step before
-    addSeg(live, newTextSeg());
+    addSeg(live, newTextSeg(live.quick));
   } else if (ev.event === 'reasoning' || ev.event === 'content') {
     live.waiting = null;
     const seg = textSeg();
@@ -1349,8 +1349,8 @@ function onAgentEvent(live, ev) {
   return true;
 }
 
-function newTextSeg() {
-  const seg = {kind: 'text', msg: {content: '', reasoning: ''}, dirty: true, touched: false};
+function newTextSeg(quick = false) {
+  const seg = {kind: 'text', msg: {content: '', reasoning: ''}, dirty: true, touched: false, quick};
   seg.thinkLabel = h('span', {class: 'think-label'});
   seg.thinkBody = h('div', {class: 'think-body'});
   seg.think = h('details', {class: 'think', hidden: true},
@@ -1379,7 +1379,8 @@ function paintAgent(live) {
       if (t.reasoning) {
         const thinking = active && !t.content;
         seg.think.hidden = false;
-        seg.thinkLabel.replaceChildren(...(thinking ? [h('span', {class: 'spinner sm', 'aria-hidden': 'true'}), 'Thinking'] : ['Thinking']));
+        const name = thinkName(seg.quick);
+        seg.thinkLabel.replaceChildren(...(thinking ? [h('span', {class: 'spinner sm', 'aria-hidden': 'true'}), name] : [name]));
         seg.thinkBody.textContent = t.reasoning;
         seg.thinkBody.classList.toggle('caret', thinking);
         if (!seg.touched) seg.think.open = thinking;
@@ -1758,7 +1759,7 @@ function agentTurn(run, isLast) {
   const plans = run.filter((m) => m.role === 'tool' && Array.isArray(m.plan));
   const body = [];
   for (const m of steps) {
-    if (m.reasoning) body.push(thinkBlock(m.reasoning));
+    if (m.reasoning) body.push(thinkBlock(m.reasoning, !!(m.stats && m.stats.quick)));
     if (m.content) body.push(h('div', {class: 'bubble md'}, renderMarkdown(m.content, false, showCards(), showHosts())));
     for (const c of m.tool_calls || []) {
       const r = results.get(c.id) || {};
@@ -2103,16 +2104,22 @@ function fileState(f) {
 function aiMessage(m, isLast) {
   return h('article', {class: 'msg msg-ai', 'aria-label': 'Answer from ' + modelName()},
     h('span', {class: 'who', title: fmtTime(m.time)}, modelName()),
-    m.reasoning ? thinkBlock(m.reasoning) : null,
+    m.reasoning ? thinkBlock(m.reasoning, !!(m.stats && m.stats.quick)) : null,
     m.content ? h('div', {class: 'bubble md'}, renderMarkdown(m.content, false, showCards(), showHosts())) : null,
     finishNote(m),
     msgTools(m, isLast));
 }
 
-function thinkBlock(reasoning) {
+// The title of a thought: "Quick plan" for the short thought an agent step has with thinking off (app/effort.py,
+// QUICK; the step and its saved stats say `quick`), so it does not look like thinking that is on.
+function thinkName(quick) {
+  return quick ? 'Quick plan' : 'Thinking';
+}
+
+function thinkBlock(reasoning, quick = false) {
   const words = reasoning.trim().split(/\s+/).length;
   return h('details', {class: 'think'},
-    h('summary', null, icon('chev', 'chev ic-sm'), h('span', {class: 'think-label'}, 'Thinking', h('span', {class: 'think-n'}, words + ' words'))),
+    h('summary', null, icon('chev', 'chev ic-sm'), h('span', {class: 'think-label'}, thinkName(quick), h('span', {class: 'think-n'}, words + ' words'))),
     h('div', {class: 'think-body'}, reasoning));
 }
 

@@ -1058,7 +1058,8 @@ levels"). The budget applies to each step: the first step gets the full thinking
 step gets 40% of it. The template effort stays the same in every step, so the prompt cache stays valid. At `max` no
 step has a budget; a long thought can then reach the 10-minute limit of the answer. An answer at `off` whose tools have
 `create_job` thinks briefly (`effort.QUICK`: `low`, 256 tokens in the first step): without a thought the model picked
-its route (queue, prompt blocks or ask) in its first sampled sentence and often stopped without the call.
+its route (queue, prompt blocks or ask) in its first sampled sentence and often stopped without the call. Such a step
+says `quick` (its `step` event and its saved `stats`), and the page titles its thought "Quick plan".
 
 In an agent chat, a Markdown link shows its host after its label ("label (host)"), and a long bare URL is shortened
 with the whole URL in its tooltip. A web page can tell the model to write a link that carries private text in its

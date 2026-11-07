@@ -254,6 +254,9 @@ def test_an_agent_answer_has_a_budget_per_step(client):
     assert [s["max_tokens"] for s in steps] == [10240, 6553, 6553]
     assert {s["reasoning_effort"] for s in steps} == {"xhigh"}
     assert all(s["thinking"] for s in steps)
+    # thinking that the user turned on is not the quick plan
+    assert not any(e.get("quick") for e in evs if e["event"] == "step")
+    assert not any(m["stats"].get("quick") for m in msgs if m["role"] == "assistant")
 
 
 def test_an_off_agent_answer_that_can_queue_jobs_thinks_briefly(client):
@@ -268,6 +271,9 @@ def test_an_off_agent_answer_that_can_queue_jobs_thinks_briefly(client):
     # the same template effort in every step: a change would read the chat again
     assert {s["reasoning_effort"] for s in steps} == {"low"}
     assert all(s["thinking"] for s in steps)
+    # the page titles these thoughts "Quick plan": every step event and every saved step says quick
+    assert [e.get("quick") for e in evs if e["event"] == "step"] == [True, True]
+    assert all(m["stats"].get("quick") for m in msgs if m["role"] == "assistant")
 
 
 def test_the_agent_plan():

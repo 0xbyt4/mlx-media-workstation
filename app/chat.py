@@ -1623,13 +1623,15 @@ class Turn:
             messages, images = model_input(history, self.max_tokens, schemas)
             keep_window(self.chat_id, chat.get("window"), history.get("window"))
             self.steps = n
-            self.emit({"event": "step", "n": n, "max": limit, "last": last})
+            # quick: the step's thought is the short plan of thinking "off" (effort.QUICK); the page labels it so
+            quick = {"quick": True} if self.plan == effort.QUICK else {}
+            self.emit({"event": "step", "n": n, "max": limit, "last": last, **quick})
             done = self.generate(messages, images, schemas, last)
             msg = {
                 "role": "assistant",
                 "content": done["content"],
                 "reasoning": done["reasoning"],
-                "stats": done["stats"],
+                "stats": {**done["stats"], **quick},
                 "time": now(),
             }
             if change:

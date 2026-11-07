@@ -941,7 +941,8 @@ with another one).
 Events. The message stream of an agent chat has these events besides `waiting`, `reasoning`, `content` and `error`:
 
 - `{"event": "step", "n": 2, "max": 12, "last": false}` before each model request. `last` is `true` for the last
-  step, which cannot call tools. `max` grows by one after the first malformed call of an answer (one automatic
+  step, which cannot call tools. `"quick": true` is added when the step thinks with the short `quick` plan of `off`
+  (see Thinking); the saved step has `"quick": true` in its `stats` too, and the page titles that thought "Quick plan". `max` grows by one after the first malformed call of an answer (one automatic
   retry).
 - `{"event": "tool_call", "id", "name", "label", "arguments", "describe", "risk", "network"}` for each call the model
   made. `describe` is one line about what the call does, with bidi, zero-width and control characters written as
