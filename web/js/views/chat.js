@@ -298,6 +298,9 @@ function build() {
   els.chip = h('span', {class: 'model-chip', role: 'status'});
   els.unload = h('button', {type: 'button', class: 'btn btn-ghost btn-sm', hidden: true, onclick: unload}, 'Unload');
   els.msgs = h('div', {class: 'msgs', role: 'region', 'aria-labelledby': 'chat-title', tabindex: '0', onscroll: onMsgsScroll});
+  // A picture or a player gets its height only when it loads (media() in ui.js loads them late), so the list grows
+  // after it was scrolled to its end: keep the end in view, unless the user reads back.
+  for (const type of ['load', 'loadedmetadata']) els.msgs.addEventListener(type, keepEnd, true);
   // shown while the user reads back during an answer (updateJump)
   els.jump = h('button', {type: 'button', class: 'btn btn-sm jump-latest', hidden: true, onclick: jumpToLatest},
     icon('chev-down', 'ic-sm'), 'Jump to latest');
@@ -2161,6 +2164,10 @@ function scrollToEnd() {
   b.scrollTop = b.scrollHeight;
   s.msgsTop = b.scrollTop;
   updateJump();
+}
+
+function keepEnd() {
+  if (s && !s.scrolledUp) scrollToEnd();
 }
 
 // "Jump to latest" shows when the user reads back while an answer streams, and stays until they reach the end.
