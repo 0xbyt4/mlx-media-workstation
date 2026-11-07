@@ -317,7 +317,7 @@ lines use less), Text to Video 23-29 GB, Image to Video about 28 GB, Voice to Vi
 29-35 GB.
 
 Prompt help ("Improve") and Chat use the local LLM: Qwen3.8 27B, 4-bit (`mlx-community/Qwen3.8-27B-4bit`, run with
-[mlx-vlm](https://github.com/Blaizzy/mlx-vlm)). It is a download of about 16 GB, and its peak is about 18 GB. It
+[mlx-vlm](https://github.com/Neywa-Labs/mlx-vlm)). It is a download of about 16 GB, and its peak is about 18 GB. It
 loads on the first request. It unloads after 10 minutes without use. Settings > Jobs changes this time.
 
 [docs/PROMPTING.md](docs/PROMPTING.md) has the prompt rules that worked for each model.
@@ -583,14 +583,14 @@ keys; a change takes effect after a restart.
 you must accept its licence. The MIT licence of this repository covers only its own code. Each model has its own
 licence, and some licences limit commercial use.
 
-The table is a short summary, checked on 2026-11-03. It is not legal advice. Read the full text before you use a
+The table is a short summary, checked on 2026-11-07. It is not legal advice. Read the full text before you use a
 model or its output.
 
 | Model | Licence | Commercial use | Source |
 |---|---|---|---|
 | MOSS-Image SFT | Apache-2.0 | Allowed. | [LICENSE](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT/blob/f972bd4b4b9e3852133cc5da954d87bc32cd8fb9/LICENSE) |
 | FLUX.3 Klein | FLUX Kommunity License v1.0 | Non-commercial use is allowed. Commercial use of the outputs is allowed only when your gross annual revenue (affiliates included) is less than US$5M. Then you must filter or review the outputs for unlawful content, and mark them as AI-made where the law requires it. Other commercial use needs a licence from Black Forest Labs. Do not use the outputs to improve a similar model. | [Model card](https://huggingface.co/black-forest-labs/flux-3-image-klein), [LICENSE.md](https://huggingface.co/black-forest-labs/flux-3-image-klein/blob/8454017f9ebaada30c998fccd9f67a80c7580f68/LICENSE.md) |
-| Fish Audio Drama 3 | Fish Audio Community License v1.0 | Allowed while your annual revenue is less than US$500,000. No hosted text-to-speech service. Do not imitate a real person's voice without consent, do not remove the watermark, and do not train other speech models on the output. A product that uses it shows "Built with Fish Audio". | [LICENSE](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit/blob/1ac1b2108b63c2ef5bade463a121569363e293ce/LICENSE) |
+| Fish Audio Drama 3 | Fish Audio Community License v1.0 | Allowed while your gross annual revenue (affiliates included) is less than US$500,000. No hosted text-to-speech or voice service for others. Do not imitate a real person's voice without consent, do not remove the watermark, and do not use the output to train a generative AI model or a speech, audio or voice model. A product that uses it shows "Built with Fish Audio". | [LICENSE](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit/blob/1ac1b2108b63c2ef5bade463a121569363e293ce/LICENSE) |
 | Qwen3-ASR 0.6B | Apache-2.0 | Allowed. | [Model card](https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit) |
 | Nemotron 3.5 Transcribe (NVFP4) | OpenMDW-1.1 | Allowed. Keep the licence and its notices with the weights. | [LICENSE](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4/blob/66c6adc4020179567074d0399cda2a4eeb2bb347/LICENSE) |
 | ACE-Step 1.5 | MIT | Allowed. | [Model card](https://huggingface.co/ACE-Step/Ace-Step1.5) |
