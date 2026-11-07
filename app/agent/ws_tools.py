@@ -3,8 +3,9 @@ job, cancel a job, transcribe speech and read the text of an image or PDF (R2).
 
 They reach the server only through a WorkstationPort (app/agent/ports.py). create_job returns the job id at once.
 wait_for_job, transcribe_audio and ocr_document wait for a job that can run next to the chat model. A wait ends at its time, when the
-job ends, or at Stop, and leaves the answer time for its next steps. A job that needs the chat model's memory starts
-only after the answer (it waits for the turn's memory lease), so the port does not wait for it.
+job ends, or at Stop, and leaves the answer time for its next steps. A job that needs the chat model's memory waits
+for the turn's memory lease: during a wait the turn lends it (the model unloads), so the job runs and the next step
+loads the model again.
 
 A file field of a job takes file references (REF_HELP): a Library output, an image the user sent in this chat, a file in
 the chat's work folder, or a file in the granted folder. The rules of the file tools apply (no hidden or secret files, real-path checks, O_NOFOLLOW).

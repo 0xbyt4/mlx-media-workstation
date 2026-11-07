@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from app import models, server, tools
+from app import llm, models, server, tools
 from app.agent import Context, Settings, build_registry
 from app.agent.ports import InputFile
 from tests.conftest import FakeMedia
@@ -213,6 +213,31 @@ def test_wait_job_does_not_wait_for_a_job_that_needs_the_model_s_memory(
     server.jobs.pop("20261103-090000-vvvv")
     job = port.wait_job("20261103-100000-aaaa", 0.3, threading.Event())
     assert "needs_memory" not in job and job["status"] == "queued"
+
+
+def test_wait_job_lends_the_turn_s_lease_to_a_job_that_needs_the_memory(
+    port: server.Workstation, make_job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inside a turn the wait lends the memory lease, so the job's claim can unload the model and the job runs; the
+    turn's next request holds the memory again (make a song, then mix it under a video, in one answer)."""
+    monkeypatch.setattr(models, "mem_total_gb", lambda: 48.0)
+    job = make_job("20261103-090000-vvvv", "queued", tool="video.t2v", order=1)
+    held_during_wait = []
+
+    def job_runs() -> None:
+        with llm.room:
+            held_during_wait.append(llm.holding())
+        job.update(status="done")
+
+    with llm.session() as lease:
+        assert lease.held
+        threading.Timer(0.3, job_runs).start()
+        t0 = time.monotonic()
+        got = port.wait_job(job["id"], 30, threading.Event())
+        assert got["status"] == "done" and "needs_memory" not in got
+        assert time.monotonic() - t0 < 5
+        assert held_during_wait == [False]
+        assert not lease.held  # until the turn's next request gets the memory
 
 
 def test_wait_job_waits_for_a_light_job_behind_a_big_job(

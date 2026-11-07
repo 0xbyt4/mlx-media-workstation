@@ -81,7 +81,7 @@ A workstation chat in the full profile runs the same loop (`Turn`) with the Work
 - The tools keep their risk levels. `create_job`, `cancel_job`, `transcribe_audio` and `ocr_document` ask first, as
   above.
 - The policy, the approval cards, the grants, the taint, the step limit and the memory lease are those of an agent
-  chat. A job that needs the chat model's memory starts after the answer.
+  chat. A job that needs the chat model's memory starts after the answer, or during a wait for it.
 - It has no folder. A folder grant is refused (HTTP 400), so a `folder:` file reference fails. A `library:`
   reference works.
 - The Tools menu turns each tool on or off and ends a grant. A new workstation chat has every tool on.
@@ -132,9 +132,10 @@ most 10). `transcribe_audio` takes one in `audio`, `ocr_document` one in `file`.
 memory lease. A job that fits next to the model (an image, a transcription on a 48 GB Mac) runs during the answer. A
 job that does not fit (a video, for example) waits for the lease, so it starts only after the answer.
 
-- The wait does not wait for such a job, or for a job behind one in the queue. It returns at once, and the model
-  tells the user that the job runs after the answer. The answer does not give its lease up to such a job: the model
-  would then wait for the whole job before its next step.
+- A wait for such a job, or for a job behind one in the queue, lends the lease for the wait. The app unloads the
+  model (it saves the chat's prompt cache first), the job runs, and the next step loads the model again and restores
+  the cache. So the model calls `wait_for_job` only when its next step needs the job's output, for example to mix a
+  new song under a video. A wait that ends before the job does leaves the next step waiting for the job.
 - A light job (`edit.mix`, `edit.concat`, `edit.subtitle`) needs no memory and does not wait for the model jobs, so
   the wait waits for it.
 - A wait takes at most 300 s. It ends early when the job ends or the user presses Stop.

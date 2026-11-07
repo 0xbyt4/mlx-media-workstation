@@ -345,7 +345,7 @@ and do not queue a job. When you are not sure which one the user wants, ask.
 them in a prompt block.
 - create_job returns at once and the job runs in the background; the chat shows its progress. Call wait_for_job only \
 when the user needs the result in this answer. A job that needs the chat model's memory starts only after your answer \
-ends: tell the user that it runs then, and do not wait for it.
+ends, unless you wait for it: the app then unloads you for the job.
 - After the create_job results come back, answer in the user's language in one to three sentences: what you queued \
 (the tool, the length, the takes) and that the chat shows its progress. Do not repeat the queued text in a prompt \
 block. You speak only when the user writes, so never promise to tell the user when the job is done.

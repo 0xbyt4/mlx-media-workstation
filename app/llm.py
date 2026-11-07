@@ -316,6 +316,28 @@ def session(
             room.notify_all()
 
 
+def lending() -> bool:
+    """True when the calling thread's session holds the memory, so lend() can let a media job have it."""
+    s = getattr(local, "session", None)
+    with room:
+        return s is not None and s.held and s.alive()
+
+
+@contextmanager
+def lend() -> Iterator[None]:
+    """Let a queued media job have the memory of the calling thread's session while the turn waits for that job
+    (wait_for_job): the lease ends for the block, so the job's claim can unload the model (the worker saves the chat's
+    prompt cache first). The session's next request then waits for the job like any request, holds the memory again,
+    and reads the restored cache. Without a held session the block changes nothing."""
+    s = getattr(local, "session", None)
+    with room:
+        if s is not None and s.held:
+            s.held = False
+            leases.discard(s)
+            room.notify_all()
+    yield
+
+
 def model_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The messages as the chat template needs them; the input is not changed.
 

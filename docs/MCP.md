@@ -150,7 +150,7 @@ The app keeps all its rules for a job from MCP. The MCP server only sends the re
 | Input files | `library:`, `work:` and `folder:` references | Absolute paths and `library:` references |
 | Approval | The app asks you before `create_job`, `cancel_job`, `transcribe_audio` and `ocr_document` | Your client decides. Claude Code asks before a tool that is not allowed. |
 | A wait | At most 300 s (120 s by default), inside the answer's 10 minutes | At most 600 s (50 s by default) |
-| A job that needs the chat model's memory | Starts after the answer; the wait returns at once | The app unloads the chat model, then the job runs; the wait waits for it |
+| A job that needs the chat model's memory | Starts after the answer, or during a wait: the app unloads the chat model for the wait | The app unloads the chat model, then the job runs; the wait waits for it |
 | `cancel_job` | Jobs that this chat queued | Jobs that an MCP client queued |
 
 Some clients end a tool call after about 60 s. For this reason a wait takes 50 s when you give no `seconds`. A job

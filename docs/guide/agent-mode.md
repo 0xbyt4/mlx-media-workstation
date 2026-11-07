@@ -190,6 +190,8 @@ can be a Library output, a file in the work folder or a file in the granted fold
 - A job that fits next to the LLM (an image, or a transcription on a 48 GB Mac) can run during the answer.
 - A job that does not fit (a video, for example) starts after the answer. The model tells you so. The job card shows
   its progress.
+- When the next step needs that job's output, the model waits for it. The app then unloads the model while the job
+  runs and loads it again after the job. The answer takes longer.
 
 ## Web search sources
 

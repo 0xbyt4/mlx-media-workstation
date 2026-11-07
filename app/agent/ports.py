@@ -47,7 +47,8 @@ class WorkstationPort(Protocol):
     ) -> dict[str, Any] | None:
         """Wait until the job is done, failed or cancelled, `seconds` pass or abort is set; then return
         job_status(job_id). A queued job that needs the memory the chat model holds (it, or a job before it, does not
-        fit next to the model) starts only after the agent's turn: then it returns at once, with "needs_memory": True."""
+        fit next to the model) starts only after the agent's turn, so the turn lends its memory lease for the wait
+        (llm.lend); without a lease to lend it returns at once, with "needs_memory": True."""
         ...
 
     def cancel_job(self, job_id: str) -> str:

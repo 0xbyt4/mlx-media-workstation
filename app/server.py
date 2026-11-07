@@ -25,6 +25,7 @@ job that ends done or failed shows a notification (both switches are in Settings
 """
 
 import asyncio
+import contextlib
 import hmac
 import json
 import math
@@ -837,8 +838,8 @@ async def create_job(request: Request) -> dict[str, str]:
 
 def needs_memory(job: dict[str, Any]) -> bool:
     """Whether a queued job, or a job before it in the queue, needs the memory that the chat model holds: such a job
-    starts only after the agent turn's memory lease ends, so a wait inside the turn would only time out (call with the
-    lock held). A light job needs none, and the light jobs are not ahead of a model job."""
+    starts only after the agent turn's memory lease ends, so wait_job lends the turn's lease for the wait (llm.lend), or
+    returns at once when there is no lease to lend (call with the lock held). A light job needs none, and the light jobs are not ahead of a model job."""
     if lane_of(job) == "light":
         return False
     queued = queued_jobs("model")
@@ -851,7 +852,7 @@ def needs_memory(job: dict[str, Any]) -> bool:
 class Workstation:
     """The server's side of the agent's Workstation tools (app/agent/ports.py WorkstationPort). create_job runs the
     checks of POST /api/jobs (prepare_job) and queues the job; it returns at once and never waits for the job, which
-    waits for the agent turn's memory lease. wait_job does not wait for a job that needs that memory (needs_memory)."""
+    waits for the agent turn's memory lease. wait_job lends that lease to a job that needs the memory (needs_memory)."""
 
     def list_tools(self) -> list[dict[str, Any]]:
         return [
@@ -881,17 +882,26 @@ class Workstation:
         self, job_id: str, seconds: float, abort: threading.Event
     ) -> dict[str, Any] | None:
         end = time.monotonic() + seconds
-        while True:
-            with lock:
-                job = jobs.get(job_id)
-                status = job["status"] if job is not None else None
-                if status == "queued" and needs_memory(job):
-                    return {**view(job), "chat": job.get("chat"), "needs_memory": True}
-            left = end - time.monotonic()
-            if status in (None, "done", "failed", "cancelled") or left <= 0:
-                break
-            if abort.wait(min(left, 0.5)):
-                break
+        with lock:
+            job = jobs.get(job_id)
+            blocked = (
+                job is not None and job["status"] == "queued" and needs_memory(job)
+            )
+        if (
+            blocked and not llm.lending()
+        ):  # no turn lease to lend (an MCP client): the job starts after the answer
+            return {**view(job), "chat": job.get("chat"), "needs_memory": True}
+        # the turn lends its lease for the wait: the job unloads the model and runs; the next step loads it again
+        with llm.lend() if blocked else contextlib.nullcontext():
+            while True:
+                with lock:
+                    job = jobs.get(job_id)
+                    status = job["status"] if job is not None else None
+                left = end - time.monotonic()
+                if status in (None, "done", "failed", "cancelled") or left <= 0:
+                    break
+                if abort.wait(min(left, 0.5)):
+                    break
         return self.job_status(job_id)
 
     def cancel_job(self, job_id: str) -> str:

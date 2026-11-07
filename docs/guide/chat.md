@@ -88,7 +88,8 @@ reads the text in a Library image (OCR). It has no web, file, Python or shell to
 3. Press "Allow once", or "Allow in this chat" to let it queue jobs without asking in this chat.
 
 The job card in the answer shows the job's progress and its outputs. A job that needs the chat model's memory, such
-as a video, starts after the answer ends.
+as a video, starts after the answer ends. When the next step needs its output, for example "make a song and mix it
+under the video", the model waits for the job: the app unloads the model while the job runs.
 
 - When your request is unclear, or you want to read the text first, the model writes the prompt with a "Use in"
   button and queues nothing. Ask it for the prompt only when you want to change it before you run it.
