@@ -867,8 +867,13 @@ TOOLS: list[dict[str, Any]] = [
                 "Subtitle file",
                 "file",
                 accept=".srt,.vtt",
-                required=True,
                 help="UTF-8. Transcribe writes one with Subtitles on.",
+            ),
+            field(
+                "text",
+                "Subtitle text",
+                "textarea",
+                help="Instead of a file: SRT, or one caption.",
             ),
             field(
                 "language",
@@ -1435,6 +1440,18 @@ def concat_size(
     return max(2, w - w % 2), max(2, h - h % 2)
 
 
+def typed_cues(text: str, length: float) -> list[subtitles.Cue]:
+    """The cues of the Subtitle text field: SRT or WebVTT text when it has a time line, else one cue with the text
+    for the whole video (length seconds). Raises ValueError (shown to the user)."""
+    if "-->" in text:
+        return subtitles.parse(text)
+    lines = [subtitles.OTHER_TAGS.sub("", line).strip() for line in text.splitlines()]
+    body = "\n".join(line for line in lines if line)
+    if not body:
+        raise ValueError("The subtitle text is empty.")
+    return [subtitles.Cue(0.0, length, body)]
+
+
 def subtitle_cues(path: Path) -> list[subtitles.Cue]:
     """The cues of an uploaded subtitle file. Raises ValueError (shown to the user)."""
     try:
@@ -1541,8 +1558,15 @@ def validate(tool: str, params: dict[str, Any], files: dict[str, list[Path]]) ->
     if tool == "edit.subtitle":
         if files.get("video") and stream_codec(files["video"][0], "V") is None:
             raise ValueError("The video file has no picture, or it could not be read.")
+        typed = str(params.get("text") or "").strip()
+        if files.get("subtitles") and typed:
+            raise ValueError("Use a subtitle file or the subtitle text, not both.")
         if files.get("subtitles"):
             subtitle_cues(files["subtitles"][0])
+        elif typed:
+            typed_cues(typed, 1.0)
+        else:
+            raise ValueError("Add a subtitle file, or type the subtitle text.")
     if tool == "doc.ocr" and files.get("file"):
         ocr_pages(params, files["file"][0])
 
@@ -2253,10 +2277,12 @@ def plan_subtitle(
     the subtitle file as a mov_text track. The file is read here and written again as a clean SRT (UTF-8, tags other
     than <i>, <b> and <u> removed, cues past the video's end left out)."""
     video, sub = files.get("video", [None])[0], files.get("subtitles", [None])[0]
-    if video is None or sub is None:
-        raise ValueError("Add a video and a subtitle file.")
+    typed = str(params.get("text") or "").strip()
+    if video is None or (sub is None and not typed):
+        raise ValueError("Add a video and a subtitle file or text.")
     length = media_seconds(video)
-    cues = subtitle_cues(sub)
+    cues = subtitle_cues(sub) if sub is not None else typed_cues(typed, length)
+    suffix = sub.suffix if sub is not None else ".srt"
     kept = [c for c in cues if c.start < length]
     if not kept:
         raise ValueError(
@@ -2265,8 +2291,8 @@ def plan_subtitle(
     for c in kept:
         c.end = min(c.end, length)
     if str(params.get("burn") or "off") != "off":
-        return plan_burn(params, video, kept, len(cues), length, sub.suffix, out)
-    if sub.suffix.lower() == ".vtt":
+        return plan_burn(params, video, kept, len(cues), length, suffix, out)
+    if suffix.lower() == ".vtt":
         # ffmpeg's SRT reader shows &amp; as it is, and its WebVTT reader leaves &nbsp; and &#39; (as of ffmpeg 9)
         for c in kept:
             c.text = subtitles.vtt_to_srt(c.text)

@@ -1526,6 +1526,38 @@ def test_subtitle_refuses_a_bad_file_or_a_video_it_does_not_cover(
         tools.plan("edit.subtitle", params("edit.subtitle", language="xx"), files, tmp_path)  # fmt: skip
 
 
+def test_subtitle_text_field_makes_one_caption_or_reads_srt(
+    tmp_path: Path, media: FakeMedia
+) -> None:
+    """The Subtitle text field stands in for the file (an agent chat cannot write one): plain text is one caption for
+    the whole video, text with a time line is read as SRT."""
+    video = tmp_path / "in_video_0.mp4"
+    files: dict[str, list[Path]] = {"video": [video]}
+    media.seconds = {"in_video_0.mp4": 5.0}
+    clean = tmp_path / "in_subtitles_clean.srt"
+    p = params(
+        "edit.subtitle",
+        text=" Made on one Mac.\n\n<font color=red>Nothing</font> uploaded. ",
+    )
+    tools.validate("edit.subtitle", p, files)
+    tools.plan("edit.subtitle", p, files, tmp_path)
+    assert clean.read_text() == (
+        "1\n00:00:00,000 --> 00:00:05,000\nMade on one Mac.\nNothing uploaded.\n\n"
+    )
+    p = params("edit.subtitle", text="1\n00:00:01,000 --> 00:00:02,000\nHi\n")
+    tools.validate("edit.subtitle", p, files)
+    tools.plan("edit.subtitle", p, files, tmp_path)
+    assert clean.read_text() == "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n"
+    with pytest.raises(
+        ValueError, match="Add a subtitle file, or type the subtitle text"
+    ):
+        tools.validate("edit.subtitle", params("edit.subtitle", text="  "), files)
+    sub = tmp_path / "in_subtitles_0.srt"
+    sub.write_text("1\n00:00:01,000 --> 00:00:02,000\nok\n")
+    with pytest.raises(ValueError, match="not both"):
+        tools.validate("edit.subtitle", p, {**files, "subtitles": [sub]})
+
+
 BURN_INPUT = ["-protocol_whitelist", "file", "-format_whitelist", "concat,image2,png_pipe", "-f", "concat"]  # fmt: skip
 
 

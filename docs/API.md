@@ -90,7 +90,7 @@ Input files:
   sets it to -14 LUFS (`loudnorm`, linear when it can), as `edit.mix` does; `app/runners/mix_level.py` then adds the
   measured level to the note.
 - `edit.subtitle` (Add Subtitles) takes a video and a `.srt` or `.vtt` file (UTF-8, or UTF-16 with a byte order
-  mark, at most 5 MB). The server reads the subtitle file at submit (`app/runners/subtitles.py`) and refuses a cue it
+  mark, at most 5 MB), or the `text` field instead: SRT text, or plain text that becomes one cue for the whole video. The server reads the subtitle file at submit (`app/runners/subtitles.py`) and refuses a cue it
   cannot read with its block number. The plan writes a clean SRT (`in_subtitles_clean.srt`): only `<i>`, `<b>` and
   `<u>` tags, no cue that starts after the video's end. For a WebVTT file, it decodes the character references
   (`&amp;`, `&lt;`, `&nbsp;`, `&lrm;` and the others), and it puts a word joiner (U+2060) after a `<` or a backslash

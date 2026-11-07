@@ -429,6 +429,7 @@ no model.
 |---|---|---|
 | Video | | Its sound is copied. Its picture is copied too, unless you burn the text into it. |
 | Subtitle file | | An SRT or WebVTT file in UTF-8. |
+| Subtitle text | | Instead of a file: SRT text, or plain text that shows for the whole video (a caption such as "Made on one Mac"). Use a file or the text, not both. |
 | Language | Not set | The language tag of the track (an ISO 639-2 code, for example `tur`). Players show it in the subtitle menu. |
 | Burn into picture | Off: a subtitle track | White text with a dark outline, or white text on a dark box, in the picture. |
 | Text size (advanced) | Medium | Small, Medium or Large: 4.5%, 5.5% or 7% of the picture's short side. |

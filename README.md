@@ -308,7 +308,7 @@ Secrets go to the macOS Keychain. [docs/guide/mcp-servers.md](docs/guide/mcp-ser
 | Video | Extend Video | LTX-2.5 extend: continues a clip from its last second | 5 s more in about 2.5 min | 35 GB |
 | Edit | Mix (video + music) | ffmpeg only: music under a video's own sound, ducked under speech, about -14 LUFS | a few seconds | none |
 | Edit | Join clips | ffmpeg only: 2-10 videos and still images in one video, cuts or crossfades, one size and frame rate, about -14 LUFS | under 1 s for 10 s at 704x1280 | none |
-| Edit | Add Subtitles | ffmpeg (and macOS's text system for a burn): an SRT or WebVTT file as a subtitle track (mov_text) with a language tag, or burned into the picture | a few seconds; a burn about 4x real time at 1080p | none |
+| Edit | Add Subtitles | ffmpeg (and macOS's text system for a burn): an SRT or WebVTT file (or typed text) as a subtitle track (mov_text) with a language tag, or burned into the picture | a few seconds; a burn about 4x real time at 1080p | none |
 | Document | Read Text (OCR) | OvisOCR3 0.8B (mlx-vlm, bf16): the text of a photo, a scan or PDF pages as Markdown (tables as HTML, formulas as LaTeX) or plain text | about 2 s for a short page, longer for a full page of small print | 6 GB |
 
 The peak memory is the value that the app plans with: the highest peak of the tools that use the same model. A

@@ -5,7 +5,7 @@ license: MIT
 compatibility: Needs the Transcribe model (Qwen3-ASR) from the Models screen. Works offline.
 metadata:
   author: mlx-media-workstation
-  version: "1.1"
+  version: "1.2"
 allowed-tools: transcribe_audio
 ---
 
@@ -18,7 +18,8 @@ this chat does not have, say so clearly: name the tool, say what the user can do
 
 1. Call `list_workstation_tools` when you have it. Look for a tool that makes subtitles: an `edit.` tool whose text
    names subtitles or SRT. When there is one, use it with `create_job` for the steps that it covers, and follow its
-   field help. The steps below are for the parts that it does not cover.
+   field help. The steps below are for the parts that it does not cover. `edit.subtitle` takes the subtitles as
+   text in its `text` field: SRT text, or plain text for one caption over the whole video. It needs no SRT file.
 2. Find the video. It can be a file in the granted folder (`folder:<path>`) or a Library output
    (`library:<job id>/<file name>`; find it with `search_library`).
 
