@@ -902,7 +902,16 @@ class Workstation:
                     break
                 if abort.wait(min(left, 0.5)):
                     break
-        return self.job_status(job_id)
+        found = self.job_status(job_id)
+        if not blocked or found is None or found["status"] not in ("queued", "running"):
+            return found
+        # the wait ended first: a job that took the memory holds the turn's next step; else the turn holds it again
+        if llm.job_has_memory():
+            return {**found, "memory_taken": True}
+        with lock:
+            job = jobs.get(job_id)
+            again = job is not None and job["status"] == "queued" and needs_memory(job)
+        return {**found, "needs_memory": True} if again else found
 
     def cancel_job(self, job_id: str) -> str:
         try:

@@ -609,8 +609,13 @@ answer runs, so a queued media job could claim the memory and unload the model i
 5. `close()` ends every lease. The idle unload does not stop the model while a lease holds.
 
 `abort` runs with the module lock held: it must be fast and must not call `app.llm`. Cancel a request of a session
-with `llm.cancel(request_id)` as usual. Do not wait for a media job inside a session: a big job waits for the lease,
-so both would wait until the time limit.
+with `llm.cancel(request_id)` as usual. To wait for a media job inside a session, wait in `with llm.lend():` (in the
+session's thread). A big job waits for the lease, so without `lend()` both would wait until the time limit.
+
+- `llm.lend()` ends the lease for the block, so a queued job's claim can unload the model. At the end the session
+  holds the memory again, unless a job has taken it (`llm.job_has_memory()`): then the session's next request waits
+  for that job. The time of the block does not count against the session's limit.
+- `llm.lending()` is true in the thread of a live session.
 
 Chats are stored in `outputs/chats/<id>/` (`chat.json` and the images and files sent in the chat). The endpoints with
 `{id}` return HTTP 404 for an unknown chat.
@@ -1007,10 +1012,11 @@ Rules of the loop (`app/chat.py`, `Turn`):
    again.
 6. An approval waits at most 10 minutes (less when the answer's time runs out). No answer counts as a denial.
 7. `create_job` queues the job and returns its id at once. `wait_for_job`, `transcribe_audio` and `ocr_document` wait
-   only for a job that fits next to the model. A job that needs the model's memory (or a job behind one in the
-   queue) waits for the answer's memory lease, so the wait returns at once and says that the job starts after the
-   answer. A wait takes at most 300 s, ends at Stop and leaves the answer's last 60 s for its next steps. It
-   counts against the 10 minutes.
+   for the job. A job that needs the model's memory (or a job behind one in the queue) waits for the answer's
+   memory lease, so the wait lends the lease (`llm.lend()`): the model unloads, the job runs, and the next step loads
+   the model again. When the wait ends before the job, the result says so: the next step waits for a job that has
+   the memory, or the job starts after the answer. A wait takes at most 300 s, ends at Stop and leaves the answer's
+   last 60 s for its next steps. It counts against the 10 minutes.
 8. Every call of a step gets a tool message, also when the answer ends before the call runs.
 9. When the app closes, every running answer gets Stop, as with the Stop button. The server waits a few
    seconds for the answers to save what they have.

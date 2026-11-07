@@ -218,9 +218,11 @@ def test_wait_job_does_not_wait_for_a_job_that_needs_the_model_s_memory(
 def test_wait_job_lends_the_turn_s_lease_to_a_job_that_needs_the_memory(
     port: server.Workstation, make_job, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Inside a turn the wait lends the memory lease, so the job's claim can unload the model and the job runs; the
-    turn's next request holds the memory again (make a song, then mix it under a video, in one answer)."""
+    """Inside a turn the wait lends the memory lease, so the job's claim can unload the model and the job runs; then the
+    turn holds the memory again (make a song, then mix it under a video, in one answer). The lent time does not count
+    against the lease's limit."""
     monkeypatch.setattr(models, "mem_total_gb", lambda: 48.0)
+    monkeypatch.setattr(llm, "taken", False)
     job = make_job("20261103-090000-vvvv", "queued", tool="video.t2v", order=1)
     held_during_wait = []
 
@@ -230,14 +232,45 @@ def test_wait_job_lends_the_turn_s_lease_to_a_job_that_needs_the_memory(
         job.update(status="done")
 
     with llm.session() as lease:
-        assert lease.held
+        assert lease.held and lease.end is not None
+        end = lease.end
         threading.Timer(0.3, job_runs).start()
         t0 = time.monotonic()
         got = port.wait_job(job["id"], 30, threading.Event())
         assert got["status"] == "done" and "needs_memory" not in got
         assert time.monotonic() - t0 < 5
         assert held_during_wait == [False]
-        assert not lease.held  # until the turn's next request gets the memory
+        assert lease.held and lease.end - end >= 0.3
+
+
+def test_a_lent_wait_that_ends_first_says_who_has_the_memory(
+    port: server.Workstation, make_job, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wait that ends before the job: when no job took the memory, the turn holds it again and the job starts after
+    the answer (also on a second wait); when a job took it, the turn's next step waits for that job."""
+    monkeypatch.setattr(models, "mem_total_gb", lambda: 48.0)
+    monkeypatch.setattr(llm, "taken", False)
+    make_job(
+        "20261103-080000-oooo", "queued", tool="video.t2v", order=1
+    )  # another chat's job, first in line
+    mine = make_job("20261103-090000-vvvv", "queued", tool="music.ace", order=2)
+    with llm.session() as lease:
+        for _ in range(2):
+            got = port.wait_job(mine["id"], 0.3, threading.Event())
+            assert got["needs_memory"] is True and "memory_taken" not in got
+            assert lease.held
+
+        def claimed() -> None:
+            with llm.room:
+                llm.taken = True
+            mine.update(status="running")
+
+        threading.Timer(0.1, claimed).start()
+        got = port.wait_job(mine["id"], 0.5, threading.Event())
+        assert got["memory_taken"] is True and got["status"] == "running"
+        assert (
+            not lease.held
+        )  # its next request waits for the job, so the model never loads next to it
 
 
 def test_wait_job_waits_for_a_light_job_behind_a_big_job(

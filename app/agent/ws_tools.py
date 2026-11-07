@@ -423,6 +423,11 @@ def build(port: WorkstationPort, host: Host = CHAT) -> list[Tool]:
         return job, max(0.0, budget)
 
     def still(job: dict[str, Any], waited: float) -> str:
+        if job.get("memory_taken"):
+            return (
+                "[A media job holds the memory that the chat model uses now, so your next step starts only after that "
+                "job ends. Then check this job with job_status.]"
+            )
         if job.get("needs_memory"):
             return (
                 "[This job, or a job before it in the queue, needs the memory that the chat model uses, so it starts "

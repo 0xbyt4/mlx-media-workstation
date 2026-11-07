@@ -242,6 +242,7 @@ cancels: dict[
 waiting: set[str] = set()  # the requests waiting for memory
 closed = False  # set when the app closes: no new worker starts
 leases: set["Session"] = set()  # the sessions that hold the memory
+taken = False  # a media job's claim got past the answers and leases: the memory is the job's until release()
 reload_after_job = False  # a media job unloaded the model while it was in use: load it again when the queue empties
 local = threading.local()  # .session: the session of the thread's with-block
 # while a worker saves its prompt cache: the chats deleted meanwhile
@@ -317,25 +318,41 @@ def session(
 
 
 def lending() -> bool:
-    """True when the calling thread's session holds the memory, so lend() can let a media job have it."""
+    """True when the calling thread is in a live session, so lend() can let a media job have its memory."""
     s = getattr(local, "session", None)
     with room:
-        return s is not None and s.held and s.alive()
+        return s is not None and s.alive()
+
+
+def job_has_memory() -> bool:
+    """True from the moment a media job's claim got past the running answers and leases until the job ends: a
+    request then waits for that job."""
+    with room:
+        return taken
 
 
 @contextmanager
 def lend() -> Iterator[None]:
     """Let a queued media job have the memory of the calling thread's session while the turn waits for that job
     (wait_for_job): the lease ends for the block, so the job's claim can unload the model (the worker saves the chat's
-    prompt cache first). The session's next request then waits for the job like any request, holds the memory again,
-    and reads the restored cache. Without a held session the block changes nothing."""
+    prompt cache first). At the end the session holds the memory again, unless a job has taken it (job_has_memory):
+    then its next request waits for that job like any request, and the model loads again with the restored cache.
+    The time of the block does not count against the session's limit. Without a session the block changes nothing."""
     s = getattr(local, "session", None)
+    t0 = time.time()
     with room:
         if s is not None and s.held:
             s.held = False
             leases.discard(s)
             room.notify_all()
-    yield
+    try:
+        yield
+    finally:
+        with room:
+            if s is not None and s.end is not None:
+                s.end += time.time() - t0
+            if s is not None and not taken:
+                hold(s)
 
 
 def model_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -769,7 +786,7 @@ def claim(peak: float, abort: Callable[[], bool] = lambda: False) -> bool:
     chat's prompt cache first, for at most SAVE_WAIT seconds). New requests wait until release (a held session's
     requests do not). Returns False when abort (the job was cancelled, or the app closes) ended the wait; the memory
     is then free again."""
-    global job_peak, reload_after_job
+    global job_peak, reload_after_job, taken
     end = time.time() + JOB_WAIT
     with room:
         if wait_room(lambda: not waiting, abort, end) is None:
@@ -785,6 +802,7 @@ def claim(peak: float, abort: Callable[[], bool] = lambda: False) -> bool:
         for s in leases:  # after JOB_WAIT: a session's next request waits for the job
             s.held = False
         leases.clear()
+        taken = True
         if worker is not None:
             reload_after_job = True
     stop(
@@ -798,9 +816,9 @@ def claim(peak: float, abort: Callable[[], bool] = lambda: False) -> bool:
 
 def release() -> None:
     """The media job ended: the waiting requests can run."""
-    global job_peak
+    global job_peak, taken
     with room:
-        job_peak = 0.0
+        job_peak, taken = 0.0, False
         room.notify_all()
 
 
