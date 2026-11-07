@@ -1548,6 +1548,18 @@ def test_subtitle_text_field_makes_one_caption_or_reads_srt(
     tools.validate("edit.subtitle", p, files)
     tools.plan("edit.subtitle", p, files, tmp_path)
     assert clean.read_text() == "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n"
+    p2 = params(
+        "edit.subtitle", text="Before --> After"
+    )  # a caption with an arrow, no time line
+    tools.plan("edit.subtitle", p2, files, tmp_path)
+    assert (
+        clean.read_text() == "1\n00:00:00,000 --> 00:00:05,000\nBefore -> After\n\n"
+    )  # the SRT writer keeps "-->" out of a cue
+    p2 = params(
+        "edit.subtitle", text="WEBVTT\n\n00:00.500 --> 00:01.500\nTom &amp; Jerry\n"
+    )
+    tools.plan("edit.subtitle", p2, files, tmp_path)
+    assert clean.read_text() == "1\n00:00:00,500 --> 00:00:01,500\nTom & Jerry\n\n"
     with pytest.raises(
         ValueError, match="Add a subtitle file, or type the subtitle text"
     ):

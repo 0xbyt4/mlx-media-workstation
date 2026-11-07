@@ -852,8 +852,8 @@ TOOLS: list[dict[str, Any]] = [
         "id": "edit.subtitle",
         "group": "Edit",
         "label": "Add Subtitles",
-        "description": "Adds an SRT or WebVTT file to a video: a subtitle track the player turns on or off, or "
-        "text burned into the picture. Loads no model; seconds.",
+        "description": "Adds SRT or WebVTT subtitles to a video: a track the player turns on or "
+        "off, or text burned into the picture. Loads no model; seconds.",
         "fields": [
             field(
                 "video",
@@ -1441,9 +1441,9 @@ def concat_size(
 
 
 def typed_cues(text: str, length: float) -> list[subtitles.Cue]:
-    """The cues of the Subtitle text field: SRT or WebVTT text when it has a time line, else one cue with the text
-    for the whole video (length seconds). Raises ValueError (shown to the user)."""
-    if "-->" in text:
+    """The cues of the Subtitle text field: SRT or WebVTT text when a line is a time line, else one cue with the text
+    for the whole video (length seconds), so a caption may hold "-->". Raises ValueError (shown to the user)."""
+    if any(subtitles.TIME_LINE.match(line) for line in text.splitlines()):
         return subtitles.parse(text)
     lines = [subtitles.OTHER_TAGS.sub("", line).strip() for line in text.splitlines()]
     body = "\n".join(line for line in lines if line)
@@ -2282,7 +2282,13 @@ def plan_subtitle(
         raise ValueError("Add a video and a subtitle file or text.")
     length = media_seconds(video)
     cues = subtitle_cues(sub) if sub is not None else typed_cues(typed, length)
-    suffix = sub.suffix if sub is not None else ".srt"
+    suffix = (
+        sub.suffix
+        if sub is not None
+        else ".vtt"
+        if typed.startswith("WEBVTT")
+        else ".srt"
+    )
     kept = [c for c in cues if c.start < length]
     if not kept:
         raise ValueError(
