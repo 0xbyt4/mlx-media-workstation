@@ -623,6 +623,30 @@ def test_stop_group_ends_a_real_process_group() -> None:
     assert not server.group_alive(proc.pid)
 
 
+def test_stop_group_of_a_group_with_only_a_zombie_left() -> None:
+    # macOS refuses a signal to such a group (EPERM): a model that ended while one of its processes was not yet
+    # reaped made a finished job fail with "PermissionError: Operation not permitted"
+    proc = subprocess.Popen(["/bin/sh", "-c", "exit 0"], start_new_session=True)
+
+    def state() -> str:
+        return subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(proc.pid)],
+            check=False,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    end = time.monotonic() + 5
+    while time.monotonic() < end and not state().startswith("Z"):
+        time.sleep(
+            0.01
+        )  # until it has ended; nobody reaps it yet, so it stays a zombie
+    assert state().startswith("Z")
+    server.stop_group(proc.pid, timeout=1)
+    assert not server.group_alive(proc.pid)
+    proc.wait()
+
+
 def test_stop_group_of_a_gone_group(monkeypatch: pytest.MonkeyPatch) -> None:
     sent: list[tuple[int, int]] = []
 

@@ -295,7 +295,7 @@ def group_alive(pgid: int) -> bool:
         os.killpg(pgid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:  # the id was reused by someone else's process
+    except PermissionError:  # only zombies are left in it (macOS), or the id was reused by someone else's process
         return False
     return True
 
@@ -305,7 +305,10 @@ def stop_group(pgid: int, timeout: float = KILL_AFTER) -> None:
     for sig, wait in ((signal.SIGTERM, timeout), (signal.SIGKILL, 5.0)):
         try:
             os.killpg(pgid, sig)
-        except ProcessLookupError:
+        except (
+            ProcessLookupError,
+            PermissionError,
+        ):  # gone, or not alive for us (group_alive)
             return
         end = time.time() + wait
         while time.time() < end:
