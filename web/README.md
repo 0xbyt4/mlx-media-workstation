@@ -3,7 +3,7 @@
 The interface is plain HTML, CSS and JavaScript modules. There is no build step and no framework. The page loads
 nothing from the network. `app/server.py` serves this folder at `/`.
 
-The design is in `docs/DESIGN.md` and `docs/design/mock.html`. The endpoints are in `docs/API.md`.
+The endpoints are in `docs/API.md`.
 
 ## File layout
 

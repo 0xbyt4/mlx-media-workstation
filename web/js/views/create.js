@@ -1127,8 +1127,7 @@ function refreshFacts() {
   updateGenerate();
 }
 
-// First run: no tool that needs a model can run yet. Its weights or its runtime are missing (docs/DESIGN.md
-// decision 11).
+// First run: no tool that needs a model can run yet. Its weights or its runtime are missing.
 function renderSetup() {
   const models = store.get('models');
   const none = models && !store.get('tools').some((t) => store.toolModels(t.id).length && store.toolInstalled(t.id));

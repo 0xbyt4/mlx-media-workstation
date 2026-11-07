@@ -1,4 +1,4 @@
-/* Design tokens (docs/DESIGN.md section 1). Light values on :root; dark values for the System theme under
+/* Design tokens. Light values on :root; dark values for the System theme under
    prefers-color-scheme, and again under [data-theme="dark"] for the explicit Dark theme. */
 :root {
   color-scheme: light;

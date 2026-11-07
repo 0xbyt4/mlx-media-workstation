@@ -22,5 +22,4 @@ The technical detail is in the developer docs:
 - [AGENT.md](../AGENT.md): the agent tools, the approval policy and the sandboxes.
 - [API.md](../API.md): the HTTP endpoints and the thinking levels.
 - [MCP.md](../MCP.md): the MCP server, for Claude Code, Claude Desktop and other agents on this Mac.
-- [DESIGN.md](../DESIGN.md): the design of the interface.
 - [PROMPTING.md](../PROMPTING.md): the prompt rules that worked for each model.

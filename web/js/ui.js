@@ -170,7 +170,7 @@ export function fmtValue(v) {
   return String(v);
 }
 
-// ---------- the fit rule (docs/DESIGN.md decision 3) ----------
+// ---------- the fit rule ----------
 
 const MAC_SIZES = [16, 24, 32, 36, 48, 64, 96, 128, 192, 256];
 
@@ -300,7 +300,7 @@ export function confirm({title, text, confirmLabel = 'OK', cancelLabel = 'Cancel
   });
 }
 
-// An inline confirm row (docs/DESIGN.md decision 12). Returns the element; the caller places it.
+// An inline confirm row. Returns the element; the caller places it.
 export function inlineConfirm({text, confirmLabel, cancelLabel = 'Keep', onConfirm, onCancel}) {
   const yes = h('button', {type: 'button', class: 'btn btn-sm btn-danger-solid'}, confirmLabel);
   const no = h('button', {type: 'button', class: 'btn btn-sm'}, cancelLabel);

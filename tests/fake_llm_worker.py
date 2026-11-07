@@ -21,7 +21,7 @@ item is a text answer ("RESULT" answers "Result: <last tool message>", "SLOW" st
 calls, or {"text": ..., "calls": [...], "think": ..., "think_calls": [...]}: "think" is reasoning, and "think_calls"
 are written at its end, as Qwen sometimes does. A call is {"name": ..., "arguments": {...}}, written as the model
 writes it, or {"raw": "..."}: that text inside the call markers, to test calls that do not parse. A request without
-tools answers a STEPS: script's text item too (the eval's general chats); an item with calls stays "Hello world".
+tools answers a STEPS: script's text item too (scripted general chats); an item with calls stays "Hello world".
 
 The done stats also carry "prefix": a hash of the request's tools array and system message, so a test can check that
 the start of the prompt (what the template puts before the conversation) never changes inside a chat. The app's own
@@ -379,7 +379,7 @@ def main():
         if reasoning:
             emit({"id": rid, "event": "reasoning", "text": reasoning})
         parts, finish = [], "stop"
-        # a text item of a STEPS: script (the eval's general chats); an item with calls stays "Hello world"
+        # a text item of a STEPS: script (a scripted general chat); an item with calls stays "Hello world"
         script = scripted(req["messages"])
         said = (
             script[0]

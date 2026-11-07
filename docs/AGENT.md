@@ -965,7 +965,7 @@ tokenizer, and characters / 3):
 | Workstation | 9 tools, 4,921 tokens (5,368) | the same, before Read Text. With `ocr_document` deferred and the default providers (memory and skills), the bridge is already in the array (memory defers `search_chats`), so `ocr_document` adds 45 tokens; as a core tool it would add 370 (system text and schemas only, measured 2026-11-05) |
 | General | 78 tokens (105) | the same |
 
-The eval showed that the agent spent steps to find `wait_for_job` and `search_library`, so they became core
+Our tool-use tests showed that the agent spent steps to find `wait_for_job` and `search_library`, so they became core
 after this measure: each agent row above is about 350 tokens (characters / 3) larger now.
 
 #### Notes for later changes

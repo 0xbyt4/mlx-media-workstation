@@ -509,7 +509,7 @@ function downloadBlock(m, dl, live) {
   return null;
 }
 
-// The gated-licence step (docs/DESIGN.md decision 10). The app never asks for, shows or stores a token.
+// The gated-licence step. The app never asks for, shows or stores a token.
 function gate(m, blocked, later) {
   const boxId = 'gate-' + m.id.replace(/[^a-z0-9-]/gi, '-');
   const go = h('button', {

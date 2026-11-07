@@ -518,7 +518,7 @@ async function cancelJob(job, errSlot) {
 
 // ---------- finished ----------
 
-// Plain titles and fixes for failure modes the logs show (docs/DESIGN.md decision 8).
+// Plain titles and fixes for failure modes the logs show.
 function diagnose(job) {
   const all = (job.error || '') + '\n' + (job.log_tail || '');
   if (/LocalEntryNotFoundError|Cannot find the requested files/.test(all)) {

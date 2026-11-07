@@ -669,7 +669,7 @@ ends.
   ([docs/MCP.md](docs/MCP.md#mcp-client)).
 - `app/runners/` has small scripts that run inside a model's own environment.
 - `web/` has the interface: plain HTML, CSS and JavaScript modules, with no build step and no network requests
-  ([web/README.md](web/README.md)). [docs/DESIGN.md](docs/DESIGN.md) has the design notes of the interface.
+  ([web/README.md](web/README.md)).
 
 Each model runs as its own process group from its own environment. A finished or cancelled job gives all its memory
 back. The LLM worker is a process too, and it unloads the model when it exits.
@@ -689,9 +689,6 @@ uv pip install --python .venv/bin/python -r requirements.txt -r requirements-dev
 `.github/workflows/ci.yml` has the same checks for GitHub Actions on macOS. The workflow runs only when started by
 hand, so run the checks on your Mac before you send a change. To send a change, read
 [CONTRIBUTING.md](CONTRIBUTING.md). Everyone in the project follows the [code of conduct](CODE_OF_CONDUCT.md).
-
-`scripts/run_evals.py` runs the tool-use eval: 34 cases through the app's chat loop with mock tools, scored by fixed
-rules. It runs on the fake worker in seconds, or on the local LLM. See [evals/README.md](evals/README.md).
 
 `scripts/make_icon.py` draws the app icons (`assets/AppIcon.icns` and `assets/icon.png`) from the colours in
 `web/css/tokens.css`.
